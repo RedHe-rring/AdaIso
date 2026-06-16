@@ -20,10 +20,6 @@ struct AdaIsoConfig {
   Variant variant = Variant::Code;
   bool preprocess = false;
   int global_iterations = 5;
-  int csf_max_iterations = 20;
-  double csf_tolerance = 0.005;
-  double csf_mu = 0.5;
-  double cot_min_weight = 1e-4;
   int histogram_bins = 40;
   std::array<double, 5> multipliers = {1.8, 1.4, 1.0, 0.8, 0.6};
   double subremesh_multiplier = 1.5;
@@ -48,7 +44,15 @@ struct AdaIsoConfig {
 struct AdaIsoStats {
   std::size_t vertices = 0;
   std::size_t faces = 0;
-  int csf_iterations = 0;
+  double csf_assembly_time_ms = 0.0;
+  double csf_factorization_time_ms = 0.0;
+  double csf_solve_time_ms = 0.0;
+  double csf_residual_abs = 0.0;
+  double csf_residual_scaled = 0.0;
+  std::size_t csf_free_vertices = 0;
+  std::size_t csf_fixed_vertices = 0;
+  std::size_t csf_matrix_nonzeros = 0;
+  bool csf_solver_success = false;
 };
 
 class AdaIsoRemesher {

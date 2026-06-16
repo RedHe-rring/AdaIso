@@ -4,11 +4,9 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This implementation follows the behavior-oriented Python reproduction in this
-workspace and keeps the default mode close to the author's source-code defaults:
-`variant=code`, `mesh_scale=1.0`, five global iterations, 40-bin curvature
-histogram, split factor `1.33`, collapse factor `0.8`, tangent smoothing
-`lambda=0.6`, and MLS projection enabled.
+This is version 2.0.0. The CSF stage is computed exclusively with a Dirichlet
+Laplace sparse solve. The old explicit CSF iteration parameters and iteration
+statistics were removed as a breaking interface change.
 
 ## Scope
 
@@ -20,7 +18,7 @@ Implemented:
 - OBJ output.
 - Degenerate and duplicate unoriented triangle cleanup.
 - Area-weighted vertex normals.
-- Curvature-smoothed field from vertex normal variation and weighted smoothing.
+- Curvature-smoothed field from vertex normal variation and a Dirichlet Laplace sparse solve.
 - Histogram-based local target edge length assignment.
 - KD-tree nearest target length lookup via nanoflann.
 - Global remeshing loop: split, collapse, cleanup, flip, tangent smoothing.
@@ -99,14 +97,14 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 ## Parameters
 
 - `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
-- `--variant code|paper`: `code` uses the source-like thresholds; `paper` uses the paper split/collapse convention.
+- `--variant code|paper`: `code` uses source-like split/collapse thresholds and length-scaled CSF weights; `paper` uses the paper split/collapse convention and cotangent CSF weights.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.
 - `--summary-json`: writes a JSON run summary.
 
 The summary contains input/output vertex counts, face counts, `qavg`, `qmin`,
-runtime, core parameters, and CSF iteration count.
+runtime, core parameters, and CSF sparse-solve timing/residual statistics.
 
 ## Smoke Test
 
@@ -126,7 +124,7 @@ Expected acceptance:
 
 - `cpp_adaiso/out.obj` exists.
 - All face indices are valid.
-- `summary.json` reports positive `qavg` and `qmin`, with pyramid `Qmin` not lower than the input.
+- `summary.json` reports positive `qavg` and `qmin`, successful CSF solve status, and CSF residual statistics.
 - The basic `adaiso_tests` target passes.
 
 ## Notes On Reproduction
@@ -145,3 +143,5 @@ rejected.
 
 The result should be close in behavior to the Python reproduction under the same
 parameters, but individual vertex positions are not expected to match exactly.
+Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
+intermediates; it solves the corresponding Dirichlet Laplace steady-state system.

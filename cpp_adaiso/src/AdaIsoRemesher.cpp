@@ -1,6 +1,7 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
 #include "adaiso/Geometry.hpp"
+#include "adaiso/detail/CsfSolver.hpp"
 
 #include <Eigen/Geometry>
 
@@ -285,6 +286,7 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
     target_positions_.clear();
     target_lengths_.clear();
     target_index_ = NearestNeighborIndex();
+    stats_.csf_solver_success = true;
     return;
   }
 
@@ -331,67 +333,18 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
     return curvature;
   }
 
-  const auto weights = cotangentEdgeWeights(mesh, config_.cot_min_weight);
-  const auto vmax_it = std::max_element(curvature.begin(), curvature.end());
-  const int vmax = static_cast<int>(std::distance(curvature.begin(), vmax_it));
-  std::unordered_set<int> forbidden = neigh[static_cast<std::size_t>(vmax)];
-  forbidden.insert(vmax);
-
-  int vmin = -1;
-  double min_value = std::numeric_limits<double>::infinity();
-  for (int i = 0; i < static_cast<int>(curvature.size()); ++i) {
-    if (forbidden.find(i) != forbidden.end()) {
-      continue;
-    }
-    if (curvature[static_cast<std::size_t>(i)] < min_value) {
-      min_value = curvature[static_cast<std::size_t>(i)];
-      vmin = i;
-    }
-  }
-  if (vmin < 0) {
-    const auto vmin_it = std::min_element(curvature.begin(), curvature.end());
-    vmin = static_cast<int>(std::distance(curvature.begin(), vmin_it));
-  }
-  const std::unordered_set<int> fixed = {vmax, vmin};
-  stats_.csf_iterations = config_.csf_max_iterations;
-
-  for (int it = 0; it < config_.csf_max_iterations; ++it) {
-    const auto old = curvature;
-    double delta_sum = 0.0;
-    int delta_count = 0;
-    for (std::size_t i = 0; i < neigh.size(); ++i) {
-      if (fixed.find(static_cast<int>(i)) != fixed.end() || neigh[i].empty()) {
-        continue;
-      }
-      double total = 0.0;
-      double accum = 0.0;
-      for (int j : neigh[i]) {
-        const Edge edge = makeEdge(static_cast<int>(i), j);
-        auto wit = weights.find(edge);
-        double w = wit == weights.end() ? config_.cot_min_weight : wit->second;
-        if (config_.variant == Variant::Code) {
-          const double len = (mesh.vertices[i] - mesh.vertices[static_cast<std::size_t>(j)]).norm();
-          w /= std::max(len, 1e-12);
-        }
-        total += w;
-        accum += w * old[static_cast<std::size_t>(j)];
-      }
-      if (total <= 0.0) {
-        continue;
-      }
-      const double weighted_avg = accum / total;
-      const double delta = weighted_avg - old[i];
-      curvature[i] = old[i] + (1.0 - config_.csf_mu) * delta;
-      delta_sum += std::abs(delta);
-      ++delta_count;
-    }
-    const double mean_delta = delta_count == 0 ? 0.0 : delta_sum / static_cast<double>(delta_count);
-    if (mean_delta < config_.csf_tolerance) {
-      stats_.csf_iterations = it + 1;
-      break;
-    }
-  }
-  return curvature;
+  const auto adjacency = detail::buildCsfWeightGraph(mesh, config_.variant == Variant::Code);
+  const auto solved = detail::solveDirichletCsf(adjacency, curvature);
+  stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
+  stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
+  stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
+  stats_.csf_residual_abs = solved.stats.residual_abs;
+  stats_.csf_residual_scaled = solved.stats.residual_scaled;
+  stats_.csf_free_vertices = solved.stats.free_vertices;
+  stats_.csf_fixed_vertices = solved.stats.fixed_vertices;
+  stats_.csf_matrix_nonzeros = solved.stats.matrix_nonzeros;
+  stats_.csf_solver_success = solved.stats.solver_success;
+  return solved.values;
 }
 
 std::vector<double> AdaIsoRemesher::histogramMultipliers(const std::vector<double>& curvature) const {

@@ -123,7 +123,15 @@ std::string buildSummaryJson(
   out << "  \"stats\": {\n";
   out << "    \"vertices\": " << stats.vertices << ",\n";
   out << "    \"faces\": " << stats.faces << ",\n";
-  out << "    \"csf_iterations\": " << stats.csf_iterations << "\n";
+  out << "    \"csf_assembly_time_ms\": " << stats.csf_assembly_time_ms << ",\n";
+  out << "    \"csf_factorization_time_ms\": " << stats.csf_factorization_time_ms << ",\n";
+  out << "    \"csf_solve_time_ms\": " << stats.csf_solve_time_ms << ",\n";
+  out << "    \"csf_residual_abs\": " << stats.csf_residual_abs << ",\n";
+  out << "    \"csf_residual_scaled\": " << stats.csf_residual_scaled << ",\n";
+  out << "    \"csf_free_vertices\": " << stats.csf_free_vertices << ",\n";
+  out << "    \"csf_fixed_vertices\": " << stats.csf_fixed_vertices << ",\n";
+  out << "    \"csf_matrix_nonzeros\": " << stats.csf_matrix_nonzeros << ",\n";
+  out << "    \"csf_solver_success\": " << (stats.csf_solver_success ? "true" : "false") << "\n";
   out << "  }\n";
   out << "}\n";
   return out.str();
