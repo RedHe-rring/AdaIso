@@ -1,0 +1,39 @@
+# Build outputs
+build/
+*/build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+
+# Generated binaries and libraries
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+
+# Keep small source mesh examples even though .obj is also a build object suffix.
+!cpp_adaiso/examples/*.obj
+!python_adaiso/examples/*.obj
+
+# AdaIso run outputs
+cpp_adaiso/results/
+cpp_adaiso/out*.obj
+cpp_adaiso/summary*.json
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local/editor files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Source papers are local references, not source artifacts.
+papers/

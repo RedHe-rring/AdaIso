@@ -1,0 +1,147 @@
+# cpp_adaiso
+
+C++17/CMake reproduction of the AdaIso remeshing workflow described in:
+
+Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
+
+This implementation follows the behavior-oriented Python reproduction in this
+workspace and keeps the default mode close to the author's source-code defaults:
+`variant=code`, `mesh_scale=1.0`, five global iterations, 40-bin curvature
+histogram, split factor `1.33`, collapse factor `0.8`, tangent smoothing
+`lambda=0.6`, and MLS projection enabled.
+
+## Scope
+
+Implemented:
+
+- OBJ input with polygon fan triangulation.
+- ASCII PLY input with polygon fan triangulation.
+- ASCII OFF input with polygon fan triangulation.
+- OBJ output.
+- Degenerate and duplicate unoriented triangle cleanup.
+- Area-weighted vertex normals.
+- Curvature-smoothed field from vertex normal variation and weighted smoothing.
+- Histogram-based local target edge length assignment.
+- KD-tree nearest target length lookup via nanoflann.
+- Global remeshing loop: split, collapse, cleanup, flip, tangent smoothing.
+- MLS projection to the original mesh.
+- CLI executable: `adaiso_cli`.
+
+Not implemented:
+
+- Binary PLY.
+- VCG/PCL/CGAL/CUDA dependencies.
+- The author's original `pointNeighbor` pair-list data structure.
+- Baseline methods from the paper.
+
+## Build
+
+Install one C++ compiler toolchain first:
+
+- MSVC Build Tools, or
+- MinGW-w64, or
+- clang/clang-cl.
+
+Then configure and build:
+
+```powershell
+cmake -S cpp_adaiso -B cpp_adaiso/build -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp_adaiso/build --config Release
+ctest --test-dir cpp_adaiso/build --output-on-failure
+```
+
+With the Visual Studio developer environment and vcpkg in `e:/dev/vcpkg`, the
+validated command is:
+
+```powershell
+cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && cmake -S cpp_adaiso -B cpp_adaiso/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=e:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
+cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && cmake --build cpp_adaiso/build --config Release"
+cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && ctest --test-dir cpp_adaiso/build --output-on-failure"
+```
+
+`Eigen3` and `nanoflann` are first resolved with `find_package`, so vcpkg
+packages are used when a vcpkg toolchain file is supplied. If they are not
+available, CMake falls back to `FetchContent`.
+
+## CLI
+
+```powershell
+cpp_adaiso/build/Release/adaiso_cli.exe cpp_adaiso/examples/pyramid.obj `
+  -o cpp_adaiso/out.obj `
+  --mesh-scale 0.8 `
+  --variant code `
+  --preprocess 1 `
+  --iters 2 `
+  --project 1 `
+  --summary-json cpp_adaiso/summary.json
+```
+
+On single-config generators such as Ninja or Makefiles, the executable is
+usually located at:
+
+```powershell
+cpp_adaiso/build/adaiso_cli.exe
+```
+
+OFF input is supported:
+
+```powershell
+cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
+  -o cpp_adaiso/results/T0_T10/T0_iter1_project1.obj `
+  --variant code `
+  --mesh-scale 1.0 `
+  --iters 1 `
+  --preprocess 0 `
+  --project 1 `
+  --summary-json cpp_adaiso/results/T0_T10/T0_iter1_project1.json
+```
+
+## Parameters
+
+- `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
+- `--variant code|paper`: `code` uses the source-like thresholds; `paper` uses the paper split/collapse convention.
+- `--preprocess 0|1`: enables long-edge pre-splitting.
+- `--iters`: global split/collapse/flip/smooth iterations.
+- `--project 0|1`: enables MLS projection back to the original mesh.
+- `--summary-json`: writes a JSON run summary.
+
+The summary contains input/output vertex counts, face counts, `qavg`, `qmin`,
+runtime, core parameters, and CSF iteration count.
+
+## Smoke Test
+
+After building:
+
+```powershell
+cpp_adaiso/build/Release/adaiso_cli.exe cpp_adaiso/examples/pyramid.obj `
+  -o cpp_adaiso/out.obj `
+  --variant code `
+  --mesh-scale 0.8 `
+  --iters 2 `
+  --preprocess 1 `
+  --summary-json cpp_adaiso/summary.json
+```
+
+Expected acceptance:
+
+- `cpp_adaiso/out.obj` exists.
+- All face indices are valid.
+- `summary.json` reports positive `qavg` and `qmin`, with pyramid `Qmin` not lower than the input.
+- The basic `adaiso_tests` target passes.
+
+## Notes On Reproduction
+
+This is a practical reproduction rather than a line-by-line port. It avoids
+known fragile behavior from the original code, including uninitialized MLS
+bandwidth. MLS uses:
+
+```text
+h = dK + max(0, dK - dK-1)
+```
+
+MLS projection is guarded by a global triangle-quality check: if projection
+would reduce `Qmin` below the pre-projection mesh, the projected positions are
+rejected.
+
+The result should be close in behavior to the Python reproduction under the same
+parameters, but individual vertex positions are not expected to match exactly.
