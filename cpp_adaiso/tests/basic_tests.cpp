@@ -10,6 +10,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <numeric>
 
 namespace {
 
@@ -58,6 +59,99 @@ adaiso::Mesh makeDisconnectedTriangles() {
   return mesh;
 }
 
+adaiso::Mesh makePlanePatch() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {-1.0, -1.0, 0.0},
+      {1.0, -1.0, 0.0},
+      {1.0, 1.0, 0.0},
+      {-1.0, 1.0, 0.0},
+  };
+  mesh.faces = {{0, 1, 2}, {0, 2, 3}};
+  return mesh;
+}
+
+adaiso::Mesh makeUvSphere(double radius, int rings, int segments) {
+  adaiso::Mesh mesh;
+  const double pi = std::acos(-1.0);
+  mesh.vertices.push_back({0.0, 0.0, radius});
+  for (int i = 1; i < rings; ++i) {
+    const double theta = pi * static_cast<double>(i) / static_cast<double>(rings);
+    const double z = radius * std::cos(theta);
+    const double r = radius * std::sin(theta);
+    for (int j = 0; j < segments; ++j) {
+      const double phi = 2.0 * pi * static_cast<double>(j) / static_cast<double>(segments);
+      mesh.vertices.push_back({r * std::cos(phi), r * std::sin(phi), z});
+    }
+  }
+  const int bottom = static_cast<int>(mesh.vertices.size());
+  mesh.vertices.push_back({0.0, 0.0, -radius});
+
+  auto idx = [&](int ring, int segment) {
+    return 1 + (ring - 1) * segments + ((segment + segments) % segments);
+  };
+
+  for (int j = 0; j < segments; ++j) {
+    mesh.faces.push_back({0, idx(1, j), idx(1, j + 1)});
+  }
+  for (int i = 1; i + 1 < rings; ++i) {
+    for (int j = 0; j < segments; ++j) {
+      const int a = idx(i, j);
+      const int b = idx(i, j + 1);
+      const int c = idx(i + 1, j);
+      const int d = idx(i + 1, j + 1);
+      mesh.faces.push_back({a, c, b});
+      mesh.faces.push_back({b, c, d});
+    }
+  }
+  for (int j = 0; j < segments; ++j) {
+    mesh.faces.push_back({bottom, idx(rings - 1, j + 1), idx(rings - 1, j)});
+  }
+  return mesh;
+}
+
+adaiso::Mesh makeCylinder(double radius, double height, int rows, int segments) {
+  adaiso::Mesh mesh;
+  const double pi = std::acos(-1.0);
+  for (int i = 0; i < rows; ++i) {
+    const double z = -0.5 * height + height * static_cast<double>(i) / static_cast<double>(rows - 1);
+    for (int j = 0; j < segments; ++j) {
+      const double phi = 2.0 * pi * static_cast<double>(j) / static_cast<double>(segments);
+      mesh.vertices.push_back({radius * std::cos(phi), radius * std::sin(phi), z});
+    }
+  }
+  const int bottom_center = static_cast<int>(mesh.vertices.size());
+  mesh.vertices.push_back({0.0, 0.0, -0.5 * height});
+  const int top_center = static_cast<int>(mesh.vertices.size());
+  mesh.vertices.push_back({0.0, 0.0, 0.5 * height});
+
+  auto idx = [&](int row, int segment) {
+    return row * segments + ((segment + segments) % segments);
+  };
+  for (int i = 0; i + 1 < rows; ++i) {
+    for (int j = 0; j < segments; ++j) {
+      const int a = idx(i, j);
+      const int b = idx(i, j + 1);
+      const int c = idx(i + 1, j);
+      const int d = idx(i + 1, j + 1);
+      mesh.faces.push_back({a, c, b});
+      mesh.faces.push_back({b, c, d});
+    }
+  }
+  for (int j = 0; j < segments; ++j) {
+    mesh.faces.push_back({bottom_center, idx(0, j + 1), idx(0, j)});
+    mesh.faces.push_back({top_center, idx(rows - 1, j), idx(rows - 1, j + 1)});
+  }
+  return mesh;
+}
+
+adaiso::Mesh reverseFaces(adaiso::Mesh mesh) {
+  for (auto& face : mesh.faces) {
+    std::swap(face[1], face[2]);
+  }
+  return mesh;
+}
+
 adaiso::detail::CsfAdjacency makeChainAdjacency(int vertices) {
   adaiso::detail::CsfAdjacency adjacency(static_cast<std::size_t>(vertices));
   for (int i = 0; i + 1 < vertices; ++i) {
@@ -75,6 +169,18 @@ void assertFiniteValues(const std::vector<double>& values) {
   for (double value : values) {
     assert(std::isfinite(value));
   }
+}
+
+double averagePositive(const std::vector<double>& values) {
+  double sum = 0.0;
+  int count = 0;
+  for (double value : values) {
+    if (std::isfinite(value) && value > 0.0) {
+      sum += value;
+      ++count;
+    }
+  }
+  return count == 0 ? 0.0 : sum / static_cast<double>(count);
 }
 
 void assertSymmetricPositive(const adaiso::detail::CsfAdjacency& adjacency) {
@@ -122,6 +228,66 @@ void testGeometryAndMetrics() {
   assert(summary.qavg > 0.0);
   assert(summary.qmin > 0.0);
   assert(adaiso::boundaryVertices(mesh).empty());
+}
+
+void testCurvatureAndSizingField() {
+  const adaiso::Mesh plane = makePlanePatch();
+  const auto plane_curvature = adaiso::maximumAbsolutePrincipalCurvatures(plane);
+  assert(plane_curvature.size() == plane.vertexCount());
+  for (double value : plane_curvature) {
+    assert(std::abs(value) < 1e-12);
+  }
+  const auto plane_sizing = adaiso::curvatureSizingField(plane, 0.01, 0.1, 2.0);
+  for (double value : plane_sizing) {
+    assertNear(value, 2.0);
+  }
+
+  const adaiso::Mesh sphere = makeUvSphere(1.0, 12, 24);
+  const auto sphere_curvature = adaiso::maximumAbsolutePrincipalCurvatures(sphere);
+  assertFiniteValues(sphere_curvature);
+  const double sphere_avg = averagePositive(sphere_curvature);
+  assert(sphere_avg > 0.5 && sphere_avg < 1.8);
+
+  const adaiso::Mesh flipped_sphere = reverseFaces(sphere);
+  const double flipped_avg = averagePositive(adaiso::maximumAbsolutePrincipalCurvatures(flipped_sphere));
+  assert(std::abs(sphere_avg - flipped_avg) < 1e-10);
+
+  const adaiso::Mesh cylinder = makeCylinder(1.0, 3.0, 7, 32);
+  const auto cylinder_curvature = adaiso::maximumAbsolutePrincipalCurvatures(cylinder);
+  assertFiniteValues(cylinder_curvature);
+  double cylinder_mid_sum = 0.0;
+  int cylinder_mid_count = 0;
+  const int middle_row = 3;
+  for (int j = 0; j < 32; ++j) {
+    cylinder_mid_sum += cylinder_curvature[static_cast<std::size_t>(middle_row * 32 + j)];
+    ++cylinder_mid_count;
+  }
+  const double cylinder_mid_avg = cylinder_mid_sum / static_cast<double>(cylinder_mid_count);
+  assert(cylinder_mid_avg > 0.4 && cylinder_mid_avg < 1.8);
+
+  const auto small_sphere_sizing = adaiso::curvatureSizingField(sphere, 0.01, 0.05, 2.0);
+  const auto large_sphere_sizing = adaiso::curvatureSizingField(makeUvSphere(2.0, 12, 24), 0.01, 0.05, 2.0);
+  const double small_sphere_avg = std::accumulate(
+      small_sphere_sizing.begin(),
+      small_sphere_sizing.end(),
+      0.0) / static_cast<double>(small_sphere_sizing.size());
+  const double large_sphere_avg = std::accumulate(
+      large_sphere_sizing.begin(),
+      large_sphere_sizing.end(),
+      0.0) / static_cast<double>(large_sphere_sizing.size());
+  assert(small_sphere_avg < large_sphere_avg);
+
+  const auto tight_sizing = adaiso::curvatureSizingField(sphere, 0.005, 0.05, 2.0);
+  const auto loose_sizing = adaiso::curvatureSizingField(sphere, 0.02, 0.05, 2.0);
+  const double tight_avg = std::accumulate(tight_sizing.begin(), tight_sizing.end(), 0.0) /
+                           static_cast<double>(tight_sizing.size());
+  const double loose_avg = std::accumulate(loose_sizing.begin(), loose_sizing.end(), 0.0) /
+                           static_cast<double>(loose_sizing.size());
+  assert(tight_avg < loose_avg);
+  for (double value : tight_sizing) {
+    assert(std::isfinite(value));
+    assert(value >= 0.05 - 1e-12 && value <= 2.0 + 1e-12);
+  }
 }
 
 void testCleanupAndAdjacency() {
@@ -262,8 +428,16 @@ void testRemeshSmoke() {
   const auto output_summary = adaiso::summarizeMesh(output);
   assert(output_summary.qmin > 0.0);
   assert(output_summary.qmin + 1e-12 >= std::min(0.01, input_summary.qmin));
-  assert(remesher.stats().csf_solver_success);
-  assert(remesher.stats().csf_residual_scaled < adaiso::detail::kResidualThreshold);
+  assert(remesher.stats().sizing.epsilon > 0.0);
+  assert(remesher.stats().sizing.min > 0.0);
+  assert(remesher.stats().sizing.max >= remesher.stats().sizing.min);
+  assert(remesher.stats().iterations.size() == 2);
+  for (const auto& iter : remesher.stats().iterations) {
+    assert(iter.vertices > 0);
+    assert(iter.faces > 0);
+    assert(std::isfinite(iter.target_error_avg));
+    assert(std::isfinite(iter.geometry_error_avg));
+  }
 }
 
 void testRemeshEdgeCases() {
@@ -275,9 +449,9 @@ void testRemeshEdgeCases() {
     adaiso::AdaIsoRemesher remesher(config);
     const adaiso::Mesh output = remesher.remesh(input);
     output.validate();
-    assert(remesher.stats().csf_solver_success);
-    assert(std::isfinite(remesher.stats().csf_residual_abs));
-    assert(std::isfinite(remesher.stats().csf_residual_scaled));
+    assert(std::isfinite(remesher.stats().sizing.epsilon));
+    assert(std::isfinite(remesher.stats().sizing.min));
+    assert(std::isfinite(remesher.stats().sizing.max));
   };
 
   run(makeSingleTriangle());
@@ -302,6 +476,7 @@ void testRemeshEdgeCases() {
 
 int main() {
   testGeometryAndMetrics();
+  testCurvatureAndSizingField();
   testCleanupAndAdjacency();
   testObjRoundtrip();
   testOffLoad();

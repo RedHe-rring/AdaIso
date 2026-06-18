@@ -1,7 +1,7 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
 #include "adaiso/Geometry.hpp"
-#include "adaiso/detail/CsfSolver.hpp"
+#include "adaiso/KDTree.hpp"
 
 #include <Eigen/Geometry>
 
@@ -24,6 +24,39 @@ namespace {
 
 constexpr double kEps = 1e-14;
 constexpr double kPi = 3.141592653589793238462643383279502884;
+
+struct ResolvedSizingParameters {
+  double epsilon = 0.0;
+  double min_length = 0.0;
+  double max_length = 0.0;
+};
+
+struct FaceKey {
+  int a = 0;
+  int b = 0;
+  int c = 0;
+
+  bool operator==(const FaceKey& other) const {
+    return a == other.a && b == other.b && c == other.c;
+  }
+};
+
+struct FaceKeyHash {
+  std::size_t operator()(const FaceKey& key) const noexcept {
+    std::size_t h = 1469598103934665603ull;
+    for (int v : {key.a, key.b, key.c}) {
+      h ^= static_cast<std::size_t>(v + 0x9e3779b9);
+      h *= 1099511628211ull;
+    }
+    return h;
+  }
+};
+
+FaceKey makeFaceKey(const Eigen::Vector3i& face) {
+  std::array<int, 3> values = {face[0], face[1], face[2]};
+  std::sort(values.begin(), values.end());
+  return {values[0], values[1], values[2]};
+}
 
 bool faceContains(const Eigen::Vector3i& face, int v) {
   return face[0] == v || face[1] == v || face[2] == v;
@@ -55,9 +88,12 @@ std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a,
   throw std::runtime_error("internal error: face does not contain requested edge");
 }
 
-void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
+void splitEdgesBatch(Mesh& mesh, std::vector<double>& target_lengths, const std::vector<Edge>& edges) {
   if (edges.empty()) {
     return;
+  }
+  if (target_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target length count does not match mesh vertices before split");
   }
 
   std::unordered_map<Edge, int, EdgeHash> midpoint_indices;
@@ -68,6 +104,8 @@ void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
     const int m = static_cast<int>(mesh.vertices.size());
     mesh.vertices.push_back(
         0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]));
+    target_lengths.push_back(
+        0.5 * (target_lengths[static_cast<std::size_t>(a)] + target_lengths[static_cast<std::size_t>(b)]));
     midpoint_indices.emplace(edge, m);
   }
 
@@ -112,35 +150,6 @@ Eigen::Vector3i orientTriangle(
   return tri;
 }
 
-std::size_t clampIndex(long long idx, std::size_t n) {
-  if (n == 0) {
-    return 0;
-  }
-  if (idx < 0) {
-    return 0;
-  }
-  const auto max_index = static_cast<long long>(n - 1);
-  if (idx > max_index) {
-    return n - 1;
-  }
-  return static_cast<std::size_t>(idx);
-}
-
-double quantileOfSorted(const std::vector<double>& sorted, double q) {
-  if (sorted.empty()) {
-    return 0.0;
-  }
-  if (sorted.size() == 1) {
-    return sorted.front();
-  }
-  q = std::clamp(q, 0.0, 1.0);
-  const double pos = q * static_cast<double>(sorted.size() - 1);
-  const auto lo = static_cast<std::size_t>(std::floor(pos));
-  const auto hi = static_cast<std::size_t>(std::ceil(pos));
-  const double t = pos - static_cast<double>(lo);
-  return sorted[lo] * (1.0 - t) + sorted[hi] * t;
-}
-
 bool unorderedSetsEqual(const std::unordered_set<int>& a, const std::unordered_set<int>& b) {
   if (a.size() != b.size()) {
     return false;
@@ -157,12 +166,126 @@ bool finiteVector(const Eigen::Vector3d& v) {
   return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
 }
 
+Mesh removeDegenerateFacesWithTargets(
+    const Mesh& mesh,
+    const std::vector<double>& target_lengths,
+    std::vector<double>& remapped_targets) {
+  if (target_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target length count does not match mesh vertices during cleanup");
+  }
+
+  Mesh filtered;
+  filtered.vertices = mesh.vertices;
+  std::unordered_set<FaceKey, FaceKeyHash> seen;
+
+  for (const auto& face : mesh.faces) {
+    if (face[0] == face[1] || face[1] == face[2] || face[2] == face[0]) {
+      continue;
+    }
+    if (face[0] < 0 || face[1] < 0 || face[2] < 0) {
+      continue;
+    }
+    if (static_cast<std::size_t>(face[0]) >= mesh.vertices.size() ||
+        static_cast<std::size_t>(face[1]) >= mesh.vertices.size() ||
+        static_cast<std::size_t>(face[2]) >= mesh.vertices.size()) {
+      continue;
+    }
+    if (triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]) <= kEps) {
+      continue;
+    }
+
+    const FaceKey key = makeFaceKey(face);
+    if (!seen.insert(key).second) {
+      continue;
+    }
+    filtered.faces.push_back(face);
+  }
+
+  if (filtered.faces.empty()) {
+    remapped_targets = target_lengths;
+    return filtered;
+  }
+
+  std::vector<int> remap(filtered.vertices.size(), -1);
+  std::vector<int> used;
+  used.reserve(filtered.vertices.size());
+  for (const auto& face : filtered.faces) {
+    for (int k = 0; k < 3; ++k) {
+      const int idx = face[k];
+      if (remap[static_cast<std::size_t>(idx)] == -1) {
+        remap[static_cast<std::size_t>(idx)] = static_cast<int>(used.size());
+        used.push_back(idx);
+      }
+    }
+  }
+
+  Mesh out;
+  out.vertices.reserve(used.size());
+  remapped_targets.clear();
+  remapped_targets.reserve(used.size());
+  for (int idx : used) {
+    out.vertices.push_back(filtered.vertices[static_cast<std::size_t>(idx)]);
+    remapped_targets.push_back(target_lengths[static_cast<std::size_t>(idx)]);
+  }
+
+  out.faces.reserve(filtered.faces.size());
+  for (const auto& face : filtered.faces) {
+    out.faces.emplace_back(
+        remap[static_cast<std::size_t>(face[0])],
+        remap[static_cast<std::size_t>(face[1])],
+        remap[static_cast<std::size_t>(face[2])]);
+  }
+  return out;
+}
+
 double minQuality(const Mesh& mesh) {
   const auto qualities = triangleQualities(mesh);
   if (qualities.empty()) {
     return 0.0;
   }
   return *std::min_element(qualities.begin(), qualities.end());
+}
+
+double minInnerAngleDegrees(const Mesh& mesh) {
+  if (mesh.faces.empty()) {
+    return 0.0;
+  }
+  double best = std::numeric_limits<double>::infinity();
+  auto angle = [](const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
+    const Eigen::Vector3d u = q - p;
+    const Eigen::Vector3d v = r - p;
+    const double denom = u.norm() * v.norm();
+    if (denom <= kEps) {
+      return 0.0;
+    }
+    return std::acos(std::clamp(u.dot(v) / denom, -1.0, 1.0));
+  };
+  for (const auto& face : mesh.faces) {
+    best = std::min(best, angle(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]));
+    best = std::min(best, angle(mesh.vertices[face[1]], mesh.vertices[face[2]], mesh.vertices[face[0]]));
+    best = std::min(best, angle(mesh.vertices[face[2]], mesh.vertices[face[0]], mesh.vertices[face[1]]));
+  }
+  if (!std::isfinite(best)) {
+    return 0.0;
+  }
+  return best * 180.0 / kPi;
+}
+
+ResolvedSizingParameters resolveSizingParameters(const AdaIsoConfig& config, const Mesh& mesh) {
+  double base = meanEdgeLength(mesh);
+  if (!std::isfinite(base) || base <= kEps) {
+    base = 1.0;
+  }
+  ResolvedSizingParameters params;
+  params.epsilon = config.approximationTolerance > 0.0 ? config.approximationTolerance : 0.05 * base;
+  params.min_length = config.minTargetLength > 0.0 ? config.minTargetLength : 0.5 * base;
+  params.max_length = config.maxTargetLength > 0.0 ? config.maxTargetLength : (4.0 / 3.0) * base;
+  if (!std::isfinite(params.epsilon) || !std::isfinite(params.min_length) || !std::isfinite(params.max_length) ||
+      params.epsilon <= 0.0 || params.min_length <= 0.0 || params.max_length <= 0.0 ||
+      params.min_length > params.max_length) {
+    throw std::runtime_error("invalid resolved sizing parameters");
+  }
+  return params;
 }
 
 }  // namespace
@@ -216,7 +339,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     }
   }
 
-  buildTargetLengths(mesh);
+  buildSizingField(mesh);
 
   for (int it = 0; it < config_.global_iterations; ++it) {
     if (config_.verbose) {
@@ -224,13 +347,25 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     }
     const int split_count = splitLongEdges(mesh);
     const int collapse_count = collapseShortEdges(mesh);
-    mesh = removeDegenerateFaces(mesh);
+    cleanupMesh(mesh);
     const int flip_count = flipEdges(mesh);
     tangentSmoothing(mesh);
-    mesh = removeDegenerateFaces(mesh);
+    cleanupMesh(mesh);
+    stats_.iterations.push_back(collectIterationStats(
+        mesh,
+        original_for_projection,
+        it + 1,
+        split_count,
+        collapse_count,
+        flip_count));
     if (config_.verbose) {
+      const IterationStats& iter_stats = stats_.iterations.back();
       std::cerr << "  split=" << split_count << ", collapse=" << collapse_count << ", flip=" << flip_count
-                << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
+                << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f"
+                << ", target_err_avg=" << iter_stats.target_error_avg
+                << ", qmin=" << iter_stats.qmin
+                << ", min_angle=" << iter_stats.min_angle_degrees
+                << ", geom_err_avg=" << iter_stats.geometry_error_avg << "\n";
     }
   }
 
@@ -281,170 +416,62 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
   return mesh;
 }
 
-void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
+void AdaIsoRemesher::buildSizingField(const Mesh& mesh) {
   if (mesh.vertices.empty()) {
-    target_positions_.clear();
     target_lengths_.clear();
-    target_index_ = NearestNeighborIndex();
-    stats_.csf_solver_success = true;
+    stats_.sizing = {};
     return;
   }
 
-  const double base_len = meanEdgeLength(mesh);
-  const auto curvature = computeCsf(mesh);
-  const auto multipliers = histogramMultipliers(curvature);
-  target_positions_ = mesh.vertices;
-  target_lengths_.resize(target_positions_.size(), 1.0);
-  for (std::size_t i = 0; i < target_lengths_.size(); ++i) {
-    const double multiplier = i < multipliers.size() ? multipliers[i] : 1.0;
-    target_lengths_[i] = std::max(1e-12, base_len * config_.mesh_scale * multiplier);
+  const ResolvedSizingParameters params = resolveSizingParameters(config_, mesh);
+  target_lengths_ = curvatureSizingField(mesh, params.epsilon, params.min_length, params.max_length);
+  if (target_lengths_.size() != mesh.vertices.size()) {
+    throw std::runtime_error("sizing field size mismatch");
   }
-  target_index_.build(target_positions_);
+
+  stats_.sizing.epsilon = params.epsilon;
+  stats_.sizing.min_target_length = params.min_length;
+  stats_.sizing.max_target_length = params.max_length;
+  if (!target_lengths_.empty()) {
+    const auto [min_it, max_it] = std::minmax_element(target_lengths_.begin(), target_lengths_.end());
+    stats_.sizing.min = *min_it;
+    stats_.sizing.max = *max_it;
+    stats_.sizing.avg = std::accumulate(target_lengths_.begin(), target_lengths_.end(), 0.0) /
+                        static_cast<double>(target_lengths_.size());
+  }
 
   if (config_.verbose && !target_lengths_.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(target_lengths_.begin(), target_lengths_.end());
-    std::cerr << "target length: base=" << base_len << ", min=" << *min_it << ", max=" << *max_it << "\n";
+    std::cerr << "sizing field: epsilon=" << params.epsilon
+              << ", bounds=[" << params.min_length << ", " << params.max_length << "]"
+              << ", min=" << stats_.sizing.min
+              << ", max=" << stats_.sizing.max
+              << ", avg=" << stats_.sizing.avg << "\n";
   }
 }
 
-std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
-  const auto normals = vertexNormals(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
-
-  for (std::size_t i = 0; i < neigh.size(); ++i) {
-    if (neigh[i].empty()) {
-      continue;
-    }
-    double accum = 0.0;
-    double max_angle = 0.0;
-    int count = 0;
-    for (int j : neigh[i]) {
-      const double dot = std::clamp(normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
-      const double angle = std::acos(dot);
-      accum += angle;
-      max_angle = std::max(max_angle, angle);
-      ++count;
-    }
-    curvature[i] = config_.variant == Variant::Paper ? max_angle : accum / static_cast<double>(count);
+void AdaIsoRemesher::cleanupMesh(Mesh& mesh) {
+  if (target_lengths_.empty()) {
+    mesh = removeDegenerateFaces(mesh);
+    return;
   }
-
-  if (curvature.empty()) {
-    return curvature;
-  }
-
-  const auto adjacency = detail::buildCsfWeightGraph(mesh, config_.variant == Variant::Code);
-  const auto solved = detail::solveDirichletCsf(adjacency, curvature);
-  stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
-  stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
-  stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
-  stats_.csf_residual_abs = solved.stats.residual_abs;
-  stats_.csf_residual_scaled = solved.stats.residual_scaled;
-  stats_.csf_free_vertices = solved.stats.free_vertices;
-  stats_.csf_fixed_vertices = solved.stats.fixed_vertices;
-  stats_.csf_matrix_nonzeros = solved.stats.matrix_nonzeros;
-  stats_.csf_solver_success = solved.stats.solver_success;
-  return solved.values;
+  std::vector<double> remapped_targets;
+  mesh = removeDegenerateFacesWithTargets(mesh, target_lengths_, remapped_targets);
+  target_lengths_ = std::move(remapped_targets);
 }
 
-std::vector<double> AdaIsoRemesher::histogramMultipliers(const std::vector<double>& curvature) const {
-  std::vector<double> result(curvature.size(), 1.0);
-  if (curvature.empty()) {
-    return result;
+double AdaIsoRemesher::targetAt(int vertex) const {
+  if (vertex < 0 || static_cast<std::size_t>(vertex) >= target_lengths_.size()) {
+    throw std::runtime_error("target length vertex index is out of range");
   }
-
-  const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
-  const double min_value = *min_it;
-  const double max_value = *max_it;
-  if (std::abs(max_value - min_value) <= 1e-14) {
-    return result;
-  }
-
-  const int bins = std::max(1, config_.histogram_bins);
-  const double width = (max_value - min_value) / static_cast<double>(bins);
-  std::vector<int> counts(static_cast<std::size_t>(bins), 0);
-  for (double value : curvature) {
-    int bin = static_cast<int>(std::floor((value - min_value) / width));
-    bin = std::clamp(bin, 0, bins - 1);
-    counts[static_cast<std::size_t>(bin)] += 1;
-  }
-
-  const int max_count = *std::max_element(counts.begin(), counts.end());
-  std::vector<int> max_bins;
-  for (int i = 0; i < bins; ++i) {
-    if (counts[static_cast<std::size_t>(i)] == max_count) {
-      max_bins.push_back(i);
-    }
-  }
-  const int base_bin = max_bins[max_bins.size() / 2];
-  const double base = min_value + (static_cast<double>(base_bin) + 0.5) * width;
-
-  std::vector<double> sorted = curvature;
-  std::sort(sorted.begin(), sorted.end());
-  std::array<double, 4> cuts{};
-
-  if (config_.variant == Variant::Code) {
-    auto lower = std::lower_bound(sorted.begin(), sorted.end(), base);
-    long long idx = static_cast<long long>(std::distance(sorted.begin(), lower));
-    idx = std::max<long long>(1, std::min<long long>(idx, static_cast<long long>(sorted.size() - 1)));
-    const long long unit_right = std::max<long long>(1, (static_cast<long long>(sorted.size()) - idx) / 5);
-    cuts[0] = sorted[clampIndex((idx / 5) * 2, sorted.size())];
-    cuts[1] = sorted[clampIndex((idx / 5) * 4, sorted.size())];
-    cuts[2] = sorted[clampIndex(idx + unit_right, sorted.size())];
-    cuts[3] = sorted[clampIndex(idx + unit_right * 3, sorted.size())];
-  } else {
-    std::vector<double> left;
-    std::vector<double> right;
-    for (double value : curvature) {
-      if (value <= base) {
-        left.push_back(value);
-      } else {
-        right.push_back(value);
-      }
-    }
-    std::sort(left.begin(), left.end());
-    std::sort(right.begin(), right.end());
-    if (left.empty()) {
-      left.assign(sorted.begin(), sorted.begin() + std::max<std::size_t>(1, sorted.size() / 2));
-    }
-    if (right.empty()) {
-      right.assign(sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
-    }
-    cuts[0] = quantileOfSorted(left, 2.0 / 5.0);
-    cuts[1] = quantileOfSorted(left, 4.0 / 5.0);
-    cuts[2] = quantileOfSorted(right, 1.0 / 5.0);
-    cuts[3] = quantileOfSorted(right, 3.0 / 5.0);
-  }
-
-  for (std::size_t i = 0; i < curvature.size(); ++i) {
-    const double c = curvature[i];
-    if (c < cuts[0]) {
-      result[i] = config_.multipliers[0];
-    } else if (c < cuts[1]) {
-      result[i] = config_.multipliers[1];
-    } else if (c < cuts[2]) {
-      result[i] = config_.multipliers[2];
-    } else if (c < cuts[3]) {
-      result[i] = config_.multipliers[3];
-    } else {
-      result[i] = config_.multipliers[4];
-    }
-  }
-  return result;
-}
-
-double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {
-  if (target_index_.empty() || target_lengths_.empty()) {
-    throw std::runtime_error("target lengths have not been initialized");
-  }
-  const std::size_t idx = target_index_.nearest(point);
-  return target_lengths_[idx];
+  return target_lengths_[static_cast<std::size_t>(vertex)];
 }
 
 double AdaIsoRemesher::edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const {
-  const double ta = targetAt(mesh.vertices[static_cast<std::size_t>(a)]);
-  const double tb = targetAt(mesh.vertices[static_cast<std::size_t>(b)]);
-  return use_max ? std::max(ta, tb) : std::min(ta, tb);
+  (void)mesh;
+  (void)use_max;
+  const double ta = targetAt(a);
+  const double tb = targetAt(b);
+  return std::min(ta, tb);
 }
 
 int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
@@ -487,7 +514,7 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     if (selected.empty()) {
       break;
     }
-    splitEdgesBatch(mesh, selected);
+    splitEdgesBatch(mesh, target_lengths_, selected);
     total += static_cast<int>(selected.size());
   }
   return total;
@@ -602,7 +629,8 @@ bool AdaIsoRemesher::collapseValid(
   }
   for (int n : related) {
     const double length = (midpoint - mesh.vertices[static_cast<std::size_t>(n)]).norm();
-    const double target = std::min(targetAt(midpoint), targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
+    const double midpoint_target = 0.5 * (targetAt(a) + targetAt(b));
+    const double target = std::min(midpoint_target, targetAt(n));
     if (length > config_.splitFactor() * target) {
       return false;
     }
@@ -655,11 +683,13 @@ bool AdaIsoRemesher::collapseValid(
   return true;
 }
 
-void AdaIsoRemesher::collapseOneEdge(Mesh& mesh, int a, int b) const {
+void AdaIsoRemesher::collapseOneEdge(Mesh& mesh, int a, int b) {
   const int keep = std::min(a, b);
   const int remove = std::max(a, b);
   mesh.vertices[static_cast<std::size_t>(keep)] =
       0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]);
+  target_lengths_[static_cast<std::size_t>(keep)] =
+      0.5 * (target_lengths_[static_cast<std::size_t>(a)] + target_lengths_[static_cast<std::size_t>(b)]);
   for (auto& face : mesh.faces) {
     for (int k = 0; k < 3; ++k) {
       if (face[k] == remove) {
@@ -667,7 +697,7 @@ void AdaIsoRemesher::collapseOneEdge(Mesh& mesh, int a, int b) const {
       }
     }
   }
-  mesh = removeDegenerateFaces(mesh);
+  cleanupMesh(mesh);
 }
 
 int AdaIsoRemesher::flipEdges(Mesh& mesh) {
@@ -774,6 +804,68 @@ bool AdaIsoRemesher::flipImprovesValence(
   return after < before;
 }
 
+IterationStats AdaIsoRemesher::collectIterationStats(
+    const Mesh& mesh,
+    const Mesh& original,
+    int iteration,
+    int split_count,
+    int collapse_count,
+    int flip_count) const {
+  IterationStats result;
+  result.iteration = iteration;
+  result.split_count = split_count;
+  result.collapse_count = collapse_count;
+  result.flip_count = flip_count;
+  result.vertices = mesh.vertexCount();
+  result.faces = mesh.faceCount();
+
+  const auto edges = uniqueEdges(mesh);
+  double target_error_sum = 0.0;
+  for (const auto& edge : edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    if (static_cast<std::size_t>(a) >= mesh.vertices.size() || static_cast<std::size_t>(b) >= mesh.vertices.size()) {
+      continue;
+    }
+    const double target = edgeTarget(mesh, a, b, false);
+    if (target <= kEps) {
+      continue;
+    }
+    const double length = (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
+    const double error = std::abs(length - target) / target;
+    if (std::isfinite(error)) {
+      target_error_sum += error;
+      result.target_error_max = std::max(result.target_error_max, error);
+    }
+  }
+  if (!edges.empty()) {
+    result.target_error_avg = target_error_sum / static_cast<double>(edges.size());
+  }
+
+  const auto qualities = triangleQualities(mesh);
+  if (!qualities.empty()) {
+    result.qavg = std::accumulate(qualities.begin(), qualities.end(), 0.0) / static_cast<double>(qualities.size());
+    result.qmin = *std::min_element(qualities.begin(), qualities.end());
+  }
+  result.min_angle_degrees = minInnerAngleDegrees(mesh);
+
+  if (!original.vertices.empty() && !mesh.vertices.empty()) {
+    NearestNeighborIndex tree(original.vertices);
+    double error_sum = 0.0;
+    for (const auto& vertex : mesh.vertices) {
+      const std::size_t idx = tree.nearest(vertex);
+      const double error = (vertex - original.vertices[idx]).norm();
+      if (std::isfinite(error)) {
+        error_sum += error;
+        result.geometry_error_max = std::max(result.geometry_error_max, error);
+      }
+    }
+    result.geometry_error_avg = error_sum / static_cast<double>(mesh.vertices.size());
+  }
+
+  return result;
+}
+
 void AdaIsoRemesher::tangentSmoothing(Mesh& mesh) {
   const auto boundary = boundaryVertices(mesh);
   const auto vf = vertexFaces(mesh);
@@ -785,37 +877,33 @@ void AdaIsoRemesher::tangentSmoothing(Mesh& mesh) {
     if (boundary.find(static_cast<int>(i)) != boundary.end() || vf[i].empty()) {
       continue;
     }
-    std::unordered_map<int, double> weights;
-    for (int fi : vf[i]) {
-      const auto& face = mesh.faces[static_cast<std::size_t>(fi)];
-      for (int k = 0; k < 3; ++k) {
-        const int n = face[k];
-        if (n != static_cast<int>(i)) {
-          weights[n] += areas[static_cast<std::size_t>(fi)];
-        }
-      }
-    }
-    if (weights.empty()) {
-      continue;
-    }
 
     double sum_w = 0.0;
     Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
-    for (const auto& item : weights) {
-      const int n = item.first;
-      const double w = item.second * targetAt(mesh.vertices[static_cast<std::size_t>(n)]);
+    for (int fi : vf[i]) {
+      const auto& face = mesh.faces[static_cast<std::size_t>(fi)];
+      const double face_area = areas[static_cast<std::size_t>(fi)];
+      if (face_area <= kEps || !std::isfinite(face_area)) {
+        continue;
+      }
+      const double face_target = (targetAt(face[0]) + targetAt(face[1]) + targetAt(face[2])) / 3.0;
+      const double w = face_area * face_target;
+      const Eigen::Vector3d barycenter =
+          (mesh.vertices[face[0]] + mesh.vertices[face[1]] + mesh.vertices[face[2]]) / 3.0;
       sum_w += w;
-      centroid += w * mesh.vertices[static_cast<std::size_t>(n)];
+      centroid += w * barycenter;
     }
     if (sum_w <= kEps) {
       continue;
     }
     centroid /= sum_w;
 
-    const Eigen::Vector3d disp = centroid - mesh.vertices[i];
     const Eigen::Vector3d normal = normals[i];
-    const Eigen::Vector3d tangent = disp - disp.dot(normal) * normal;
-    const Eigen::Vector3d candidate = mesh.vertices[i] + config_.tangent_lambda * tangent;
+    if (normal.norm() <= kEps) {
+      continue;
+    }
+    const Eigen::Vector3d projected = centroid + normal * normal.dot(mesh.vertices[i] - centroid);
+    const Eigen::Vector3d candidate = mesh.vertices[i] + config_.tangent_lambda * (projected - mesh.vertices[i]);
     if (finiteVector(candidate)) {
       new_vertices[i] = candidate;
     }

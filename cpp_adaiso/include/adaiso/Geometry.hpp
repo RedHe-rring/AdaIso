@@ -21,6 +21,12 @@ using EdgeFaceMap = std::unordered_map<Edge, std::vector<int>, EdgeHash>;
 [[nodiscard]] std::unordered_map<Edge, double, EdgeHash> cotangentEdgeWeights(
     const Mesh& mesh,
     double min_weight);
+[[nodiscard]] std::vector<double> maximumAbsolutePrincipalCurvatures(const Mesh& mesh);
+[[nodiscard]] std::vector<double> curvatureSizingField(
+    const Mesh& mesh,
+    double epsilon,
+    double min_length,
+    double max_length);
 [[nodiscard]] double triangleArea(
     const Eigen::Vector3d& a,
     const Eigen::Vector3d& b,

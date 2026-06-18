@@ -21,6 +21,9 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --mesh-scale <value>       Default: 1.0\n"
       << "  --variant <code|paper>     Default: code\n"
+      << "  --epsilon <value>          Approximation tolerance; 0 selects 0.05 * mean edge length\n"
+      << "  --min-edge-length <value>  Minimum target edge length; 0 selects 0.5 * mean edge length\n"
+      << "  --max-edge-length <value>  Maximum target edge length; 0 selects 4/3 * mean edge length\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -108,10 +111,12 @@ std::string buildSummaryJson(
   out << "  \"parameters\": {\n";
   out << "    \"mesh_scale\": " << config.mesh_scale << ",\n";
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
+  out << "    \"approximation_tolerance\": " << config.approximationTolerance << ",\n";
+  out << "    \"min_target_length\": " << config.minTargetLength << ",\n";
+  out << "    \"max_target_length\": " << config.maxTargetLength << ",\n";
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
-  out << "    \"histogram_bins\": " << config.histogram_bins << ",\n";
   out << "    \"split_factor\": " << config.splitFactor() << ",\n";
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
   out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
@@ -123,15 +128,34 @@ std::string buildSummaryJson(
   out << "  \"stats\": {\n";
   out << "    \"vertices\": " << stats.vertices << ",\n";
   out << "    \"faces\": " << stats.faces << ",\n";
-  out << "    \"csf_assembly_time_ms\": " << stats.csf_assembly_time_ms << ",\n";
-  out << "    \"csf_factorization_time_ms\": " << stats.csf_factorization_time_ms << ",\n";
-  out << "    \"csf_solve_time_ms\": " << stats.csf_solve_time_ms << ",\n";
-  out << "    \"csf_residual_abs\": " << stats.csf_residual_abs << ",\n";
-  out << "    \"csf_residual_scaled\": " << stats.csf_residual_scaled << ",\n";
-  out << "    \"csf_free_vertices\": " << stats.csf_free_vertices << ",\n";
-  out << "    \"csf_fixed_vertices\": " << stats.csf_fixed_vertices << ",\n";
-  out << "    \"csf_matrix_nonzeros\": " << stats.csf_matrix_nonzeros << ",\n";
-  out << "    \"csf_solver_success\": " << (stats.csf_solver_success ? "true" : "false") << "\n";
+  out << "    \"sizing\": {\n";
+  out << "      \"epsilon\": " << stats.sizing.epsilon << ",\n";
+  out << "      \"min_target_length\": " << stats.sizing.min_target_length << ",\n";
+  out << "      \"max_target_length\": " << stats.sizing.max_target_length << ",\n";
+  out << "      \"min\": " << stats.sizing.min << ",\n";
+  out << "      \"max\": " << stats.sizing.max << ",\n";
+  out << "      \"avg\": " << stats.sizing.avg << "\n";
+  out << "    },\n";
+  out << "    \"iteration_stats\": [\n";
+  for (std::size_t i = 0; i < stats.iterations.size(); ++i) {
+    const auto& iter = stats.iterations[i];
+    out << "      {\n";
+    out << "        \"iteration\": " << iter.iteration << ",\n";
+    out << "        \"split\": " << iter.split_count << ",\n";
+    out << "        \"collapse\": " << iter.collapse_count << ",\n";
+    out << "        \"flip\": " << iter.flip_count << ",\n";
+    out << "        \"vertices\": " << iter.vertices << ",\n";
+    out << "        \"faces\": " << iter.faces << ",\n";
+    out << "        \"target_error_avg\": " << iter.target_error_avg << ",\n";
+    out << "        \"target_error_max\": " << iter.target_error_max << ",\n";
+    out << "        \"min_angle_degrees\": " << iter.min_angle_degrees << ",\n";
+    out << "        \"qavg\": " << iter.qavg << ",\n";
+    out << "        \"qmin\": " << iter.qmin << ",\n";
+    out << "        \"geometry_error_avg\": " << iter.geometry_error_avg << ",\n";
+    out << "        \"geometry_error_max\": " << iter.geometry_error_max << "\n";
+    out << "      }" << (i + 1 == stats.iterations.size() ? "\n" : ",\n");
+  }
+  out << "    ]\n";
   out << "  }\n";
   out << "}\n";
   return out.str();
@@ -176,6 +200,12 @@ int main(int argc, char** argv) {
         config.mesh_scale = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--variant") {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
+      } else if (arg == "--epsilon") {
+        config.approximationTolerance = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--min-edge-length") {
+        config.minTargetLength = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--max-edge-length") {
+        config.maxTargetLength = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
@@ -206,6 +236,19 @@ int main(int argc, char** argv) {
     }
     if (config.global_iterations < 0) {
       throw std::runtime_error("--iters must be non-negative");
+    }
+    if (config.approximationTolerance < 0.0) {
+      throw std::runtime_error("--epsilon must be non-negative");
+    }
+    if (config.minTargetLength < 0.0) {
+      throw std::runtime_error("--min-edge-length must be non-negative");
+    }
+    if (config.maxTargetLength < 0.0) {
+      throw std::runtime_error("--max-edge-length must be non-negative");
+    }
+    if (config.minTargetLength > 0.0 && config.maxTargetLength > 0.0 &&
+        config.minTargetLength > config.maxTargetLength) {
+      throw std::runtime_error("--min-edge-length must be less than or equal to --max-edge-length");
     }
 
     const auto started = std::chrono::steady_clock::now();

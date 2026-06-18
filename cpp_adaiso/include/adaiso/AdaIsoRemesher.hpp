@@ -1,12 +1,12 @@
 #pragma once
 
 #include "adaiso/Geometry.hpp"
-#include "adaiso/KDTree.hpp"
 #include "adaiso/Mesh.hpp"
 
 #include <array>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace adaiso {
 
@@ -22,11 +22,14 @@ struct AdaIsoConfig {
   int global_iterations = 5;
   int histogram_bins = 40;
   std::array<double, 5> multipliers = {1.8, 1.4, 1.0, 0.8, 0.6};
+  double approximationTolerance = 0.0;
+  double minTargetLength = 0.0;
+  double maxTargetLength = 0.0;
   double subremesh_multiplier = 1.5;
   int max_subremesh_rounds = 8;
-  int max_split_passes = 10;
-  int max_collapse_passes = 10;
-  int max_flip_passes = 20;
+  int max_split_passes = 100;
+  int max_collapse_passes = 100;
+  int max_flip_passes = 200;
   double tangent_lambda = 0.6;
   bool project_to_surface = true;
   int mls_k = 8;
@@ -41,18 +44,36 @@ struct AdaIsoConfig {
   [[nodiscard]] bool collapseUsesMaxReference() const;
 };
 
+struct SizingStats {
+  double epsilon = 0.0;
+  double min_target_length = 0.0;
+  double max_target_length = 0.0;
+  double min = 0.0;
+  double max = 0.0;
+  double avg = 0.0;
+};
+
+struct IterationStats {
+  int iteration = 0;
+  int split_count = 0;
+  int collapse_count = 0;
+  int flip_count = 0;
+  std::size_t vertices = 0;
+  std::size_t faces = 0;
+  double target_error_avg = 0.0;
+  double target_error_max = 0.0;
+  double min_angle_degrees = 0.0;
+  double qavg = 0.0;
+  double qmin = 0.0;
+  double geometry_error_avg = 0.0;
+  double geometry_error_max = 0.0;
+};
+
 struct AdaIsoStats {
   std::size_t vertices = 0;
   std::size_t faces = 0;
-  double csf_assembly_time_ms = 0.0;
-  double csf_factorization_time_ms = 0.0;
-  double csf_solve_time_ms = 0.0;
-  double csf_residual_abs = 0.0;
-  double csf_residual_scaled = 0.0;
-  std::size_t csf_free_vertices = 0;
-  std::size_t csf_fixed_vertices = 0;
-  std::size_t csf_matrix_nonzeros = 0;
-  bool csf_solver_success = false;
+  SizingStats sizing;
+  std::vector<IterationStats> iterations;
 };
 
 class AdaIsoRemesher {
@@ -64,10 +85,9 @@ class AdaIsoRemesher {
 
  private:
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
-  void buildTargetLengths(const Mesh& mesh);
-  [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
-  [[nodiscard]] std::vector<double> histogramMultipliers(const std::vector<double>& curvature) const;
-  [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
+  void buildSizingField(const Mesh& mesh);
+  void cleanupMesh(Mesh& mesh);
+  [[nodiscard]] double targetAt(int vertex) const;
   [[nodiscard]] double edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const;
   [[nodiscard]] int splitLongEdges(Mesh& mesh);
   void splitOneEdge(Mesh& mesh, int a, int b) const;
@@ -79,7 +99,7 @@ class AdaIsoRemesher {
       const std::vector<std::unordered_set<int>>& neigh,
       const EdgeFaceMap& e2f,
       const std::vector<std::vector<int>>& vf) const;
-  void collapseOneEdge(Mesh& mesh, int a, int b) const;
+  void collapseOneEdge(Mesh& mesh, int a, int b);
   [[nodiscard]] int flipEdges(Mesh& mesh);
   [[nodiscard]] bool flipImprovesValence(
       const std::vector<int>& valence,
@@ -88,6 +108,13 @@ class AdaIsoRemesher {
       int b,
       int c,
       int d) const;
+  [[nodiscard]] IterationStats collectIterationStats(
+      const Mesh& mesh,
+      const Mesh& original,
+      int iteration,
+      int split_count,
+      int collapse_count,
+      int flip_count) const;
   void tangentSmoothing(Mesh& mesh);
   [[nodiscard]] std::vector<Eigen::Vector3d> mlsProject(
       const std::vector<Eigen::Vector3d>& points,
@@ -95,9 +122,7 @@ class AdaIsoRemesher {
 
   AdaIsoConfig config_;
   AdaIsoStats stats_;
-  std::vector<Eigen::Vector3d> target_positions_;
   std::vector<double> target_lengths_;
-  NearestNeighborIndex target_index_;
 };
 
 [[nodiscard]] Variant parseVariant(const std::string& value);

@@ -4,9 +4,9 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.0.0. The CSF stage is computed exclusively with a Dirichlet
-Laplace sparse solve. The old explicit CSF iteration parameters and iteration
-statistics were removed as a breaking interface change.
+This is version 2.1.0. The remeshing size field now uses maximum absolute
+principal curvature and an approximation-error tolerance directly. The old
+remesher-level CSF histogram/multiplier size control is no longer used.
 
 ## Scope
 
@@ -18,9 +18,9 @@ Implemented:
 - OBJ output.
 - Degenerate and duplicate unoriented triangle cleanup.
 - Area-weighted vertex normals.
-- Curvature-smoothed field from vertex normal variation and a Dirichlet Laplace sparse solve.
-- Histogram-based local target edge length assignment.
-- KD-tree nearest target length lookup via nanoflann.
+- Maximum absolute principal curvature estimation from cotangent Laplacian and angle defect.
+- Error-driven local target edge length assignment from curvature.
+- Per-vertex target length maintenance through split and collapse operations.
 - Global remeshing loop: split, collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
 - CLI executable: `adaiso_cli`.
@@ -66,7 +66,9 @@ available, CMake falls back to `FetchContent`.
 ```powershell
 cpp_adaiso/build/Release/adaiso_cli.exe cpp_adaiso/examples/pyramid.obj `
   -o cpp_adaiso/out.obj `
-  --mesh-scale 0.8 `
+  --epsilon 0 `
+  --min-edge-length 0 `
+  --max-edge-length 0 `
   --variant code `
   --preprocess 1 `
   --iters 2 `
@@ -87,7 +89,9 @@ OFF input is supported:
 cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
   -o cpp_adaiso/results/T0_T10/T0_iter1_project1.obj `
   --variant code `
-  --mesh-scale 1.0 `
+  --epsilon 0 `
+  --min-edge-length 0 `
+  --max-edge-length 0 `
   --iters 1 `
   --preprocess 0 `
   --project 1 `
@@ -96,15 +100,19 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 
 ## Parameters
 
-- `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
-- `--variant code|paper`: `code` uses source-like split/collapse thresholds and length-scaled CSF weights; `paper` uses the paper split/collapse convention and cotangent CSF weights.
+- `--epsilon`: approximation-error tolerance. `0` selects `0.05 * meanEdgeLength`.
+- `--min-edge-length`: minimum target edge length. `0` selects `0.5 * meanEdgeLength`.
+- `--max-edge-length`: maximum target edge length. `0` selects `4/3 * meanEdgeLength`.
+- `--mesh-scale`: retained for CLI compatibility; v2.1.0 does not use it for target edge length.
+- `--variant code|paper`: controls split/collapse threshold conventions only.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.
 - `--summary-json`: writes a JSON run summary.
 
 The summary contains input/output vertex counts, face counts, `qavg`, `qmin`,
-runtime, core parameters, and CSF sparse-solve timing/residual statistics.
+runtime, core parameters, sizing-field statistics, and per-iteration remeshing
+statistics.
 
 ## Smoke Test
 
@@ -114,7 +122,9 @@ After building:
 cpp_adaiso/build/Release/adaiso_cli.exe cpp_adaiso/examples/pyramid.obj `
   -o cpp_adaiso/out.obj `
   --variant code `
-  --mesh-scale 0.8 `
+  --epsilon 0 `
+  --min-edge-length 0 `
+  --max-edge-length 0 `
   --iters 2 `
   --preprocess 1 `
   --summary-json cpp_adaiso/summary.json
@@ -124,7 +134,7 @@ Expected acceptance:
 
 - `cpp_adaiso/out.obj` exists.
 - All face indices are valid.
-- `summary.json` reports positive `qavg` and `qmin`, successful CSF solve status, and CSF residual statistics.
+- `summary.json` reports positive `qavg` and `qmin`, sizing statistics, and per-iteration statistics.
 - The basic `adaiso_tests` target passes.
 
 ## Notes On Reproduction
@@ -143,5 +153,5 @@ rejected.
 
 The result should be close in behavior to the Python reproduction under the same
 parameters, but individual vertex positions are not expected to match exactly.
-Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
-intermediates; it solves the corresponding Dirichlet Laplace steady-state system.
+Version 2.1.0 intentionally diverges from CSF histogram sizing by using an
+error-driven curvature size field.

@@ -6,8 +6,62 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 
 namespace adaiso {
+namespace {
+
+constexpr double kGeomEps = 1e-14;
+constexpr double kTwoPi = 6.283185307179586476925286766559005768;
+
+bool finiteDouble(double value) {
+  return std::isfinite(value);
+}
+
+double angleAt(
+    const Eigen::Vector3d& center,
+    const Eigen::Vector3d& a,
+    const Eigen::Vector3d& b) {
+  const Eigen::Vector3d u = a - center;
+  const Eigen::Vector3d v = b - center;
+  const double denom = u.norm() * v.norm();
+  if (denom <= kGeomEps) {
+    return 0.0;
+  }
+  return std::acos(std::clamp(u.dot(v) / denom, -1.0, 1.0));
+}
+
+double rawCotAt(
+    const Eigen::Vector3d& center,
+    const Eigen::Vector3d& a,
+    const Eigen::Vector3d& b) {
+  const Eigen::Vector3d u = a - center;
+  const Eigen::Vector3d v = b - center;
+  const double denom = u.cross(v).norm();
+  if (denom <= kGeomEps) {
+    return 0.0;
+  }
+  const double value = u.dot(v) / denom;
+  return finiteDouble(value) ? value : 0.0;
+}
+
+std::unordered_map<Edge, double, EdgeHash> rawCotangentEdgeWeights(const Mesh& mesh) {
+  std::unordered_map<Edge, double, EdgeHash> weights;
+  for (const auto& f : mesh.faces) {
+    weights[makeEdge(f[1], f[2])] += rawCotAt(mesh.vertices[f[0]], mesh.vertices[f[1]], mesh.vertices[f[2]]);
+    weights[makeEdge(f[2], f[0])] += rawCotAt(mesh.vertices[f[1]], mesh.vertices[f[2]], mesh.vertices[f[0]]);
+    weights[makeEdge(f[0], f[1])] += rawCotAt(mesh.vertices[f[2]], mesh.vertices[f[0]], mesh.vertices[f[1]]);
+  }
+  for (auto& item : weights) {
+    item.second *= 0.5;
+    if (!finiteDouble(item.second)) {
+      item.second = 0.0;
+    }
+  }
+  return weights;
+}
+
+}  // namespace
 
 Eigen::Vector3d safeNormalize(const Eigen::Vector3d& v, double eps) {
   const double n = v.norm();
@@ -138,6 +192,102 @@ std::unordered_map<Edge, double, EdgeHash> cotangentEdgeWeights(const Mesh& mesh
     }
   }
   return weights;
+}
+
+std::vector<double> maximumAbsolutePrincipalCurvatures(const Mesh& mesh) {
+  std::vector<double> curvature(mesh.vertexCount(), 0.0);
+  if (mesh.vertices.empty() || mesh.faces.empty()) {
+    return curvature;
+  }
+
+  const auto boundary = boundaryVertices(mesh);
+  const auto weights = rawCotangentEdgeWeights(mesh);
+  std::vector<double> area(mesh.vertexCount(), 0.0);
+  std::vector<double> angle_sum(mesh.vertexCount(), 0.0);
+  std::vector<Eigen::Vector3d> laplace_sum(mesh.vertexCount(), Eigen::Vector3d::Zero());
+
+  for (const auto& face : mesh.faces) {
+    const int a = face[0];
+    const int b = face[1];
+    const int c = face[2];
+    const double tri_area = triangleArea(mesh.vertices[a], mesh.vertices[b], mesh.vertices[c]);
+    if (tri_area <= kGeomEps || !finiteDouble(tri_area)) {
+      continue;
+    }
+
+    area[static_cast<std::size_t>(a)] += tri_area / 3.0;
+    area[static_cast<std::size_t>(b)] += tri_area / 3.0;
+    area[static_cast<std::size_t>(c)] += tri_area / 3.0;
+
+    angle_sum[static_cast<std::size_t>(a)] += angleAt(mesh.vertices[a], mesh.vertices[b], mesh.vertices[c]);
+    angle_sum[static_cast<std::size_t>(b)] += angleAt(mesh.vertices[b], mesh.vertices[c], mesh.vertices[a]);
+    angle_sum[static_cast<std::size_t>(c)] += angleAt(mesh.vertices[c], mesh.vertices[a], mesh.vertices[b]);
+  }
+
+  for (const auto& item : weights) {
+    const int a = item.first.first;
+    const int b = item.first.second;
+    const double w = item.second;
+    if (!finiteDouble(w) || static_cast<std::size_t>(a) >= mesh.vertices.size() ||
+        static_cast<std::size_t>(b) >= mesh.vertices.size()) {
+      continue;
+    }
+    const Eigen::Vector3d delta = mesh.vertices[static_cast<std::size_t>(b)] - mesh.vertices[static_cast<std::size_t>(a)];
+    laplace_sum[static_cast<std::size_t>(a)] += w * delta;
+    laplace_sum[static_cast<std::size_t>(b)] -= w * delta;
+  }
+
+  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+    if (boundary.find(static_cast<int>(i)) != boundary.end() || area[i] <= kGeomEps || !finiteDouble(area[i])) {
+      continue;
+    }
+
+    const Eigen::Vector3d delta_x = laplace_sum[i] / area[i];
+    const double mean_curvature = 0.5 * delta_x.norm();
+    const double gaussian_curvature = (kTwoPi - angle_sum[i]) / area[i];
+    if (!finiteDouble(mean_curvature) || !finiteDouble(gaussian_curvature)) {
+      continue;
+    }
+
+    const double discriminant = std::max(mean_curvature * mean_curvature - gaussian_curvature, 0.0);
+    const double value = mean_curvature + std::sqrt(discriminant);
+    curvature[i] = finiteDouble(value) && value > 0.0 ? value : 0.0;
+  }
+  return curvature;
+}
+
+std::vector<double> curvatureSizingField(
+    const Mesh& mesh,
+    double epsilon,
+    double min_length,
+    double max_length) {
+  if (!finiteDouble(epsilon) || !finiteDouble(min_length) || !finiteDouble(max_length) || epsilon <= 0.0 ||
+      min_length <= 0.0 || max_length <= 0.0 || min_length > max_length) {
+    throw std::runtime_error("invalid curvature sizing parameters");
+  }
+
+  const auto curvature = maximumAbsolutePrincipalCurvatures(mesh);
+  std::vector<double> sizing(curvature.size(), max_length);
+  constexpr double kCurvatureEps = 1e-14;
+
+  for (std::size_t i = 0; i < curvature.size(); ++i) {
+    const double kappa = curvature[i];
+    if (!finiteDouble(kappa) || kappa <= kCurvatureEps) {
+      sizing[i] = max_length;
+      continue;
+    }
+
+    const double radicand = (6.0 * epsilon / kappa) - (3.0 * epsilon * epsilon);
+    double length = min_length;
+    if (finiteDouble(radicand) && radicand > 0.0) {
+      length = std::sqrt(radicand);
+    }
+    if (!finiteDouble(length)) {
+      length = min_length;
+    }
+    sizing[i] = std::clamp(length, min_length, max_length);
+  }
+  return sizing;
 }
 
 double triangleArea(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c) {
