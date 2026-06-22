@@ -4,9 +4,13 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.0.0. The CSF stage is computed exclusively with a Dirichlet
+This is version 2.0.1. The CSF stage is computed exclusively with a Dirichlet
 Laplace sparse solve. The old explicit CSF iteration parameters and iteration
 statistics were removed as a breaking interface change.
+
+Version 2.0.1 is a documentation and version-metadata hotfix only. Algorithm
+behavior and the recorded v2.0.0 implementation plan and experiment results are
+unchanged.
 
 ## Scope
 
@@ -145,3 +149,5 @@ The result should be close in behavior to the Python reproduction under the same
 parameters, but individual vertex positions are not expected to match exactly.
 Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
 intermediates; it solves the corresponding Dirichlet Laplace steady-state system.
+Version 2.0.1 keeps that behavior unchanged and only clarifies release
+documentation.
