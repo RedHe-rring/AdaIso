@@ -6,11 +6,13 @@
 #include "adaiso/detail/CsfSolver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
+#include <set>
 
 namespace {
 
@@ -145,6 +147,19 @@ adaiso::Mesh makeCylinder(double radius, double height, int rows, int segments) 
   return mesh;
 }
 
+adaiso::Mesh makeTwoSpheres() {
+  adaiso::Mesh mesh = makeUvSphere(1.0, 6, 12);
+  const adaiso::Mesh second = makeUvSphere(1.0, 6, 12);
+  const int vertex_offset = static_cast<int>(mesh.vertices.size());
+  for (const auto& vertex : second.vertices) {
+    mesh.vertices.push_back(vertex + Eigen::Vector3d(4.0, 0.0, 0.0));
+  }
+  for (const auto& face : second.faces) {
+    mesh.faces.emplace_back(face[0] + vertex_offset, face[1] + vertex_offset, face[2] + vertex_offset);
+  }
+  return mesh;
+}
+
 adaiso::Mesh reverseFaces(adaiso::Mesh mesh) {
   for (auto& face : mesh.faces) {
     std::swap(face[1], face[2]);
@@ -168,6 +183,22 @@ void assertNear(double actual, double expected, double eps = 1e-10) {
 void assertFiniteValues(const std::vector<double>& values) {
   for (double value : values) {
     assert(std::isfinite(value));
+  }
+}
+
+void assertValidCleanFaces(const adaiso::Mesh& mesh) {
+  mesh.validate();
+  std::set<std::array<int, 3>> seen;
+  for (const auto& face : mesh.faces) {
+    assert(face[0] >= 0 && face[1] >= 0 && face[2] >= 0);
+    assert(static_cast<std::size_t>(face[0]) < mesh.vertices.size());
+    assert(static_cast<std::size_t>(face[1]) < mesh.vertices.size());
+    assert(static_cast<std::size_t>(face[2]) < mesh.vertices.size());
+    assert(face[0] != face[1] && face[1] != face[2] && face[2] != face[0]);
+    std::array<int, 3> key = {face[0], face[1], face[2]};
+    std::sort(key.begin(), key.end());
+    assert(seen.insert(key).second);
+    assert(adaiso::triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]) > 0.0);
   }
 }
 
@@ -472,6 +503,33 @@ void testRemeshEdgeCases() {
 
 }
 
+void testBatchCollapseStatsAndCleanup() {
+  const adaiso::Mesh input = makeTwoSpheres();
+  adaiso::AdaIsoConfig config;
+  config.variant = adaiso::Variant::Code;
+  config.global_iterations = 1;
+  config.preprocess = false;
+  config.project_to_surface = false;
+  config.max_split_passes = 0;
+  config.max_collapse_passes = 1;
+  config.max_flip_passes = 0;
+  config.approximationTolerance = 1.0;
+  config.minTargetLength = 10.0;
+  config.maxTargetLength = 10.0;
+  config.min_quality_after_collapse = 0.0;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(input);
+  assertValidCleanFaces(output);
+
+  const auto& stats = remesher.stats();
+  assert(stats.sizing.min > 0.0);
+  assert(stats.sizing.max >= stats.sizing.min);
+  assert(stats.iterations.size() == 1);
+  assert(stats.iterations[0].collapse_count > config.max_collapse_passes);
+}
+
 }  // namespace
 
 int main() {
@@ -485,5 +543,6 @@ int main() {
   testCsfVariantWeightGraphs();
   testRemeshSmoke();
   testRemeshEdgeCases();
+  testBatchCollapseStatsAndCleanup();
   return 0;
 }

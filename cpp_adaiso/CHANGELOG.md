@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.1.0
+
+Performance change:
+Short-edge collapse now runs in batch passes instead of collapsing only one edge
+per pass.
+
+- Added batch collapse selection for one-ring-disjoint legal short edges.
+- Reuses existing collapse validity checks for link condition, post-collapse edge length, and local quality.
+- Rewrites affected faces once per batch and performs a single cleanup/remap of `target_lengths_`.
+- `max_collapse_passes` now limits batch passes; `iteration_stats.collapse` still reports actual collapsed edge count.
+
 ## 3.0.0
 
 Breaking change:

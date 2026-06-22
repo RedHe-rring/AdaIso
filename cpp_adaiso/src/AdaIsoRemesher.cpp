@@ -278,7 +278,7 @@ ResolvedSizingParameters resolveSizingParameters(const AdaIsoConfig& config, con
   }
   ResolvedSizingParameters params;
   params.epsilon = config.approximationTolerance > 0.0 ? config.approximationTolerance : 0.05 * base;
-  params.min_length = config.minTargetLength > 0.0 ? config.minTargetLength : 0.5 * base;
+  params.min_length = config.minTargetLength > 0.0 ? config.minTargetLength : 0.8 * base;
   params.max_length = config.maxTargetLength > 0.0 ? config.maxTargetLength : (4.0 / 3.0) * base;
   if (!std::isfinite(params.epsilon) || !std::isfinite(params.min_length) || !std::isfinite(params.max_length) ||
       params.epsilon <= 0.0 || params.min_length <= 0.0 || params.max_length <= 0.0 ||
@@ -544,7 +544,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     const auto e2f = edgeFaces(mesh);
     const auto neigh = vertexNeighbors(mesh);
     const auto vf = vertexFaces(mesh);
-    std::vector<std::tuple<double, int, int>> candidates;
+    std::vector<std::tuple<double, double, int, int>> candidates;
     for (const auto& item : e2f) {
       const int a = item.first.first;
       const int b = item.first.second;
@@ -554,7 +554,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
       const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
       const double target = edgeTarget(mesh, a, b, config_.collapseUsesMaxReference());
       if (length < config_.collapseFactor() * target) {
-        candidates.emplace_back(length, a, b);
+        candidates.emplace_back(length / target, length, a, b);
       }
     }
     if (candidates.empty()) {
@@ -564,24 +564,41 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
       return std::get<0>(lhs) < std::get<0>(rhs);
     });
 
-    bool collapsed = false;
-    for (const auto& [old_length, a, b] : candidates) {
+    std::vector<Edge> selected;
+    selected.reserve(candidates.size());
+    std::unordered_set<int> blocked_vertices;
+    for (const auto& [ratio, old_length, a, b] : candidates) {
+      (void)ratio;
       (void)old_length;
       auto it = e2f.find(makeEdge(a, b));
       if (it != e2f.end() && it->second.size() > 2) {
         continue;
       }
+      std::unordered_set<int> footprint;
+      footprint.insert(a);
+      footprint.insert(b);
+      footprint.insert(neigh[static_cast<std::size_t>(a)].begin(), neigh[static_cast<std::size_t>(a)].end());
+      footprint.insert(neigh[static_cast<std::size_t>(b)].begin(), neigh[static_cast<std::size_t>(b)].end());
+      bool conflicts = false;
+      for (int v : footprint) {
+        if (blocked_vertices.find(v) != blocked_vertices.end()) {
+          conflicts = true;
+          break;
+        }
+      }
+      if (conflicts) {
+        continue;
+      }
       if (!collapseValid(mesh, a, b, neigh, e2f, vf)) {
         continue;
       }
-      collapseOneEdge(mesh, a, b);
-      ++total;
-      collapsed = true;
+      selected.push_back(makeEdge(a, b));
+      blocked_vertices.insert(footprint.begin(), footprint.end());
+    }
+    if (selected.empty()) {
       break;
     }
-    if (!collapsed) {
-      break;
-    }
+    total += collapseEdgesBatch(mesh, selected);
   }
   return total;
 }
@@ -698,6 +715,53 @@ void AdaIsoRemesher::collapseOneEdge(Mesh& mesh, int a, int b) {
     }
   }
   cleanupMesh(mesh);
+}
+
+int AdaIsoRemesher::collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
+  if (edges.empty()) {
+    return 0;
+  }
+  if (target_lengths_.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target length count does not match mesh vertices before collapse");
+  }
+
+  std::vector<int> redirect(mesh.vertices.size(), -1);
+  int applied = 0;
+  for (const auto& edge : edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    if (a < 0 || b < 0 || static_cast<std::size_t>(a) >= mesh.vertices.size() ||
+        static_cast<std::size_t>(b) >= mesh.vertices.size()) {
+      continue;
+    }
+    const int keep = std::min(a, b);
+    const int remove = std::max(a, b);
+    if (redirect[static_cast<std::size_t>(keep)] != -1 ||
+        redirect[static_cast<std::size_t>(remove)] != -1) {
+      continue;
+    }
+    mesh.vertices[static_cast<std::size_t>(keep)] =
+        0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]);
+    target_lengths_[static_cast<std::size_t>(keep)] =
+        0.5 * (target_lengths_[static_cast<std::size_t>(a)] + target_lengths_[static_cast<std::size_t>(b)]);
+    redirect[static_cast<std::size_t>(remove)] = keep;
+    ++applied;
+  }
+
+  if (applied == 0) {
+    return 0;
+  }
+
+  for (auto& face : mesh.faces) {
+    for (int k = 0; k < 3; ++k) {
+      const int v = face[k];
+      if (v >= 0 && static_cast<std::size_t>(v) < redirect.size() && redirect[static_cast<std::size_t>(v)] != -1) {
+        face[k] = redirect[static_cast<std::size_t>(v)];
+      }
+    }
+  }
+  cleanupMesh(mesh);
+  return applied;
 }
 
 int AdaIsoRemesher::flipEdges(Mesh& mesh) {

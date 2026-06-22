@@ -4,9 +4,11 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 3.0.0. The remeshing size field now uses maximum absolute
+This is version 3.1.0. The remeshing size field now uses maximum absolute
 principal curvature and an approximation-error tolerance directly. The old
 remesher-level CSF histogram/multiplier size control is no longer used.
+Short-edge collapse is performed in batch passes that choose one-ring-disjoint
+legal edges and cleanup/remap sizing once per batch.
 
 ## Scope
 
@@ -21,7 +23,7 @@ Implemented:
 - Maximum absolute principal curvature estimation from cotangent Laplacian and angle defect.
 - Error-driven local target edge length assignment from curvature.
 - Per-vertex target length maintenance through split and collapse operations.
-- Global remeshing loop: split, collapse, cleanup, flip, tangent smoothing.
+- Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
 - CLI executable: `adaiso_cli`.
 
@@ -103,7 +105,7 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 - `--epsilon`: approximation-error tolerance. `0` selects `0.05 * meanEdgeLength`.
 - `--min-edge-length`: minimum target edge length. `0` selects `0.5 * meanEdgeLength`.
 - `--max-edge-length`: maximum target edge length. `0` selects `4/3 * meanEdgeLength`.
-- `--mesh-scale`: retained for CLI compatibility; v3.0.0 does not use it for target edge length.
+- `--mesh-scale`: retained for CLI compatibility; v3.1.0 does not use it for target edge length.
 - `--variant code|paper`: controls split/collapse threshold conventions only.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
@@ -155,3 +157,6 @@ The result should be close in behavior to the Python reproduction under the same
 parameters, but individual vertex positions are not expected to match exactly.
 Version 3.0.0 intentionally diverges from CSF histogram sizing by using an
 error-driven curvature size field.
+Version 3.1.0 changes collapse scheduling only: collapse budgets are batch-pass
+limits, while summary statistics continue to report the actual number of
+collapsed edges.
