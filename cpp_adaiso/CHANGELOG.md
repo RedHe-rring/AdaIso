@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.0
+## 3.0.0
 
 Breaking change:
 Remesher-level CSF histogram/multiplier target edge length control has been
