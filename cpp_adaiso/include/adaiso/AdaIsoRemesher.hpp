@@ -92,6 +92,7 @@ class AdaIsoRemesher {
   [[nodiscard]] int splitLongEdges(Mesh& mesh);
   void splitOneEdge(Mesh& mesh, int a, int b) const;
   [[nodiscard]] int collapseShortEdges(Mesh& mesh);
+  [[nodiscard]] int collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges);
   [[nodiscard]] bool collapseValid(
       const Mesh& mesh,
       int a,
