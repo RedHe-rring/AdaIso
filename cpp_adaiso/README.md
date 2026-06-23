@@ -4,13 +4,12 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.1.0. The CSF stage is computed exclusively with a Dirichlet
+This is version 2.1.1. The CSF stage is computed exclusively with a Dirichlet
 Laplace sparse solve. The old explicit CSF iteration parameters and iteration
 statistics were removed as a breaking interface change.
 
-Version 2.1.0 updates collapse from a conservative single-edge action per pass
-to batch collapse of locally non-conflicting short edges while preserving the
-existing validity checks.
+Version 2.1.1 adds ASCII PLY output, per-iteration JSON summary records, and
+optional area-sampled Chamfer Distance evaluation against a ground-truth mesh.
 
 ## Scope
 
@@ -19,7 +18,7 @@ Implemented:
 - OBJ input with polygon fan triangulation.
 - ASCII PLY input with polygon fan triangulation.
 - ASCII OFF input with polygon fan triangulation.
-- OBJ output.
+- OBJ and ASCII PLY output.
 - Degenerate and duplicate unoriented triangle cleanup.
 - Area-weighted vertex normals.
 - Curvature-smoothed field from vertex normal variation and a Dirichlet Laplace sparse solve.
@@ -27,6 +26,7 @@ Implemented:
 - KD-tree nearest target length lookup via nanoflann.
 - Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
+- Optional area-sampled Chamfer Distance against a GT mesh.
 - CLI executable: `adaiso_cli`.
 
 Not implemented:
@@ -105,10 +105,14 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.
+- `--gt`: optional ground-truth mesh for area-sampled Chamfer Distance evaluation.
+- `--cd-samples`: samples per Chamfer Distance direction. Default: `100000`.
 - `--summary-json`: writes a JSON run summary.
 
 The summary contains input/output vertex counts, face counts, `qavg`, `qmin`,
-runtime, core parameters, and CSF sparse-solve timing/residual statistics.
+runtime, core parameters, per-iteration remesh statistics, and CSF sparse-solve
+timing/residual statistics. When `--gt` is provided it also contains GT summary
+and area-sampled Chamfer Distance metrics.
 
 ## Smoke Test
 
@@ -128,7 +132,7 @@ Expected acceptance:
 
 - `cpp_adaiso/out.obj` exists.
 - All face indices are valid.
-- `summary.json` reports positive `qavg` and `qmin`, successful CSF solve status, and CSF residual statistics.
+- `summary.json` reports positive `qavg` and `qmin`, per-iteration stats, successful CSF solve status, and CSF residual statistics.
 - The basic `adaiso_tests` target passes.
 
 ## Notes On Reproduction
@@ -150,4 +154,5 @@ parameters, but individual vertex positions are not expected to match exactly.
 Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
 intermediates; it solves the corresponding Dirichlet Laplace steady-state system.
 Version 2.1.0 keeps that CSF behavior unchanged and improves collapse throughput
-with batch passes.
+with batch passes. Version 2.1.1 keeps the algorithm behavior unchanged and adds
+PLY output, iteration logging, and optional GT Chamfer Distance evaluation.

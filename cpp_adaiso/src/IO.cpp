@@ -309,4 +309,43 @@ void writeObj(const std::filesystem::path& path, const Mesh& mesh) {
   }
 }
 
+void writeAsciiPly(const std::filesystem::path& path, const Mesh& mesh) {
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path());
+  }
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write PLY file: " + path.string());
+  }
+  out << std::setprecision(17);
+  out << "ply\n";
+  out << "format ascii 1.0\n";
+  out << "element vertex " << mesh.vertices.size() << '\n';
+  out << "property float x\n";
+  out << "property float y\n";
+  out << "property float z\n";
+  out << "element face " << mesh.faces.size() << '\n';
+  out << "property list uchar int vertex_indices\n";
+  out << "end_header\n";
+  for (const auto& v : mesh.vertices) {
+    out << v[0] << ' ' << v[1] << ' ' << v[2] << '\n';
+  }
+  for (const auto& f : mesh.faces) {
+    out << "3 " << f[0] << ' ' << f[1] << ' ' << f[2] << '\n';
+  }
+}
+
+void writeMesh(const std::filesystem::path& path, const Mesh& mesh) {
+  const std::string ext = lowerString(path.extension().string());
+  if (ext == ".obj") {
+    writeObj(path, mesh);
+    return;
+  }
+  if (ext == ".ply") {
+    writeAsciiPly(path, mesh);
+    return;
+  }
+  throw std::runtime_error("unsupported output mesh format: " + path.string());
+}
+
 }  // namespace adaiso

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.1
+
+Feature update:
+Adds engineering output and evaluation support without changing the AdaIso
+remeshing algorithm.
+
+- Added ASCII PLY output and extension-based mesh writer dispatch.
+- Added per-global-iteration statistics to the JSON summary.
+- Added optional area-sampled Chamfer Distance evaluation against a GT mesh.
+
 ## 2.1.0
 
 Release update:

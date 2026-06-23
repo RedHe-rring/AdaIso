@@ -10,6 +10,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 
 namespace {
 
@@ -55,6 +56,13 @@ adaiso::Mesh makeDisconnectedTriangles() {
       {3.0, 1.0, 0.2},
   };
   mesh.faces = {{0, 1, 2}, {3, 4, 5}};
+  return mesh;
+}
+
+adaiso::Mesh translatedMesh(adaiso::Mesh mesh, const Eigen::Vector3d& offset) {
+  for (auto& vertex : mesh.vertices) {
+    vertex += offset;
+  }
   return mesh;
 }
 
@@ -178,6 +186,25 @@ void testObjRoundtrip() {
   loaded.validate();
 }
 
+void testPlyRoundtripAndWriteMeshDispatch() {
+  const adaiso::Mesh mesh = makePyramid();
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cpp_adaiso_tests";
+
+  const std::filesystem::path ply_path = dir / "pyramid.ply";
+  adaiso::writeAsciiPly(ply_path, mesh);
+  const adaiso::Mesh loaded_ply = adaiso::loadAsciiPly(ply_path);
+  loaded_ply.validate();
+  assert(loaded_ply.vertexCount() == mesh.vertexCount());
+  assert(loaded_ply.faceCount() == mesh.faceCount());
+
+  const std::filesystem::path dispatch_path = dir / "pyramid_dispatch.ply";
+  adaiso::writeMesh(dispatch_path, mesh);
+  const adaiso::Mesh loaded_dispatch = adaiso::loadMesh(dispatch_path);
+  loaded_dispatch.validate();
+  assert(loaded_dispatch.vertexCount() == mesh.vertexCount());
+  assert(loaded_dispatch.faceCount() == mesh.faceCount());
+}
+
 void testOffLoad() {
   const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cpp_adaiso_tests";
   std::filesystem::create_directories(dir);
@@ -295,6 +322,18 @@ void testRemeshSmoke() {
   assert(output_summary.qmin + 1e-12 >= std::min(0.01, input_summary.qmin));
   assert(remesher.stats().csf_solver_success);
   assert(remesher.stats().csf_residual_scaled < adaiso::detail::kResidualThreshold);
+  const auto& iterations = remesher.stats().iterations;
+  assert(iterations.size() == 2);
+  for (std::size_t i = 0; i < iterations.size(); ++i) {
+    assert(iterations[i].iteration == static_cast<int>(i + 1));
+    assert(iterations[i].split_count >= 0);
+    assert(iterations[i].collapse_count >= 0);
+    assert(iterations[i].flip_count >= 0);
+    assert(iterations[i].vertices > 0);
+    assert(iterations[i].faces > 0);
+    assert(std::isfinite(iterations[i].qavg));
+    assert(std::isfinite(iterations[i].qmin));
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -333,6 +372,7 @@ void testRemeshEdgeCases() {
     assert(remesher.stats().csf_solver_success);
     assert(std::isfinite(remesher.stats().csf_residual_abs));
     assert(std::isfinite(remesher.stats().csf_residual_scaled));
+    assert(remesher.stats().iterations.empty());
   };
 
   run(makeSingleTriangle());
@@ -353,12 +393,56 @@ void testRemeshEdgeCases() {
 
 }
 
+void testAreaSampledChamferDistance() {
+  const adaiso::Mesh mesh = makePyramid();
+  const auto same = adaiso::areaSampledChamferDistance(mesh, mesh, 128);
+  assert(same.samples_per_direction == 128);
+  assert(same.output_to_gt_msd <= 1e-20);
+  assert(same.gt_to_output_msd <= 1e-20);
+  assert(same.chamfer_distance <= 1e-20);
+  assert(same.symmetric_rmse <= 1e-10);
+
+  const adaiso::Mesh shifted = translatedMesh(mesh, Eigen::Vector3d(4.0, 0.0, 0.0));
+  const auto shifted_cd = adaiso::areaSampledChamferDistance(mesh, shifted, 128);
+  assert(shifted_cd.chamfer_distance > 1.0);
+  assert(std::isfinite(shifted_cd.symmetric_rmse));
+
+  bool threw = false;
+  try {
+    (void)adaiso::areaSampledChamferDistance(mesh, mesh, 0);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    adaiso::Mesh empty;
+    (void)adaiso::areaSampledChamferDistance(empty, mesh, 16);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    adaiso::Mesh degenerate;
+    degenerate.vertices = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {2.0, 0.0, 0.0}};
+    degenerate.faces = {{0, 1, 2}};
+    (void)adaiso::areaSampledChamferDistance(mesh, degenerate, 16);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+}
+
 }  // namespace
 
 int main() {
   testGeometryAndMetrics();
   testCleanupAndAdjacency();
   testObjRoundtrip();
+  testPlyRoundtripAndWriteMeshDispatch();
   testOffLoad();
   testCsfKnownChainSolution();
   testCsfDisconnectedAndConstantComponents();
@@ -366,5 +450,6 @@ int main() {
   testRemeshSmoke();
   testBatchCollapsePassCollapsesMultipleComponents();
   testRemeshEdgeCases();
+  testAreaSampledChamferDistance();
   return 0;
 }

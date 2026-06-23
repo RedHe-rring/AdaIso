@@ -5,8 +5,10 @@
 #include "adaiso/Mesh.hpp"
 
 #include <array>
+#include <cstddef>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace adaiso {
 
@@ -42,8 +44,20 @@ struct AdaIsoConfig {
 };
 
 struct AdaIsoStats {
+  struct IterationStats {
+    int iteration = 0;
+    int split_count = 0;
+    int collapse_count = 0;
+    int flip_count = 0;
+    std::size_t vertices = 0;
+    std::size_t faces = 0;
+    double qavg = 0.0;
+    double qmin = 0.0;
+  };
+
   std::size_t vertices = 0;
   std::size_t faces = 0;
+  std::vector<IterationStats> iterations;
   double csf_assembly_time_ms = 0.0;
   double csf_factorization_time_ms = 0.0;
   double csf_solve_time_ms = 0.0;

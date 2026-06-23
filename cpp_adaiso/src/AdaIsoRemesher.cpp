@@ -1,6 +1,7 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
 #include "adaiso/Geometry.hpp"
+#include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
 
 #include <Eigen/Geometry>
@@ -217,6 +218,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
 
   buildTargetLengths(mesh);
+  stats_.iterations.reserve(static_cast<std::size_t>(std::max(0, config_.global_iterations)));
 
   for (int it = 0; it < config_.global_iterations; ++it) {
     if (config_.verbose) {
@@ -228,6 +230,16 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     const int flip_count = flipEdges(mesh);
     tangentSmoothing(mesh);
     mesh = removeDegenerateFaces(mesh);
+    const MeshSummary iteration_summary = summarizeMesh(mesh);
+    stats_.iterations.push_back({
+        it + 1,
+        split_count,
+        collapse_count,
+        flip_count,
+        mesh.vertexCount(),
+        mesh.faceCount(),
+        iteration_summary.qavg,
+        iteration_summary.qmin});
     if (config_.verbose) {
       std::cerr << "  split=" << split_count << ", collapse=" << collapse_count << ", flip=" << flip_count
                 << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";

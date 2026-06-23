@@ -12,18 +12,21 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
 void printUsage(std::ostream& out) {
   out << "Usage:\n"
-      << "  adaiso_cli <input.obj|input.ply|input.off> -o <output.obj> [options]\n\n"
+      << "  adaiso_cli <input.obj|input.ply|input.off> -o <output.obj|output.ply> [options]\n\n"
       << "Options:\n"
       << "  --mesh-scale <value>       Default: 1.0\n"
       << "  --variant <code|paper>     Default: code\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
+      << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
+      << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
       << "  --summary-json <path>      Write JSON summary to file\n"
       << "  --quiet                    Suppress progress logs\n"
       << "  -h, --help                 Show this help\n";
@@ -60,6 +63,14 @@ std::filesystem::path defaultOutputPath(const std::filesystem::path& input) {
   return input.parent_path() / (stem + "_cppadaiso.obj");
 }
 
+std::size_t parsePositiveSize(const std::string& value, const std::string& option) {
+  const long long parsed = std::stoll(value);
+  if (parsed <= 0) {
+    throw std::runtime_error(option + " must be positive");
+  }
+  return static_cast<std::size_t>(parsed);
+}
+
 std::string jsonEscape(const std::string& value) {
   std::ostringstream out;
   for (char c : value) {
@@ -87,20 +98,75 @@ std::string jsonEscape(const std::string& value) {
   return out.str();
 }
 
+std::string iterationsToJson(const std::vector<adaiso::AdaIsoStats::IterationStats>& iterations, int indent) {
+  const std::string pad(static_cast<std::size_t>(indent), ' ');
+  const std::string pad2(static_cast<std::size_t>(indent + 2), ' ');
+  std::ostringstream out;
+  out << std::setprecision(10);
+  out << "[";
+  if (!iterations.empty()) {
+    out << "\n";
+  }
+  for (std::size_t i = 0; i < iterations.size(); ++i) {
+    const auto& item = iterations[i];
+    out << pad2 << "{\n";
+    out << pad2 << "  \"iteration\": " << item.iteration << ",\n";
+    out << pad2 << "  \"split_count\": " << item.split_count << ",\n";
+    out << pad2 << "  \"collapse_count\": " << item.collapse_count << ",\n";
+    out << pad2 << "  \"flip_count\": " << item.flip_count << ",\n";
+    out << pad2 << "  \"vertices\": " << item.vertices << ",\n";
+    out << pad2 << "  \"faces\": " << item.faces << ",\n";
+    out << pad2 << "  \"qavg\": " << item.qavg << ",\n";
+    out << pad2 << "  \"qmin\": " << item.qmin << "\n";
+    out << pad2 << "}";
+    if (i + 1 < iterations.size()) {
+      out << ",";
+    }
+    out << "\n";
+  }
+  if (!iterations.empty()) {
+    out << pad;
+  }
+  out << "]";
+  return out.str();
+}
+
+std::string chamferToJson(const adaiso::ChamferDistanceSummary& summary, int indent) {
+  const std::string pad(static_cast<std::size_t>(indent), ' ');
+  const std::string pad2(static_cast<std::size_t>(indent + 2), ' ');
+  std::ostringstream out;
+  out << std::setprecision(10);
+  out << pad << "{\n";
+  out << pad2 << "\"method\": \"area_sampled\",\n";
+  out << pad2 << "\"samples_per_direction\": " << summary.samples_per_direction << ",\n";
+  out << pad2 << "\"output_to_gt_msd\": " << summary.output_to_gt_msd << ",\n";
+  out << pad2 << "\"gt_to_output_msd\": " << summary.gt_to_output_msd << ",\n";
+  out << pad2 << "\"chamfer_distance\": " << summary.chamfer_distance << ",\n";
+  out << pad2 << "\"symmetric_rmse\": " << summary.symmetric_rmse << "\n";
+  out << pad << "}";
+  return out.str();
+}
+
 std::string buildSummaryJson(
     const std::filesystem::path& input_path,
     const std::filesystem::path& output_path,
     const std::filesystem::path& summary_path,
+    const std::filesystem::path& gt_path,
     const adaiso::AdaIsoConfig& config,
     const adaiso::AdaIsoStats& stats,
     const adaiso::MeshSummary& input_summary,
     const adaiso::MeshSummary& output_summary,
+    const adaiso::MeshSummary* gt_summary,
+    const adaiso::ChamferDistanceSummary* chamfer_summary,
     double runtime_sec) {
   std::ostringstream out;
   out << std::setprecision(10);
   out << "{\n";
   out << "  \"input\": \"" << jsonEscape(input_path.string()) << "\",\n";
   out << "  \"output\": \"" << jsonEscape(output_path.string()) << "\",\n";
+  if (!gt_path.empty()) {
+    out << "  \"ground_truth\": \"" << jsonEscape(gt_path.string()) << "\",\n";
+  }
   if (!summary_path.empty()) {
     out << "  \"summary_json\": \"" << jsonEscape(summary_path.string()) << "\",\n";
   }
@@ -120,6 +186,11 @@ std::string buildSummaryJson(
   out << "  },\n";
   out << "  \"input_summary\": " << adaiso::summaryToJson(input_summary, 2) << ",\n";
   out << "  \"output_summary\": " << adaiso::summaryToJson(output_summary, 2) << ",\n";
+  out << "  \"iterations\": " << iterationsToJson(stats.iterations, 2) << ",\n";
+  if (gt_summary != nullptr && chamfer_summary != nullptr) {
+    out << "  \"gt_summary\": " << adaiso::summaryToJson(*gt_summary, 2) << ",\n";
+    out << "  \"chamfer_distance\": " << chamferToJson(*chamfer_summary, 2) << ",\n";
+  }
   out << "  \"stats\": {\n";
   out << "    \"vertices\": " << stats.vertices << ",\n";
   out << "    \"faces\": " << stats.faces << ",\n";
@@ -158,6 +229,8 @@ int main(int argc, char** argv) {
     std::filesystem::path input_path;
     std::filesystem::path output_path;
     std::filesystem::path summary_path;
+    std::filesystem::path gt_path;
+    std::size_t cd_samples = 100000;
 
     if (argc <= 1) {
       printUsage(std::cerr);
@@ -182,6 +255,10 @@ int main(int argc, char** argv) {
         config.global_iterations = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--project") {
         config.project_to_surface = parseBool(requireValue(i, argc, argv, arg));
+      } else if (arg == "--gt") {
+        gt_path = requireValue(i, argc, argv, arg);
+      } else if (arg == "--cd-samples") {
+        cd_samples = parsePositiveSize(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--summary-json") {
         summary_path = requireValue(i, argc, argv, arg);
       } else if (arg == "--quiet") {
@@ -215,19 +292,35 @@ int main(int argc, char** argv) {
     adaiso::AdaIsoRemesher remesher(config);
     adaiso::Mesh output = remesher.remesh(input);
     output.validate();
-    adaiso::writeObj(output_path, output);
+    adaiso::writeMesh(output_path, output);
+
+    const adaiso::MeshSummary output_summary = adaiso::summarizeMesh(output);
+    adaiso::MeshSummary gt_summary;
+    adaiso::ChamferDistanceSummary chamfer_summary;
+    const adaiso::MeshSummary* gt_summary_ptr = nullptr;
+    const adaiso::ChamferDistanceSummary* chamfer_summary_ptr = nullptr;
+    if (!gt_path.empty()) {
+      adaiso::Mesh gt = adaiso::removeDegenerateFaces(adaiso::loadMesh(gt_path));
+      gt.validate();
+      gt_summary = adaiso::summarizeMesh(gt);
+      chamfer_summary = adaiso::areaSampledChamferDistance(output, gt, cd_samples);
+      gt_summary_ptr = &gt_summary;
+      chamfer_summary_ptr = &chamfer_summary;
+    }
 
     const auto ended = std::chrono::steady_clock::now();
     const double runtime_sec = std::chrono::duration<double>(ended - started).count();
-    const adaiso::MeshSummary output_summary = adaiso::summarizeMesh(output);
     const std::string json = buildSummaryJson(
         input_path,
         output_path,
         summary_path,
+        gt_path,
         config,
         remesher.stats(),
         input_summary,
         output_summary,
+        gt_summary_ptr,
+        chamfer_summary_ptr,
         runtime_sec);
 
     if (!summary_path.empty()) {
