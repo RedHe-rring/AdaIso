@@ -79,7 +79,7 @@ class AdaIsoRemesher {
       const std::vector<std::unordered_set<int>>& neigh,
       const EdgeFaceMap& e2f,
       const std::vector<std::vector<int>>& vf) const;
-  void collapseOneEdge(Mesh& mesh, int a, int b) const;
+  [[nodiscard]] int collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& selected) const;
   [[nodiscard]] int flipEdges(Mesh& mesh);
   [[nodiscard]] bool flipImprovesValence(
       const std::vector<int>& valence,

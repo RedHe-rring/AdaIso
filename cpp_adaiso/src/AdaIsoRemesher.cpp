@@ -517,7 +517,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     const auto e2f = edgeFaces(mesh);
     const auto neigh = vertexNeighbors(mesh);
     const auto vf = vertexFaces(mesh);
-    std::vector<std::tuple<double, int, int>> candidates;
+    std::vector<std::tuple<double, double, int, int>> candidates;
     for (const auto& item : e2f) {
       const int a = item.first.first;
       const int b = item.first.second;
@@ -527,34 +527,55 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
       const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
       const double target = edgeTarget(mesh, a, b, config_.collapseUsesMaxReference());
       if (length < config_.collapseFactor() * target) {
-        candidates.emplace_back(length, a, b);
+        candidates.emplace_back(length / target, length, a, b);
       }
     }
     if (candidates.empty()) {
       break;
     }
     std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
-      return std::get<0>(lhs) < std::get<0>(rhs);
+      if (std::get<0>(lhs) != std::get<0>(rhs)) {
+        return std::get<0>(lhs) < std::get<0>(rhs);
+      }
+      return std::get<1>(lhs) < std::get<1>(rhs);
     });
 
-    bool collapsed = false;
-    for (const auto& [old_length, a, b] : candidates) {
+    std::vector<Edge> selected;
+    selected.reserve(candidates.size());
+    std::unordered_set<int> blocked_vertices;
+    for (const auto& [ratio, old_length, a, b] : candidates) {
+      (void)ratio;
       (void)old_length;
       auto it = e2f.find(makeEdge(a, b));
       if (it != e2f.end() && it->second.size() > 2) {
         continue;
       }
+      std::unordered_set<int> footprint;
+      footprint.insert(a);
+      footprint.insert(b);
+      footprint.insert(neigh[static_cast<std::size_t>(a)].begin(), neigh[static_cast<std::size_t>(a)].end());
+      footprint.insert(neigh[static_cast<std::size_t>(b)].begin(), neigh[static_cast<std::size_t>(b)].end());
+
+      bool conflicts = false;
+      for (int v : footprint) {
+        if (blocked_vertices.find(v) != blocked_vertices.end()) {
+          conflicts = true;
+          break;
+        }
+      }
+      if (conflicts) {
+        continue;
+      }
       if (!collapseValid(mesh, a, b, neigh, e2f, vf)) {
         continue;
       }
-      collapseOneEdge(mesh, a, b);
-      ++total;
-      collapsed = true;
+      selected.push_back(makeEdge(a, b));
+      blocked_vertices.insert(footprint.begin(), footprint.end());
+    }
+    if (selected.empty()) {
       break;
     }
-    if (!collapsed) {
-      break;
-    }
+    total += collapseEdgesBatch(mesh, selected);
   }
   return total;
 }
@@ -655,19 +676,48 @@ bool AdaIsoRemesher::collapseValid(
   return true;
 }
 
-void AdaIsoRemesher::collapseOneEdge(Mesh& mesh, int a, int b) const {
-  const int keep = std::min(a, b);
-  const int remove = std::max(a, b);
-  mesh.vertices[static_cast<std::size_t>(keep)] =
-      0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]);
+int AdaIsoRemesher::collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& selected) const {
+  struct CollapseOp {
+    int keep = 0;
+    int remove = 0;
+    Eigen::Vector3d midpoint = Eigen::Vector3d::Zero();
+  };
+
+  std::vector<CollapseOp> ops;
+  ops.reserve(selected.size());
+  std::unordered_map<int, int> replacements;
+  replacements.reserve(selected.size());
+
+  for (const auto& edge : selected) {
+    const int a = edge.first;
+    const int b = edge.second;
+    const int keep = std::min(a, b);
+    const int remove = std::max(a, b);
+    if (replacements.find(remove) != replacements.end()) {
+      continue;
+    }
+    replacements.emplace(remove, keep);
+    ops.push_back({keep, remove,
+        0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)])});
+  }
+
+  if (ops.empty()) {
+    return 0;
+  }
+
+  for (const auto& op : ops) {
+    mesh.vertices[static_cast<std::size_t>(op.keep)] = op.midpoint;
+  }
   for (auto& face : mesh.faces) {
     for (int k = 0; k < 3; ++k) {
-      if (face[k] == remove) {
-        face[k] = keep;
+      const auto it = replacements.find(face[k]);
+      if (it != replacements.end()) {
+        face[k] = it->second;
       }
     }
   }
   mesh = removeDegenerateFaces(mesh);
+  return static_cast<int>(ops.size());
 }
 
 int AdaIsoRemesher::flipEdges(Mesh& mesh) {

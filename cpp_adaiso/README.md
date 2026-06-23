@@ -4,13 +4,13 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.0.1. The CSF stage is computed exclusively with a Dirichlet
+This is version 2.1.0. The CSF stage is computed exclusively with a Dirichlet
 Laplace sparse solve. The old explicit CSF iteration parameters and iteration
 statistics were removed as a breaking interface change.
 
-Version 2.0.1 is a documentation and version-metadata hotfix only. Algorithm
-behavior and the recorded v2.0.0 implementation plan and experiment results are
-unchanged.
+Version 2.1.0 updates collapse from a conservative single-edge action per pass
+to batch collapse of locally non-conflicting short edges while preserving the
+existing validity checks.
 
 ## Scope
 
@@ -25,7 +25,7 @@ Implemented:
 - Curvature-smoothed field from vertex normal variation and a Dirichlet Laplace sparse solve.
 - Histogram-based local target edge length assignment.
 - KD-tree nearest target length lookup via nanoflann.
-- Global remeshing loop: split, collapse, cleanup, flip, tangent smoothing.
+- Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
 - CLI executable: `adaiso_cli`.
 
@@ -89,13 +89,13 @@ OFF input is supported:
 
 ```powershell
 cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
-  -o cpp_adaiso/results/T0_T10/T0_iter1_project1.obj `
+  -o cpp_adaiso/results/T0_T10/T0_iter10_project1.obj `
   --variant code `
   --mesh-scale 1.0 `
-  --iters 1 `
+  --iters 10 `
   --preprocess 0 `
   --project 1 `
-  --summary-json cpp_adaiso/results/T0_T10/T0_iter1_project1.json
+  --summary-json cpp_adaiso/results/T0_T10/T0_iter10_project1.json
 ```
 
 ## Parameters
@@ -149,5 +149,5 @@ The result should be close in behavior to the Python reproduction under the same
 parameters, but individual vertex positions are not expected to match exactly.
 Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
 intermediates; it solves the corresponding Dirichlet Laplace steady-state system.
-Version 2.0.1 keeps that behavior unchanged and only clarifies release
-documentation.
+Version 2.1.0 keeps that CSF behavior unchanged and improves collapse throughput
+with batch passes.

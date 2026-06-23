@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.0
+
+Release update:
+Collapse now supports batch processing within each collapse pass. The pass
+selects non-conflicting short edges, collapses them together, and keeps the
+existing local validity checks.
+
+- Changed `max_collapse_passes` semantics from "up to 10 single-edge collapses"
+  to "up to 10 batch collapse passes".
+- Added regression coverage proving one collapse pass can collapse multiple
+  disconnected components.
+- Added v2.1.0 experiment plan and result records.
+
 ## 2.0.1
 
 Documentation hotfix:

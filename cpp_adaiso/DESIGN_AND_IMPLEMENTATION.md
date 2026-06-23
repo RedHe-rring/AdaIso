@@ -343,7 +343,8 @@ edge_length < collapseFactor() * target_reference
 
 性能优化：
 
-- 每轮 collapse 只构建一次 `edgeFaces`、`vertexNeighbors`、`vertexFaces`。
+- 每个 collapse pass 只构建一次 `edgeFaces`、`vertexNeighbors`、`vertexFaces`。
+- 同一 pass 内批量选择 footprint 不冲突的短边并统一 collapse。
 - 质量保护只检查受 collapse 影响的局部三角形，而不是复制并清理整个网格。
 
 ### 11.3 Flip
@@ -553,14 +554,13 @@ cpp_adaiso/results/T0_T10/T0_iter10_project1.json
 - 不支持 binary PLY。
 - OFF 仅支持标准 ASCII OFF，不支持 COFF/NOFF/STOFF。
 - 输入 mesh 默认已经是合理流形三角网格；复杂非流形数据只做有限保护。
-- collapse 当前每 pass 只实际 collapse 一个候选边，稳定但偏保守。
 - 目标边长场只在 remesh 开始时构建一次，不在每轮拓扑变化后重估曲率场。
 
 ## 17. 后续优化方向
 
 可继续优化的方向：
 
-- 为 collapse 支持同一 pass 内批量选择互不冲突短边。
+- 为 collapse 增加更细粒度的局部拓扑缓存，减少 batch pass 之间的邻接重建成本。
 - 增加空间哈希或局部拓扑缓存，进一步减少重建邻接次数。
 - 增加更严格的 manifold 检查和边界保持策略。
 - 实现 `--variant paper` 的完整论文参数实验脚本。

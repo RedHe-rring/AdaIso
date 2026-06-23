@@ -58,6 +58,37 @@ adaiso::Mesh makeDisconnectedTriangles() {
   return mesh;
 }
 
+adaiso::Mesh makeTwoDisconnectedOctahedra() {
+  adaiso::Mesh mesh;
+
+  auto append = [&](double x_offset) {
+    const int offset = static_cast<int>(mesh.vertices.size());
+    mesh.vertices.insert(mesh.vertices.end(), {
+        {x_offset + 0.0, 0.0, 1.0},
+        {x_offset + 0.0, 0.0, -1.0},
+        {x_offset + 1.0, 0.0, 0.0},
+        {x_offset - 1.0, 0.0, 0.0},
+        {x_offset + 0.0, 1.0, 0.0},
+        {x_offset + 0.0, -1.0, 0.0},
+    });
+    const std::vector<Eigen::Vector3i> faces = {
+        {offset + 0, offset + 2, offset + 4},
+        {offset + 0, offset + 4, offset + 3},
+        {offset + 0, offset + 3, offset + 5},
+        {offset + 0, offset + 5, offset + 2},
+        {offset + 1, offset + 4, offset + 2},
+        {offset + 1, offset + 3, offset + 4},
+        {offset + 1, offset + 5, offset + 3},
+        {offset + 1, offset + 2, offset + 5},
+    };
+    mesh.faces.insert(mesh.faces.end(), faces.begin(), faces.end());
+  };
+
+  append(0.0);
+  append(5.0);
+  return mesh;
+}
+
 adaiso::detail::CsfAdjacency makeChainAdjacency(int vertices) {
   adaiso::detail::CsfAdjacency adjacency(static_cast<std::size_t>(vertices));
   for (int i = 0; i + 1 < vertices; ++i) {
@@ -266,6 +297,30 @@ void testRemeshSmoke() {
   assert(remesher.stats().csf_residual_scaled < adaiso::detail::kResidualThreshold);
 }
 
+void testBatchCollapsePassCollapsesMultipleComponents() {
+  const adaiso::Mesh input = makeTwoDisconnectedOctahedra();
+  input.validate();
+
+  adaiso::AdaIsoConfig config;
+  config.variant = adaiso::Variant::Code;
+  config.mesh_scale = 10.0;
+  config.global_iterations = 1;
+  config.max_split_passes = 0;
+  config.max_collapse_passes = 1;
+  config.max_flip_passes = 0;
+  config.preprocess = false;
+  config.project_to_surface = false;
+  config.min_quality_after_collapse = 0.0;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(input);
+  output.validate();
+  assert(output.vertexCount() + 2 <= input.vertexCount());
+  assert(output.faceCount() > 0);
+  assert(remesher.stats().csf_solver_success);
+}
+
 void testRemeshEdgeCases() {
   auto run = [](const adaiso::Mesh& input) {
     adaiso::AdaIsoConfig config;
@@ -309,6 +364,7 @@ int main() {
   testCsfDisconnectedAndConstantComponents();
   testCsfVariantWeightGraphs();
   testRemeshSmoke();
+  testBatchCollapsePassCollapsesMultipleComponents();
   testRemeshEdgeCases();
   return 0;
 }
