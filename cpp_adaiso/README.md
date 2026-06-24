@@ -4,12 +4,14 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.1.1. The CSF stage is computed exclusively with a Dirichlet
+This is version 2.2.0. The CSF stage is computed exclusively with a Dirichlet
 Laplace sparse solve. The old explicit CSF iteration parameters and iteration
 statistics were removed as a breaking interface change.
 
-Version 2.1.1 adds ASCII PLY output, per-iteration JSON summary records, and
-optional area-sampled Chamfer Distance evaluation against a ground-truth mesh.
+Version 2.2.0 changes the default target edge-length lookup from nearest
+neighbor to Gaussian kNN interpolation and adds per-iteration edge-ratio
+stability metrics. The nearest-neighbor lookup remains available for A/B
+experiments and v2.1.1 compatibility.
 
 ## Scope
 
@@ -23,7 +25,7 @@ Implemented:
 - Area-weighted vertex normals.
 - Curvature-smoothed field from vertex normal variation and a Dirichlet Laplace sparse solve.
 - Histogram-based local target edge length assignment.
-- KD-tree nearest target length lookup via nanoflann.
+- KD-tree target length lookup via nanoflann, with nearest-neighbor and Gaussian kNN modes.
 - Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
 - Optional area-sampled Chamfer Distance against a GT mesh.
@@ -102,6 +104,9 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 
 - `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
 - `--variant code|paper`: `code` uses source-like split/collapse thresholds and length-scaled CSF weights; `paper` uses the paper split/collapse convention and cotangent CSF weights.
+- `--target-mode nearest|gaussian`: target edge-length lookup. Default: `gaussian`.
+- `--target-k`: neighbor count for Gaussian kNN target lookup. Default: `8`.
+- `--target-sigma-factor`: bandwidth multiplier for Gaussian kNN target lookup. Default: `1.0`.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.
@@ -110,9 +115,9 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 - `--summary-json`: writes a JSON run summary.
 
 The summary contains input/output vertex counts, face counts, `qavg`, `qmin`,
-runtime, core parameters, per-iteration remesh statistics, and CSF sparse-solve
-timing/residual statistics. When `--gt` is provided it also contains GT summary
-and area-sampled Chamfer Distance metrics.
+runtime, core parameters, per-iteration remesh statistics, edge-ratio stability
+metrics, and CSF sparse-solve timing/residual statistics. When `--gt` is
+provided it also contains GT summary and area-sampled Chamfer Distance metrics.
 
 ## Smoke Test
 
@@ -156,3 +161,12 @@ intermediates; it solves the corresponding Dirichlet Laplace steady-state system
 Version 2.1.0 keeps that CSF behavior unchanged and improves collapse throughput
 with batch passes. Version 2.1.1 keeps the algorithm behavior unchanged and adds
 PLY output, iteration logging, and optional GT Chamfer Distance evaluation.
+Version 2.2.0 keeps the same CSF and remeshing stages, but smooths the target
+edge-length field by default with Gaussian kNN interpolation.
+
+Nearest-neighbor target lookup produces a piecewise constant field with jumps at
+KD-tree Voronoi boundaries. Gaussian kNN lookup replaces that hard assignment
+with a weighted average over nearby target samples, which is continuous while
+the selected kNN set is fixed and empirically reduces late-iteration edge-ratio
+violations and local split/collapse/flip oscillation. Because kNN membership is
+still truncated, the implementation does not claim strict global continuity.

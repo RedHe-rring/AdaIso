@@ -17,9 +17,50 @@ enum class Variant {
   Code,
 };
 
+enum class TargetLookupMode {
+  Nearest,
+  GaussianKnn,
+};
+
+struct EdgeRatioStats {
+  double mean_ratio = 0.0;
+  double std_ratio = 0.0;
+  double p05_ratio = 0.0;
+  double p95_ratio = 0.0;
+  double violation_rate = 0.0;
+};
+
+class TargetLengthField {
+ public:
+  TargetLengthField() = default;
+  ~TargetLengthField() = default;
+
+  TargetLengthField(const TargetLengthField&) = delete;
+  TargetLengthField& operator=(const TargetLengthField&) = delete;
+  TargetLengthField(TargetLengthField&& other);
+  TargetLengthField& operator=(TargetLengthField&& other);
+
+  void build(const std::vector<Eigen::Vector3d>& positions, const std::vector<double>& lengths);
+  void clear();
+  [[nodiscard]] bool empty() const;
+  [[nodiscard]] double valueAt(
+      const Eigen::Vector3d& point,
+      TargetLookupMode mode,
+      int k,
+      double sigma_factor) const;
+
+ private:
+  std::vector<Eigen::Vector3d> positions_;
+  std::vector<double> lengths_;
+  NearestNeighborIndex index_;
+};
+
 struct AdaIsoConfig {
   double mesh_scale = 1.0;
   Variant variant = Variant::Code;
+  TargetLookupMode target_lookup_mode = TargetLookupMode::GaussianKnn;
+  int target_knn_k = 8;
+  double target_gaussian_sigma_factor = 1.0;
   bool preprocess = false;
   int global_iterations = 5;
   int histogram_bins = 40;
@@ -53,6 +94,11 @@ struct AdaIsoStats {
     std::size_t faces = 0;
     double qavg = 0.0;
     double qmin = 0.0;
+    double mean_ratio = 0.0;
+    double std_ratio = 0.0;
+    double p05_ratio = 0.0;
+    double p95_ratio = 0.0;
+    double violation_rate = 0.0;
   };
 
   std::size_t vertices = 0;
@@ -83,6 +129,7 @@ class AdaIsoRemesher {
   [[nodiscard]] std::vector<double> histogramMultipliers(const std::vector<double>& curvature) const;
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] double edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const;
+  [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
   [[nodiscard]] int splitLongEdges(Mesh& mesh);
   void splitOneEdge(Mesh& mesh, int a, int b) const;
   [[nodiscard]] int collapseShortEdges(Mesh& mesh);
@@ -109,12 +156,20 @@ class AdaIsoRemesher {
 
   AdaIsoConfig config_;
   AdaIsoStats stats_;
-  std::vector<Eigen::Vector3d> target_positions_;
-  std::vector<double> target_lengths_;
-  NearestNeighborIndex target_index_;
+  TargetLengthField target_field_;
 };
 
 [[nodiscard]] Variant parseVariant(const std::string& value);
 [[nodiscard]] std::string toString(Variant variant);
+[[nodiscard]] TargetLookupMode parseTargetLookupMode(const std::string& value);
+[[nodiscard]] std::string toString(TargetLookupMode mode);
+[[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
+    const Mesh& mesh,
+    const TargetLengthField& target_field,
+    TargetLookupMode mode,
+    int target_knn_k,
+    double target_gaussian_sigma_factor,
+    double collapse_factor,
+    double split_factor);
 
 }  // namespace adaiso

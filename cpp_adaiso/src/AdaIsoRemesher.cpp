@@ -18,6 +18,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace adaiso {
@@ -168,6 +169,172 @@ double minQuality(const Mesh& mesh) {
 
 }  // namespace
 
+TargetLengthField::TargetLengthField(TargetLengthField&& other)
+    : positions_(std::move(other.positions_)), lengths_(std::move(other.lengths_)) {
+  if (!positions_.empty()) {
+    index_.build(positions_);
+  }
+  other.clear();
+}
+
+TargetLengthField& TargetLengthField::operator=(TargetLengthField&& other) {
+  if (this == &other) {
+    return *this;
+  }
+  positions_ = std::move(other.positions_);
+  lengths_ = std::move(other.lengths_);
+  index_ = NearestNeighborIndex();
+  if (!positions_.empty()) {
+    index_.build(positions_);
+  }
+  other.clear();
+  return *this;
+}
+
+void TargetLengthField::build(const std::vector<Eigen::Vector3d>& positions, const std::vector<double>& lengths) {
+  if (positions.size() != lengths.size()) {
+    throw std::runtime_error("target field positions and lengths have different sizes");
+  }
+  positions_ = positions;
+  lengths_ = lengths;
+  if (positions_.empty()) {
+    index_ = NearestNeighborIndex();
+    return;
+  }
+  index_.build(positions_);
+}
+
+void TargetLengthField::clear() {
+  positions_.clear();
+  lengths_.clear();
+  index_ = NearestNeighborIndex();
+}
+
+bool TargetLengthField::empty() const {
+  return index_.empty() || lengths_.empty();
+}
+
+double TargetLengthField::valueAt(
+    const Eigen::Vector3d& point,
+    TargetLookupMode mode,
+    int k,
+    double sigma_factor) const {
+  if (empty()) {
+    throw std::runtime_error("target lengths have not been initialized");
+  }
+  if (k <= 0) {
+    throw std::runtime_error("target k must be positive");
+  }
+
+  const std::size_t nearest_idx = index_.nearest(point);
+  if (mode == TargetLookupMode::Nearest || k == 1 || lengths_.size() == 1) {
+    return lengths_[nearest_idx];
+  }
+  if (sigma_factor <= 0.0 || !std::isfinite(sigma_factor)) {
+    throw std::runtime_error("target gaussian sigma factor must be positive");
+  }
+
+  const std::size_t query_k = std::min<std::size_t>(static_cast<std::size_t>(k), lengths_.size());
+  const auto knn = index_.nearestK(point, query_k);
+  if (knn.empty()) {
+    return lengths_[nearest_idx];
+  }
+  if (knn.size() == 1) {
+    return lengths_[knn.front().first];
+  }
+
+  std::vector<double> dists;
+  dists.reserve(knn.size());
+  for (const auto& item : knn) {
+    dists.push_back(std::sqrt(std::max(0.0, item.second)));
+  }
+
+  const double dk = dists.back();
+  const double dk_prev = dists[dists.size() - 2];
+  const double raw_h = dk + std::max(0.0, dk - dk_prev);
+  const double h = std::max(sigma_factor * std::max(raw_h, 1e-12), 1e-12);
+  if (!std::isfinite(h) || h <= 0.0) {
+    return lengths_[nearest_idx];
+  }
+
+  double sum_w = 0.0;
+  double sum_l = 0.0;
+  for (std::size_t i = 0; i < knn.size(); ++i) {
+    const std::size_t idx = knn[i].first;
+    if (idx >= lengths_.size()) {
+      continue;
+    }
+    const double ratio = dists[i] / h;
+    const double w = std::exp(-(ratio * ratio));
+    if (!std::isfinite(w)) {
+      continue;
+    }
+    sum_w += w;
+    sum_l += w * lengths_[idx];
+  }
+  if (sum_w <= kEps) {
+    return lengths_[nearest_idx];
+  }
+  const double value = sum_l / sum_w;
+  return std::isfinite(value) ? value : lengths_[nearest_idx];
+}
+
+EdgeRatioStats computeEdgeRatioStats(
+    const Mesh& mesh,
+    const TargetLengthField& target_field,
+    TargetLookupMode mode,
+    int target_knn_k,
+    double target_gaussian_sigma_factor,
+    double collapse_factor,
+    double split_factor) {
+  EdgeRatioStats stats;
+  const auto edges = uniqueEdges(mesh);
+  if (edges.empty()) {
+    return stats;
+  }
+
+  std::vector<double> ratios;
+  ratios.reserve(edges.size());
+  int violations = 0;
+  for (const auto& edge : edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    const double length = (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
+    const double target = std::min(
+        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(a)], mode, target_knn_k, target_gaussian_sigma_factor),
+        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(b)], mode, target_knn_k, target_gaussian_sigma_factor));
+    if (target <= kEps || !std::isfinite(length) || !std::isfinite(target)) {
+      continue;
+    }
+    const double ratio = length / target;
+    if (!std::isfinite(ratio)) {
+      continue;
+    }
+    ratios.push_back(ratio);
+    if (ratio < collapse_factor || ratio > split_factor) {
+      ++violations;
+    }
+  }
+
+  if (ratios.empty()) {
+    return stats;
+  }
+
+  const double sum = std::accumulate(ratios.begin(), ratios.end(), 0.0);
+  stats.mean_ratio = sum / static_cast<double>(ratios.size());
+  double variance = 0.0;
+  for (double ratio : ratios) {
+    const double diff = ratio - stats.mean_ratio;
+    variance += diff * diff;
+  }
+  stats.std_ratio = std::sqrt(variance / static_cast<double>(ratios.size()));
+  std::sort(ratios.begin(), ratios.end());
+  stats.p05_ratio = quantileOfSorted(ratios, 0.05);
+  stats.p95_ratio = quantileOfSorted(ratios, 0.95);
+  stats.violation_rate = static_cast<double>(violations) / static_cast<double>(ratios.size());
+  return stats;
+}
+
 double AdaIsoConfig::splitFactor() const {
   return variant == Variant::Paper ? 5.0 / 3.0 : 1.33;
 }
@@ -198,9 +365,34 @@ std::string toString(Variant variant) {
   return variant == Variant::Paper ? "paper" : "code";
 }
 
+TargetLookupMode parseTargetLookupMode(const std::string& value) {
+  std::string lower = value;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lower == "nearest" || lower == "nn") {
+    return TargetLookupMode::Nearest;
+  }
+  if (lower == "gaussian" || lower == "gaussian-knn" || lower == "gaussianknn") {
+    return TargetLookupMode::GaussianKnn;
+  }
+  throw std::runtime_error("unknown target lookup mode: " + value);
+}
+
+std::string toString(TargetLookupMode mode) {
+  return mode == TargetLookupMode::Nearest ? "nearest" : "gaussian";
+}
+
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
+  if (config_.target_knn_k <= 0) {
+    throw std::runtime_error("target k must be positive");
+  }
+  if (config_.target_gaussian_sigma_factor <= 0.0 || !std::isfinite(config_.target_gaussian_sigma_factor)) {
+    throw std::runtime_error("target gaussian sigma factor must be positive");
+  }
+
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
   Mesh original_for_projection = mesh;
@@ -231,6 +423,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     tangentSmoothing(mesh);
     mesh = removeDegenerateFaces(mesh);
     const MeshSummary iteration_summary = summarizeMesh(mesh);
+    const EdgeRatioStats ratio_stats = edgeRatioStats(mesh);
     stats_.iterations.push_back({
         it + 1,
         split_count,
@@ -239,9 +432,15 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
         mesh.vertexCount(),
         mesh.faceCount(),
         iteration_summary.qavg,
-        iteration_summary.qmin});
+        iteration_summary.qmin,
+        ratio_stats.mean_ratio,
+        ratio_stats.std_ratio,
+        ratio_stats.p05_ratio,
+        ratio_stats.p95_ratio,
+        ratio_stats.violation_rate});
     if (config_.verbose) {
       std::cerr << "  split=" << split_count << ", collapse=" << collapse_count << ", flip=" << flip_count
+                << ", violation=" << ratio_stats.violation_rate
                 << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
     }
   }
@@ -295,9 +494,7 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   if (mesh.vertices.empty()) {
-    target_positions_.clear();
-    target_lengths_.clear();
-    target_index_ = NearestNeighborIndex();
+    target_field_.clear();
     stats_.csf_solver_success = true;
     return;
   }
@@ -305,16 +502,15 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   const double base_len = meanEdgeLength(mesh);
   const auto curvature = computeCsf(mesh);
   const auto multipliers = histogramMultipliers(curvature);
-  target_positions_ = mesh.vertices;
-  target_lengths_.resize(target_positions_.size(), 1.0);
-  for (std::size_t i = 0; i < target_lengths_.size(); ++i) {
+  std::vector<double> target_lengths(mesh.vertices.size(), 1.0);
+  for (std::size_t i = 0; i < target_lengths.size(); ++i) {
     const double multiplier = i < multipliers.size() ? multipliers[i] : 1.0;
-    target_lengths_[i] = std::max(1e-12, base_len * config_.mesh_scale * multiplier);
+    target_lengths[i] = std::max(1e-12, base_len * config_.mesh_scale * multiplier);
   }
-  target_index_.build(target_positions_);
+  target_field_.build(mesh.vertices, target_lengths);
 
-  if (config_.verbose && !target_lengths_.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(target_lengths_.begin(), target_lengths_.end());
+  if (config_.verbose && !target_lengths.empty()) {
+    const auto [min_it, max_it] = std::minmax_element(target_lengths.begin(), target_lengths.end());
     std::cerr << "target length: base=" << base_len << ", min=" << *min_it << ", max=" << *max_it << "\n";
   }
 }
@@ -446,17 +642,28 @@ std::vector<double> AdaIsoRemesher::histogramMultipliers(const std::vector<doubl
 }
 
 double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {
-  if (target_index_.empty() || target_lengths_.empty()) {
-    throw std::runtime_error("target lengths have not been initialized");
-  }
-  const std::size_t idx = target_index_.nearest(point);
-  return target_lengths_[idx];
+  return target_field_.valueAt(
+      point,
+      config_.target_lookup_mode,
+      config_.target_knn_k,
+      config_.target_gaussian_sigma_factor);
 }
 
 double AdaIsoRemesher::edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const {
   const double ta = targetAt(mesh.vertices[static_cast<std::size_t>(a)]);
   const double tb = targetAt(mesh.vertices[static_cast<std::size_t>(b)]);
   return use_max ? std::max(ta, tb) : std::min(ta, tb);
+}
+
+EdgeRatioStats AdaIsoRemesher::edgeRatioStats(const Mesh& mesh) const {
+  return computeEdgeRatioStats(
+      mesh,
+      target_field_,
+      config_.target_lookup_mode,
+      config_.target_knn_k,
+      config_.target_gaussian_sigma_factor,
+      config_.collapseFactor(),
+      config_.splitFactor());
 }
 
 int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {

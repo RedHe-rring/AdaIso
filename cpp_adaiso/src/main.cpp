@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -22,6 +23,9 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --mesh-scale <value>       Default: 1.0\n"
       << "  --variant <code|paper>     Default: code\n"
+      << "  --target-mode <nearest|gaussian> Default: gaussian\n"
+      << "  --target-k <n>             Gaussian kNN target field neighbors. Default: 8\n"
+      << "  --target-sigma-factor <v>  Gaussian target field bandwidth scale. Default: 1.0\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -117,7 +121,12 @@ std::string iterationsToJson(const std::vector<adaiso::AdaIsoStats::IterationSta
     out << pad2 << "  \"vertices\": " << item.vertices << ",\n";
     out << pad2 << "  \"faces\": " << item.faces << ",\n";
     out << pad2 << "  \"qavg\": " << item.qavg << ",\n";
-    out << pad2 << "  \"qmin\": " << item.qmin << "\n";
+    out << pad2 << "  \"qmin\": " << item.qmin << ",\n";
+    out << pad2 << "  \"mean_ratio\": " << item.mean_ratio << ",\n";
+    out << pad2 << "  \"std_ratio\": " << item.std_ratio << ",\n";
+    out << pad2 << "  \"p05_ratio\": " << item.p05_ratio << ",\n";
+    out << pad2 << "  \"p95_ratio\": " << item.p95_ratio << ",\n";
+    out << pad2 << "  \"violation_rate\": " << item.violation_rate << "\n";
     out << pad2 << "}";
     if (i + 1 < iterations.size()) {
       out << ",";
@@ -174,6 +183,9 @@ std::string buildSummaryJson(
   out << "  \"parameters\": {\n";
   out << "    \"mesh_scale\": " << config.mesh_scale << ",\n";
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
+  out << "    \"target_mode\": \"" << adaiso::toString(config.target_lookup_mode) << "\",\n";
+  out << "    \"target_k\": " << config.target_knn_k << ",\n";
+  out << "    \"target_sigma_factor\": " << config.target_gaussian_sigma_factor << ",\n";
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
@@ -249,6 +261,12 @@ int main(int argc, char** argv) {
         config.mesh_scale = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--variant") {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-mode") {
+        config.target_lookup_mode = adaiso::parseTargetLookupMode(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-k") {
+        config.target_knn_k = std::stoi(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-sigma-factor") {
+        config.target_gaussian_sigma_factor = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
@@ -283,6 +301,12 @@ int main(int argc, char** argv) {
     }
     if (config.global_iterations < 0) {
       throw std::runtime_error("--iters must be non-negative");
+    }
+    if (config.target_knn_k <= 0) {
+      throw std::runtime_error("--target-k must be positive");
+    }
+    if (config.target_gaussian_sigma_factor <= 0.0 || !std::isfinite(config.target_gaussian_sigma_factor)) {
+      throw std::runtime_error("--target-sigma-factor must be positive");
     }
 
     const auto started = std::chrono::steady_clock::now();

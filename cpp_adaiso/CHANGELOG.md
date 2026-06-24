@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.0
+
+Feature update:
+Smooths the target edge-length field by default and adds stability metrics for
+nearest-vs-Gaussian target lookup experiments.
+
+- Added `nearest` and `gaussian` target lookup modes; `gaussian` is the new default.
+- Added Gaussian kNN interpolation controls for target lookup.
+- Added per-iteration edge-ratio statistics and violation rates to JSON output.
+- Documented that Gaussian kNN is locally continuous for a fixed neighbor set,
+  while truncated kNN does not imply strict global continuity.
+
 ## 2.1.1
 
 Feature update:

@@ -301,6 +301,59 @@ void testCsfVariantWeightGraphs() {
   assert(code_result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
 }
 
+void testTargetLengthFieldQueries() {
+  adaiso::TargetLengthField field;
+  field.build(
+      {
+          {0.0, 0.0, 0.0},
+          {1.0, 0.0, 0.0},
+      },
+      {1.0, 3.0});
+
+  const Eigen::Vector3d left(0.49, 0.0, 0.0);
+  const Eigen::Vector3d right(0.51, 0.0, 0.0);
+  const double nearest_left = field.valueAt(left, adaiso::TargetLookupMode::Nearest, 2, 1.0);
+  const double nearest_right = field.valueAt(right, adaiso::TargetLookupMode::Nearest, 2, 1.0);
+  assertNear(nearest_left, 1.0);
+  assertNear(nearest_right, 3.0);
+
+  const double smooth_left = field.valueAt(left, adaiso::TargetLookupMode::GaussianKnn, 2, 1.0);
+  const double smooth_right = field.valueAt(right, adaiso::TargetLookupMode::GaussianKnn, 2, 1.0);
+  assert(smooth_left > 1.0 && smooth_left < 3.0);
+  assert(smooth_right > 1.0 && smooth_right < 3.0);
+  assert(std::abs(smooth_right - smooth_left) < std::abs(nearest_right - nearest_left));
+
+  const double k1_right = field.valueAt(right, adaiso::TargetLookupMode::GaussianKnn, 1, 1.0);
+  assertNear(k1_right, nearest_right);
+}
+
+void testEdgeRatioStats() {
+  adaiso::Mesh mesh = makeSingleTriangle();
+  adaiso::TargetLengthField field;
+  field.build(mesh.vertices, {1.0, 1.0, 1.0});
+
+  const auto stats = adaiso::computeEdgeRatioStats(
+      mesh,
+      field,
+      adaiso::TargetLookupMode::Nearest,
+      1,
+      1.0,
+      0.8,
+      1.33);
+
+  const double sqrt2 = std::sqrt(2.0);
+  const double expected_mean = (2.0 + sqrt2) / 3.0;
+  const double expected_variance =
+      ((1.0 - expected_mean) * (1.0 - expected_mean) * 2.0 +
+          (sqrt2 - expected_mean) * (sqrt2 - expected_mean)) /
+      3.0;
+  assertNear(stats.mean_ratio, expected_mean);
+  assertNear(stats.std_ratio, std::sqrt(expected_variance));
+  assertNear(stats.p05_ratio, 1.0);
+  assertNear(stats.p95_ratio, 0.1 + 0.9 * sqrt2);
+  assertNear(stats.violation_rate, 1.0 / 3.0);
+}
+
 void testRemeshSmoke() {
   const adaiso::Mesh input = makePyramid();
   const auto input_summary = adaiso::summarizeMesh(input);
@@ -333,7 +386,58 @@ void testRemeshSmoke() {
     assert(iterations[i].faces > 0);
     assert(std::isfinite(iterations[i].qavg));
     assert(std::isfinite(iterations[i].qmin));
+    assert(std::isfinite(iterations[i].mean_ratio));
+    assert(std::isfinite(iterations[i].std_ratio));
+    assert(std::isfinite(iterations[i].p05_ratio));
+    assert(std::isfinite(iterations[i].p95_ratio));
+    assert(std::isfinite(iterations[i].violation_rate));
+    assert(iterations[i].violation_rate >= 0.0 && iterations[i].violation_rate <= 1.0);
   }
+}
+
+void testNearestTargetModeRemeshSmoke() {
+  adaiso::AdaIsoConfig config;
+  config.variant = adaiso::Variant::Code;
+  config.target_lookup_mode = adaiso::TargetLookupMode::Nearest;
+  config.mesh_scale = 0.8;
+  config.global_iterations = 1;
+  config.project_to_surface = false;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(makePyramid());
+  output.validate();
+  assert(output.vertexCount() > 0);
+  assert(output.faceCount() > 0);
+  assert(remesher.stats().iterations.size() == 1);
+}
+
+void testTargetFieldConfigValidation() {
+  bool threw = false;
+  try {
+    adaiso::AdaIsoConfig config;
+    config.target_knn_k = 0;
+    config.project_to_surface = false;
+    config.verbose = false;
+    adaiso::AdaIsoRemesher remesher(config);
+    (void)remesher.remesh(makeSingleTriangle());
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    adaiso::AdaIsoConfig config;
+    config.target_gaussian_sigma_factor = 0.0;
+    config.project_to_surface = false;
+    config.verbose = false;
+    adaiso::AdaIsoRemesher remesher(config);
+    (void)remesher.remesh(makeSingleTriangle());
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -447,7 +551,11 @@ int main() {
   testCsfKnownChainSolution();
   testCsfDisconnectedAndConstantComponents();
   testCsfVariantWeightGraphs();
+  testTargetLengthFieldQueries();
+  testEdgeRatioStats();
   testRemeshSmoke();
+  testNearestTargetModeRemeshSmoke();
+  testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
   testRemeshEdgeCases();
   testAreaSampledChamferDistance();
