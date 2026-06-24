@@ -27,6 +27,9 @@ void printUsage(std::ostream& out) {
       << "  --target-k <n>             Gaussian kNN target field neighbors. Default: 8\n"
       << "  --target-sigma-factor <v>  Gaussian target field bandwidth scale. Default: 1.0\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 0.5\n"
+      << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
+      << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
+      << "  --target-gamma <v>         Continuous target response exponent. Default: 1.0\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -188,10 +191,12 @@ std::string buildSummaryJson(
   out << "    \"target_k\": " << config.target_knn_k << ",\n";
   out << "    \"target_sigma_factor\": " << config.target_gaussian_sigma_factor << ",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
+  out << "    \"target_min_factor\": " << config.target_min_factor << ",\n";
+  out << "    \"target_max_factor\": " << config.target_max_factor << ",\n";
+  out << "    \"target_gamma\": " << config.target_gamma << ",\n";
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
-  out << "    \"histogram_bins\": " << config.histogram_bins << ",\n";
   out << "    \"split_factor\": " << config.splitFactor() << ",\n";
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
   out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
@@ -269,6 +274,12 @@ int main(int argc, char** argv) {
         config.target_gaussian_sigma_factor = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--csf-alpha") {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-min-factor") {
+        config.target_min_factor = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-max-factor") {
+        config.target_max_factor = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-gamma") {
+        config.target_gamma = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
@@ -312,6 +323,18 @@ int main(int argc, char** argv) {
     }
     if (config.csf_smoothing_alpha <= 0.0 || !std::isfinite(config.csf_smoothing_alpha)) {
       throw std::runtime_error("--csf-alpha must be positive");
+    }
+    if (config.target_min_factor <= 0.0 || !std::isfinite(config.target_min_factor)) {
+      throw std::runtime_error("--target-min-factor must be positive");
+    }
+    if (config.target_max_factor <= 0.0 || !std::isfinite(config.target_max_factor)) {
+      throw std::runtime_error("--target-max-factor must be positive");
+    }
+    if (config.target_min_factor > config.target_max_factor) {
+      throw std::runtime_error("--target-min-factor must not exceed --target-max-factor");
+    }
+    if (config.target_gamma <= 0.0 || !std::isfinite(config.target_gamma)) {
+      throw std::runtime_error("--target-gamma must be positive");
     }
 
     const auto started = std::chrono::steady_clock::now();

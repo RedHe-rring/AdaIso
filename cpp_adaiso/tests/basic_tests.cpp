@@ -4,6 +4,7 @@
 #include "adaiso/Mesh.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
+#include "adaiso/detail/TargetLengthMapping.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -337,6 +338,31 @@ void testTargetLengthFieldQueries() {
   assertNear(k1_right, nearest_right);
 }
 
+void testContinuousTargetLengthMapping() {
+  const auto lengths = adaiso::detail::continuousTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+  assert(lengths.size() == 3);
+  assertNear(lengths[0], 3.6);
+  assertNear(lengths[1], std::sqrt(3.6 * 1.2));
+  assertNear(lengths[2], 1.2);
+
+  const auto tied = adaiso::detail::continuousTargetLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+  assert(tied.size() == 4);
+  assertNear(tied[1], tied[2]);
+  assert(tied[0] > tied[1]);
+  assert(tied[1] > tied[3]);
+
+  const auto constant = adaiso::detail::continuousTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 1.0);
+  assert(constant.size() == 3);
+  for (double value : constant) {
+    assertNear(value, 3.0);
+  }
+
+  const auto monotonic = adaiso::detail::continuousTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
+  for (std::size_t i = 1; i < monotonic.size(); ++i) {
+    assert(monotonic[i - 1] >= monotonic[i]);
+  }
+}
+
 void testEdgeRatioStats() {
   adaiso::Mesh mesh = makeSingleTriangle();
   adaiso::TargetLengthField field;
@@ -461,6 +487,41 @@ void testTargetFieldConfigValidation() {
     threw = true;
   }
   assert(threw);
+
+  auto assert_invalid_target_config = [](adaiso::AdaIsoConfig config) {
+    config.project_to_surface = false;
+    config.verbose = false;
+    adaiso::AdaIsoRemesher remesher(config);
+    bool invalid_threw = false;
+    try {
+      (void)remesher.remesh(makeSingleTriangle());
+    } catch (const std::runtime_error&) {
+      invalid_threw = true;
+    }
+    assert(invalid_threw);
+  };
+
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_min_factor = 0.0;
+    assert_invalid_target_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_max_factor = 0.0;
+    assert_invalid_target_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_min_factor = 2.0;
+    config.target_max_factor = 1.0;
+    assert_invalid_target_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_gamma = 0.0;
+    assert_invalid_target_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -590,6 +651,7 @@ int main() {
   testCsfScreenedConstantField();
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
+  testContinuousTargetLengthMapping();
   testEdgeRatioStats();
   testRemeshSmoke();
   testNearestTargetModeRemeshSmoke();

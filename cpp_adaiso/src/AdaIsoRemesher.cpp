@@ -3,11 +3,11 @@
 #include "adaiso/Geometry.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
+#include "adaiso/detail/TargetLengthMapping.hpp"
 
 #include <Eigen/Geometry>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -114,20 +114,6 @@ Eigen::Vector3i orientTriangle(
   return tri;
 }
 
-std::size_t clampIndex(long long idx, std::size_t n) {
-  if (n == 0) {
-    return 0;
-  }
-  if (idx < 0) {
-    return 0;
-  }
-  const auto max_index = static_cast<long long>(n - 1);
-  if (idx > max_index) {
-    return n - 1;
-  }
-  return static_cast<std::size_t>(idx);
-}
-
 double quantileOfSorted(const std::vector<double>& sorted, double q) {
   if (sorted.empty()) {
     return 0.0;
@@ -168,6 +154,100 @@ double minQuality(const Mesh& mesh) {
 }
 
 }  // namespace
+
+namespace detail {
+
+std::vector<double> continuousTargetLengths(
+    const std::vector<double>& curvature,
+    double base_length,
+    double mesh_scale,
+    double target_min_factor,
+    double target_max_factor,
+    double target_gamma) {
+  if (curvature.empty()) {
+    return {};
+  }
+  if (base_length <= 0.0 || !std::isfinite(base_length)) {
+    throw std::runtime_error("target base length must be positive");
+  }
+  if (mesh_scale <= 0.0 || !std::isfinite(mesh_scale)) {
+    throw std::runtime_error("mesh scale must be positive");
+  }
+  if (target_min_factor <= 0.0 || !std::isfinite(target_min_factor)) {
+    throw std::runtime_error("target min factor must be positive");
+  }
+  if (target_max_factor <= 0.0 || !std::isfinite(target_max_factor)) {
+    throw std::runtime_error("target max factor must be positive");
+  }
+  if (target_min_factor > target_max_factor) {
+    throw std::runtime_error("target min factor must not exceed target max factor");
+  }
+  if (target_gamma <= 0.0 || !std::isfinite(target_gamma)) {
+    throw std::runtime_error("target gamma must be positive");
+  }
+
+  for (double value : curvature) {
+    if (!std::isfinite(value)) {
+      throw std::runtime_error("curvature values must be finite");
+    }
+  }
+
+  const double scaled_base = base_length * mesh_scale;
+  if (scaled_base <= 0.0 || !std::isfinite(scaled_base)) {
+    throw std::runtime_error("scaled target base length must be positive");
+  }
+
+  std::vector<double> result(curvature.size(), scaled_base);
+  const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
+  if (std::abs(*max_it - *min_it) <= 1e-14) {
+    return result;
+  }
+
+  const double h_min = scaled_base * target_min_factor;
+  const double h_max = scaled_base * target_max_factor;
+  if (h_min <= 0.0 || h_max <= 0.0 || !std::isfinite(h_min) || !std::isfinite(h_max)) {
+    throw std::runtime_error("target length bounds must be positive");
+  }
+
+  std::vector<std::pair<double, std::size_t>> sorted;
+  sorted.reserve(curvature.size());
+  for (std::size_t i = 0; i < curvature.size(); ++i) {
+    sorted.emplace_back(curvature[i], i);
+  }
+  std::sort(sorted.begin(), sorted.end(), [](const auto& lhs, const auto& rhs) {
+    if (lhs.first == rhs.first) {
+      return lhs.second < rhs.second;
+    }
+    return lhs.first < rhs.first;
+  });
+
+  const double denom = static_cast<double>(curvature.size() - 1);
+  const double log_h_min = std::log(h_min);
+  const double log_h_max = std::log(h_max);
+  std::size_t first = 0;
+  while (first < sorted.size()) {
+    std::size_t last = first + 1;
+    while (last < sorted.size() && sorted[last].first == sorted[first].first) {
+      ++last;
+    }
+
+    const double mean_rank = 0.5 * static_cast<double>(first + last - 1);
+    const double q = mean_rank / denom;
+    const double alpha = std::pow(q, target_gamma);
+    const double h = std::exp((1.0 - alpha) * log_h_max + alpha * log_h_min);
+    if (!std::isfinite(h) || h <= 0.0) {
+      throw std::runtime_error("computed target length must be positive");
+    }
+    for (std::size_t i = first; i < last; ++i) {
+      result[sorted[i].second] = h;
+    }
+    first = last;
+  }
+
+  return result;
+}
+
+}  // namespace detail
 
 TargetLengthField::TargetLengthField(TargetLengthField&& other)
     : positions_(std::move(other.positions_)), lengths_(std::move(other.lengths_)) {
@@ -395,6 +475,18 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.csf_smoothing_alpha <= 0.0 || !std::isfinite(config_.csf_smoothing_alpha)) {
     throw std::runtime_error("CSF smoothing alpha must be positive");
   }
+  if (config_.target_min_factor <= 0.0 || !std::isfinite(config_.target_min_factor)) {
+    throw std::runtime_error("target min factor must be positive");
+  }
+  if (config_.target_max_factor <= 0.0 || !std::isfinite(config_.target_max_factor)) {
+    throw std::runtime_error("target max factor must be positive");
+  }
+  if (config_.target_min_factor > config_.target_max_factor) {
+    throw std::runtime_error("target min factor must not exceed target max factor");
+  }
+  if (config_.target_gamma <= 0.0 || !std::isfinite(config_.target_gamma)) {
+    throw std::runtime_error("target gamma must be positive");
+  }
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
@@ -498,12 +590,13 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   const double base_len = meanEdgeLength(mesh);
   const auto curvature = computeCsf(mesh);
-  const auto multipliers = histogramMultipliers(curvature);
-  std::vector<double> target_lengths(mesh.vertices.size(), 1.0);
-  for (std::size_t i = 0; i < target_lengths.size(); ++i) {
-    const double multiplier = i < multipliers.size() ? multipliers[i] : 1.0;
-    target_lengths[i] = std::max(1e-12, base_len * config_.mesh_scale * multiplier);
-  }
+  const auto target_lengths = detail::continuousTargetLengths(
+      curvature,
+      base_len,
+      config_.mesh_scale,
+      config_.target_min_factor,
+      config_.target_max_factor,
+      config_.target_gamma);
   target_field_.build(mesh.vertices, target_lengths);
 
   if (config_.verbose && !target_lengths.empty()) {
@@ -541,92 +634,6 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
   stats_.csf_matrix_nonzeros = solved.stats.matrix_nonzeros;
   stats_.csf_solver_success = solved.stats.solver_success;
   return solved.values;
-}
-
-std::vector<double> AdaIsoRemesher::histogramMultipliers(const std::vector<double>& curvature) const {
-  std::vector<double> result(curvature.size(), 1.0);
-  if (curvature.empty()) {
-    return result;
-  }
-
-  const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
-  const double min_value = *min_it;
-  const double max_value = *max_it;
-  if (std::abs(max_value - min_value) <= 1e-14) {
-    return result;
-  }
-
-  const int bins = std::max(1, config_.histogram_bins);
-  const double width = (max_value - min_value) / static_cast<double>(bins);
-  std::vector<int> counts(static_cast<std::size_t>(bins), 0);
-  for (double value : curvature) {
-    int bin = static_cast<int>(std::floor((value - min_value) / width));
-    bin = std::clamp(bin, 0, bins - 1);
-    counts[static_cast<std::size_t>(bin)] += 1;
-  }
-
-  const int max_count = *std::max_element(counts.begin(), counts.end());
-  std::vector<int> max_bins;
-  for (int i = 0; i < bins; ++i) {
-    if (counts[static_cast<std::size_t>(i)] == max_count) {
-      max_bins.push_back(i);
-    }
-  }
-  const int base_bin = max_bins[max_bins.size() / 2];
-  const double base = min_value + (static_cast<double>(base_bin) + 0.5) * width;
-
-  std::vector<double> sorted = curvature;
-  std::sort(sorted.begin(), sorted.end());
-  std::array<double, 4> cuts{};
-
-  if (config_.variant == Variant::Code) {
-    auto lower = std::lower_bound(sorted.begin(), sorted.end(), base);
-    long long idx = static_cast<long long>(std::distance(sorted.begin(), lower));
-    idx = std::max<long long>(1, std::min<long long>(idx, static_cast<long long>(sorted.size() - 1)));
-    const long long unit_right = std::max<long long>(1, (static_cast<long long>(sorted.size()) - idx) / 5);
-    cuts[0] = sorted[clampIndex((idx / 5) * 2, sorted.size())];
-    cuts[1] = sorted[clampIndex((idx / 5) * 4, sorted.size())];
-    cuts[2] = sorted[clampIndex(idx + unit_right, sorted.size())];
-    cuts[3] = sorted[clampIndex(idx + unit_right * 3, sorted.size())];
-  } else {
-    std::vector<double> left;
-    std::vector<double> right;
-    for (double value : curvature) {
-      if (value <= base) {
-        left.push_back(value);
-      } else {
-        right.push_back(value);
-      }
-    }
-    std::sort(left.begin(), left.end());
-    std::sort(right.begin(), right.end());
-    if (left.empty()) {
-      left.assign(sorted.begin(), sorted.begin() + std::max<std::size_t>(1, sorted.size() / 2));
-    }
-    if (right.empty()) {
-      right.assign(sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
-    }
-    cuts[0] = quantileOfSorted(left, 2.0 / 5.0);
-    cuts[1] = quantileOfSorted(left, 4.0 / 5.0);
-    cuts[2] = quantileOfSorted(right, 1.0 / 5.0);
-    cuts[3] = quantileOfSorted(right, 3.0 / 5.0);
-  }
-
-  for (std::size_t i = 0; i < curvature.size(); ++i) {
-    const double c = curvature[i];
-    if (c < cuts[0]) {
-      result[i] = config_.multipliers[0];
-    } else if (c < cuts[1]) {
-      result[i] = config_.multipliers[1];
-    } else if (c < cuts[2]) {
-      result[i] = config_.multipliers[2];
-    } else if (c < cuts[3]) {
-      result[i] = config_.multipliers[3];
-    } else {
-      result[i] = config_.multipliers[4];
-    }
-  }
-  return result;
 }
 
 double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {

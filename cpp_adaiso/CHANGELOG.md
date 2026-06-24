@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.0
+
+Breaking change:
+Target edge lengths now use a continuous empirical-quantile mapping instead of
+the old five-level curvature histogram assignment.
+
+- Added `--target-min-factor`, `--target-max-factor`, and `--target-gamma`.
+- Removed histogram bin and five-multiplier target assignment configuration.
+- Constant CSF curvature fields now map to `mean_edge_length * mesh_scale`.
+- Kept CSF screened smoothing, Gaussian kNN target lookup, and the remeshing
+  loop behavior unchanged.
+
 ## 2.3.0
 
 Breaking change:

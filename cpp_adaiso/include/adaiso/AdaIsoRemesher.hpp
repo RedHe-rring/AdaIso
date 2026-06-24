@@ -4,7 +4,6 @@
 #include "adaiso/KDTree.hpp"
 #include "adaiso/Mesh.hpp"
 
-#include <array>
 #include <cstddef>
 #include <string>
 #include <unordered_set>
@@ -62,10 +61,11 @@ struct AdaIsoConfig {
   int target_knn_k = 8;
   double target_gaussian_sigma_factor = 1.0;
   double csf_smoothing_alpha = 0.5;
+  double target_min_factor = 0.6;
+  double target_max_factor = 1.8;
+  double target_gamma = 1.0;
   bool preprocess = false;
   int global_iterations = 5;
-  int histogram_bins = 40;
-  std::array<double, 5> multipliers = {1.8, 1.4, 1.0, 0.8, 0.6};
   double subremesh_multiplier = 1.5;
   int max_subremesh_rounds = 8;
   int max_split_passes = 10;
@@ -125,7 +125,6 @@ class AdaIsoRemesher {
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
   void buildTargetLengths(const Mesh& mesh);
   [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
-  [[nodiscard]] std::vector<double> histogramMultipliers(const std::vector<double>& curvature) const;
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] double edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;

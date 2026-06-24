@@ -11,7 +11,7 @@
 - 以“贴近作者源码行为”为主，而不是逐行移植作者原始 C++。
 - 提供可构建、可运行、可测试的命令行工具 `adaiso_cli`。
 - 支持常见三角网格输入并统一输出 OBJ。
-- 保留论文和作者源码中的关键算法结构：曲率平滑场、直方图目标边长、split/collapse/flip/smooth 全局迭代、MLS 投影。
+- 保留论文和作者源码中的关键算法结构：曲率平滑场、自适应目标边长、split/collapse/flip/smooth 全局迭代、MLS 投影。
 - 避免复刻作者源码中较脆弱的数据结构和未初始化变量行为。
 
 当前默认参数偏向作者源码行为：
@@ -20,8 +20,9 @@
 variant = code
 mesh_scale = 1.0
 global_iterations = 5
-histogram_bins = 40
-multipliers = {1.8, 1.4, 1.0, 0.8, 0.6}
+target_min_factor = 0.6
+target_max_factor = 1.8
+target_gamma = 1.0
 split_factor = 1.33
 collapse_factor = 0.8
 tangent_lambda = 0.6
@@ -131,8 +132,8 @@ using Edge = std::pair<int, int>;
 - `variant`：`code` 或 `paper`。
 - `mesh_scale`：全局目标边长缩放。
 - `global_iterations`：全局重网格化迭代次数。
-- `histogram_bins`：曲率直方图 bin 数。
-- `multipliers`：五类曲率区域的目标边长倍率。
+- `target_min_factor` / `target_max_factor`：连续目标边长范围。
+- `target_gamma`：连续曲率响应指数。
 - `project_to_surface`：是否做 MLS 投影。
 - `min_quality_after_collapse`：collapse 局部质量保护阈值。
 
@@ -228,8 +229,8 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input);
 4. buildTargetLengths()
    4.1 计算平均边长
    4.2 计算 CSF 曲率平滑场
-   4.3 曲率直方图分组
-   4.4 为每个目标点分配目标边长
+   4.3 使用经验分位数连续映射目标边长
+   4.4 为每个目标点保存目标边长
    4.5 构建目标点 KD-tree
 5. 全局迭代 global_iterations 次：
    5.1 splitLongEdges()
@@ -254,38 +255,41 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh);
 
 1. 计算面积加权顶点法向。
 2. 对每个顶点计算与一环邻居法向的夹角。
-3. `variant=code` 使用平均夹角作为初始曲率。
-4. `variant=paper` 使用最大夹角作为初始曲率。
-5. 使用 cotangent 权重进行迭代平滑。
-6. 固定最大曲率点和一个低曲率参考点，避免场整体漂移。
-7. 平滑停止条件为平均变化小于 `csf_tolerance`，或达到 `csf_max_iterations`。
+3. 将平均夹角作为 raw curvature。
+4. 使用 screened sparse solve 平滑：
+   `(M + alpha h^2 L)c = M r`
+5. `M` 使用 barycentric vertex mass，`L` 使用 clamped cotangent weights。
+6. 记录 assembly/factorization/solve 时间、residual、非零元数量和 solver success。
 
-`variant=code` 中，平滑权重还除以边长，体现作者源码中更偏距离加权的行为倾向。
+`variant` 不再影响 CSF 曲率定义，只继续影响 split/collapse 阈值口径。
 
 ## 10. 目标边长分配
 
 函数：
 
 ```cpp
-std::vector<double> AdaIsoRemesher::histogramMultipliers(const std::vector<double>& curvature) const;
+std::vector<double> adaiso::detail::continuousTargetLengths(...);
 ```
 
 流程：
 
-1. 对曲率做 40-bin 直方图。
-2. 找到计数最多的 bin，取其中点作为 base。
-3. 根据 `variant` 计算 4 个 cut，将曲率分成 5 类。
-4. 每类映射到一个倍率：
+1. 对 CSF 曲率排序，计算每个顶点的经验分位数 `q_i`。
+2. 重复曲率值共享 tie block 的平均 rank。
+3. 计算 `alpha_i = q_i ^ target_gamma`。
+4. 在 log length 空间中从 `h_max` 连续插值到 `h_min`：
 
 ```text
-低曲率到高曲率: 1.8, 1.4, 1.0, 0.8, 0.6
+h_i = exp((1 - alpha_i) * log(h_max) + alpha_i * log(h_min))
 ```
 
-目标边长：
+其中：
 
 ```text
-target_L[i] = mean_edge_length * mesh_scale * multiplier[i]
+h_min = mean_edge_length * mesh_scale * target_min_factor
+h_max = mean_edge_length * mesh_scale * target_max_factor
 ```
+
+常量曲率场直接映射为 `mean_edge_length * mesh_scale`。
 
 后续网格拓扑变化后，当前顶点的目标边长通过 KD-tree 最近邻查询原始目标点得到。
 
