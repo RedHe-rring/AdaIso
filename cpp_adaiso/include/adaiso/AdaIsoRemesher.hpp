@@ -61,6 +61,7 @@ struct AdaIsoConfig {
   TargetLookupMode target_lookup_mode = TargetLookupMode::GaussianKnn;
   int target_knn_k = 8;
   double target_gaussian_sigma_factor = 1.0;
+  double csf_smoothing_alpha = 0.5;
   bool preprocess = false;
   int global_iterations = 5;
   int histogram_bins = 40;
@@ -109,8 +110,6 @@ struct AdaIsoStats {
   double csf_solve_time_ms = 0.0;
   double csf_residual_abs = 0.0;
   double csf_residual_scaled = 0.0;
-  std::size_t csf_free_vertices = 0;
-  std::size_t csf_fixed_vertices = 0;
   std::size_t csf_matrix_nonzeros = 0;
   bool csf_solver_success = false;
 };

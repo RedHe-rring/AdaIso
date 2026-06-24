@@ -24,8 +24,6 @@ struct CsfSolveStats {
   double solve_time_ms = 0.0;
   double residual_abs = 0.0;
   double residual_scaled = 0.0;
-  std::size_t free_vertices = 0;
-  std::size_t fixed_vertices = 0;
   std::size_t matrix_nonzeros = 0;
   bool solver_success = false;
 };
@@ -35,11 +33,12 @@ struct CsfSolveResult {
   CsfSolveStats stats;
 };
 
-[[nodiscard]] CsfAdjacency buildCsfWeightGraph(const Mesh& mesh, bool length_scaled);
+[[nodiscard]] CsfAdjacency buildCsfWeightGraph(const Mesh& mesh);
 
-[[nodiscard]] CsfSolveResult solveDirichletCsf(
-    const CsfAdjacency& adjacency,
+[[nodiscard]] CsfSolveResult solveScreenedCsf(
+    const Mesh& mesh,
     const std::vector<double>& initial_values,
+    double smoothing_alpha,
     double residual_threshold = kResidualThreshold);
 
 }  // namespace adaiso::detail

@@ -26,6 +26,7 @@ void printUsage(std::ostream& out) {
       << "  --target-mode <nearest|gaussian> Default: gaussian\n"
       << "  --target-k <n>             Gaussian kNN target field neighbors. Default: 8\n"
       << "  --target-sigma-factor <v>  Gaussian target field bandwidth scale. Default: 1.0\n"
+      << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 0.5\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -186,6 +187,7 @@ std::string buildSummaryJson(
   out << "    \"target_mode\": \"" << adaiso::toString(config.target_lookup_mode) << "\",\n";
   out << "    \"target_k\": " << config.target_knn_k << ",\n";
   out << "    \"target_sigma_factor\": " << config.target_gaussian_sigma_factor << ",\n";
+  out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
@@ -211,8 +213,6 @@ std::string buildSummaryJson(
   out << "    \"csf_solve_time_ms\": " << stats.csf_solve_time_ms << ",\n";
   out << "    \"csf_residual_abs\": " << stats.csf_residual_abs << ",\n";
   out << "    \"csf_residual_scaled\": " << stats.csf_residual_scaled << ",\n";
-  out << "    \"csf_free_vertices\": " << stats.csf_free_vertices << ",\n";
-  out << "    \"csf_fixed_vertices\": " << stats.csf_fixed_vertices << ",\n";
   out << "    \"csf_matrix_nonzeros\": " << stats.csf_matrix_nonzeros << ",\n";
   out << "    \"csf_solver_success\": " << (stats.csf_solver_success ? "true" : "false") << "\n";
   out << "  }\n";
@@ -267,6 +267,8 @@ int main(int argc, char** argv) {
         config.target_knn_k = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-sigma-factor") {
         config.target_gaussian_sigma_factor = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--csf-alpha") {
+        config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
@@ -307,6 +309,9 @@ int main(int argc, char** argv) {
     }
     if (config.target_gaussian_sigma_factor <= 0.0 || !std::isfinite(config.target_gaussian_sigma_factor)) {
       throw std::runtime_error("--target-sigma-factor must be positive");
+    }
+    if (config.csf_smoothing_alpha <= 0.0 || !std::isfinite(config.csf_smoothing_alpha)) {
+      throw std::runtime_error("--csf-alpha must be positive");
     }
 
     const auto started = std::chrono::steady_clock::now();

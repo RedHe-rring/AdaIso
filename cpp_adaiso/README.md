@@ -4,14 +4,13 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.2.0. The CSF stage is computed exclusively with a Dirichlet
-Laplace sparse solve. The old explicit CSF iteration parameters and iteration
-statistics were removed as a breaking interface change.
+This is version 2.3.0. The CSF stage is computed exclusively with a screened
+Laplace sparse solve, `(M + alpha h^2 L)c = M r`, using barycentric vertex
+masses and clamped cotangent weights. The old Dirichlet harmonic CSF solve and
+its fixed/free anchor statistics have been removed.
 
-Version 2.2.0 changes the default target edge-length lookup from nearest
-neighbor to Gaussian kNN interpolation and adds per-iteration edge-ratio
-stability metrics. The nearest-neighbor lookup remains available for A/B
-experiments and v2.1.1 compatibility.
+Version 2.3.0 keeps the Gaussian kNN target edge-length lookup from v2.2.0 and
+changes only the curvature smoothing field used before histogram assignment.
 
 ## Scope
 
@@ -23,7 +22,7 @@ Implemented:
 - OBJ and ASCII PLY output.
 - Degenerate and duplicate unoriented triangle cleanup.
 - Area-weighted vertex normals.
-- Curvature-smoothed field from vertex normal variation and a Dirichlet Laplace sparse solve.
+- Curvature-smoothed field from mean vertex-normal variation and a screened Laplace sparse solve.
 - Histogram-based local target edge length assignment.
 - KD-tree target length lookup via nanoflann, with nearest-neighbor and Gaussian kNN modes.
 - Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
@@ -103,10 +102,11 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 ## Parameters
 
 - `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
-- `--variant code|paper`: `code` uses source-like split/collapse thresholds and length-scaled CSF weights; `paper` uses the paper split/collapse convention and cotangent CSF weights.
+- `--variant code|paper`: controls remeshing thresholds and collapse reference behavior; CSF curvature smoothing is shared by both variants.
 - `--target-mode nearest|gaussian`: target edge-length lookup. Default: `gaussian`.
 - `--target-k`: neighbor count for Gaussian kNN target lookup. Default: `8`.
 - `--target-sigma-factor`: bandwidth multiplier for Gaussian kNN target lookup. Default: `1.0`.
+- `--csf-alpha`: screened CSF smoothing strength in `lambda = alpha h^2`. Default: `0.5`.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.
@@ -163,6 +163,9 @@ with batch passes. Version 2.1.1 keeps the algorithm behavior unchanged and adds
 PLY output, iteration logging, and optional GT Chamfer Distance evaluation.
 Version 2.2.0 keeps the same CSF and remeshing stages, but smooths the target
 edge-length field by default with Gaussian kNN interpolation.
+Version 2.3.0 replaces the Dirichlet harmonic CSF solve with screened smoothing
+that preserves a data term at every vertex and no longer selects fixed anchor
+vertices.
 
 Nearest-neighbor target lookup produces a piecewise constant field with jumps at
 KD-tree Voronoi boundaries. Gaussian kNN lookup replaces that hard assignment

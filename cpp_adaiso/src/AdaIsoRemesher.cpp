@@ -392,6 +392,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.target_gaussian_sigma_factor <= 0.0 || !std::isfinite(config_.target_gaussian_sigma_factor)) {
     throw std::runtime_error("target gaussian sigma factor must be positive");
   }
+  if (config_.csf_smoothing_alpha <= 0.0 || !std::isfinite(config_.csf_smoothing_alpha)) {
+    throw std::runtime_error("CSF smoothing alpha must be positive");
+  }
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
@@ -493,12 +496,6 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 }
 
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
-  if (mesh.vertices.empty()) {
-    target_field_.clear();
-    stats_.csf_solver_success = true;
-    return;
-  }
-
   const double base_len = meanEdgeLength(mesh);
   const auto curvature = computeCsf(mesh);
   const auto multipliers = histogramMultipliers(curvature);
@@ -525,31 +522,22 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
       continue;
     }
     double accum = 0.0;
-    double max_angle = 0.0;
     int count = 0;
     for (int j : neigh[i]) {
       const double dot = std::clamp(normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
       const double angle = std::acos(dot);
       accum += angle;
-      max_angle = std::max(max_angle, angle);
       ++count;
     }
-    curvature[i] = config_.variant == Variant::Paper ? max_angle : accum / static_cast<double>(count);
+    curvature[i] = accum / static_cast<double>(count);
   }
 
-  if (curvature.empty()) {
-    return curvature;
-  }
-
-  const auto adjacency = detail::buildCsfWeightGraph(mesh, config_.variant == Variant::Code);
-  const auto solved = detail::solveDirichletCsf(adjacency, curvature);
+  const auto solved = detail::solveScreenedCsf(mesh, curvature, config_.csf_smoothing_alpha);
   stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
   stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
   stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
   stats_.csf_residual_abs = solved.stats.residual_abs;
   stats_.csf_residual_scaled = solved.stats.residual_scaled;
-  stats_.csf_free_vertices = solved.stats.free_vertices;
-  stats_.csf_fixed_vertices = solved.stats.fixed_vertices;
   stats_.csf_matrix_nonzeros = solved.stats.matrix_nonzeros;
   stats_.csf_solver_success = solved.stats.solver_success;
   return solved.values;

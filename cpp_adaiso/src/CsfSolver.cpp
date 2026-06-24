@@ -27,15 +27,29 @@ double positiveFiniteWeight(double weight) {
   return std::isfinite(weight) && weight > 0.0 ? weight : kCsfEta;
 }
 
-void validateInputs(const CsfAdjacency& adjacency, const std::vector<double>& initial_values) {
-  if (adjacency.size() != initial_values.size()) {
+void validateRawValues(const Mesh& mesh, const std::vector<double>& values) {
+  mesh.validate();
+  if (mesh.vertices.empty()) {
+    throw std::runtime_error("CSF screened solve requires a non-empty mesh");
+  }
+  if (values.size() != mesh.vertices.size()) {
     throw std::runtime_error("CSF solve input size mismatch");
   }
-  for (std::size_t i = 0; i < initial_values.size(); ++i) {
-    if (!std::isfinite(initial_values[i])) {
+  for (double value : values) {
+    if (!std::isfinite(value)) {
       throw std::runtime_error("CSF initial value is not finite");
     }
+  }
+}
+
+void validateAdjacency(const CsfAdjacency& adjacency) {
+  if (adjacency.empty()) {
+    throw std::runtime_error("CSF screened solve requires a non-empty adjacency");
+  }
+  bool has_edge = false;
+  for (std::size_t i = 0; i < adjacency.size(); ++i) {
     for (const CsfNeighbor& neighbor : adjacency[i]) {
+      has_edge = true;
       if (neighbor.vertex < 0 || static_cast<std::size_t>(neighbor.vertex) >= adjacency.size()) {
         throw std::runtime_error("CSF adjacency contains an out-of-range vertex");
       }
@@ -44,119 +58,27 @@ void validateInputs(const CsfAdjacency& adjacency, const std::vector<double>& in
       }
     }
   }
-}
-
-std::vector<std::vector<int>> connectedComponents(const CsfAdjacency& adjacency) {
-  std::vector<std::vector<int>> components;
-  std::vector<char> visited(adjacency.size(), 0);
-
-  for (std::size_t start = 0; start < adjacency.size(); ++start) {
-    if (visited[start]) {
-      continue;
-    }
-    std::vector<int> component;
-    std::vector<int> stack = {static_cast<int>(start)};
-    visited[start] = 1;
-
-    while (!stack.empty()) {
-      const int v = stack.back();
-      stack.pop_back();
-      component.push_back(v);
-      for (const CsfNeighbor& neighbor : adjacency[static_cast<std::size_t>(v)]) {
-        const int n = neighbor.vertex;
-        if (!visited[static_cast<std::size_t>(n)]) {
-          visited[static_cast<std::size_t>(n)] = 1;
-          stack.push_back(n);
-        }
-      }
-    }
-
-    std::sort(component.begin(), component.end());
-    components.push_back(std::move(component));
+  if (!has_edge) {
+    throw std::runtime_error("CSF screened solve requires at least one mesh edge");
   }
-  return components;
 }
 
-bool componentHasConstantValue(const std::vector<int>& component, const std::vector<double>& values) {
-  double min_value = std::numeric_limits<double>::infinity();
-  double max_value = -std::numeric_limits<double>::infinity();
-  for (int v : component) {
-    const double value = values[static_cast<std::size_t>(v)];
-    min_value = std::min(min_value, value);
-    max_value = std::max(max_value, value);
+std::vector<double> barycentricVertexMasses(const Mesh& mesh) {
+  std::vector<double> masses(mesh.vertices.size(), 0.0);
+  for (const auto& face : mesh.faces) {
+    const double area = triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
+    const double share = area / 3.0;
+    masses[static_cast<std::size_t>(face[0])] += share;
+    masses[static_cast<std::size_t>(face[1])] += share;
+    masses[static_cast<std::size_t>(face[2])] += share;
   }
-  return max_value - min_value <= 1e-14;
-}
 
-int componentMaxVertex(const std::vector<int>& component, const std::vector<double>& values) {
-  return *std::max_element(component.begin(), component.end(), [&](int lhs, int rhs) {
-    const double lv = values[static_cast<std::size_t>(lhs)];
-    const double rv = values[static_cast<std::size_t>(rhs)];
-    if (lv == rv) {
-      return lhs > rhs;
-    }
-    return lv < rv;
-  });
-}
-
-int componentMinVertex(
-    const std::vector<int>& component,
-    const std::vector<double>& values,
-    const std::vector<char>& excluded) {
-  int best = -1;
-  double best_value = std::numeric_limits<double>::infinity();
-  for (int v : component) {
-    if (excluded[static_cast<std::size_t>(v)]) {
-      continue;
-    }
-    const double value = values[static_cast<std::size_t>(v)];
-    if (value < best_value || (value == best_value && (best < 0 || v < best))) {
-      best_value = value;
-      best = v;
+  for (double mass : masses) {
+    if (!std::isfinite(mass) || mass <= 0.0) {
+      throw std::runtime_error("CSF screened solve requires positive finite vertex masses");
     }
   }
-  return best;
-}
-
-std::vector<char> selectFixedVertices(const CsfAdjacency& adjacency, const std::vector<double>& values) {
-  std::vector<char> fixed(values.size(), 0);
-  for (const std::vector<int>& component : connectedComponents(adjacency)) {
-    if (component.empty()) {
-      continue;
-    }
-    if (component.size() == 1 || componentHasConstantValue(component, values)) {
-      for (int v : component) {
-        fixed[static_cast<std::size_t>(v)] = 1;
-      }
-      continue;
-    }
-    if (component.size() == 2) {
-      fixed[static_cast<std::size_t>(component[0])] = 1;
-      fixed[static_cast<std::size_t>(component[1])] = 1;
-      continue;
-    }
-
-    const int vmax = componentMaxVertex(component, values);
-    std::vector<char> excluded(values.size(), 0);
-    excluded[static_cast<std::size_t>(vmax)] = 1;
-    for (const CsfNeighbor& neighbor : adjacency[static_cast<std::size_t>(vmax)]) {
-      excluded[static_cast<std::size_t>(neighbor.vertex)] = 1;
-    }
-
-    int vmin = componentMinVertex(component, values, excluded);
-    if (vmin < 0) {
-      std::fill(excluded.begin(), excluded.end(), 0);
-      excluded[static_cast<std::size_t>(vmax)] = 1;
-      vmin = componentMinVertex(component, values, excluded);
-    }
-    if (vmin < 0) {
-      throw std::runtime_error("CSF anchor selection failed");
-    }
-
-    fixed[static_cast<std::size_t>(vmax)] = 1;
-    fixed[static_cast<std::size_t>(vmin)] = 1;
-  }
-  return fixed;
+  return masses;
 }
 
 double sparseInfinityNorm(const SparseMatrix& matrix) {
@@ -171,7 +93,8 @@ double sparseInfinityNorm(const SparseMatrix& matrix) {
 
 }  // namespace
 
-CsfAdjacency buildCsfWeightGraph(const Mesh& mesh, bool length_scaled) {
+CsfAdjacency buildCsfWeightGraph(const Mesh& mesh) {
+  mesh.validate();
   CsfAdjacency adjacency(mesh.vertexCount());
   const auto weights = cotangentEdgeWeights(mesh, kCsfEta);
   for (const auto& item : weights) {
@@ -182,13 +105,7 @@ CsfAdjacency buildCsfWeightGraph(const Mesh& mesh, bool length_scaled) {
       continue;
     }
 
-    double weight = positiveFiniteWeight(item.second);
-    if (length_scaled) {
-      const double length = (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
-      weight /= std::max(length, kMinEdgeLength);
-      weight = positiveFiniteWeight(weight);
-    }
-
+    const double weight = positiveFiniteWeight(item.second);
     adjacency[static_cast<std::size_t>(a)].push_back({b, weight});
     adjacency[static_cast<std::size_t>(b)].push_back({a, weight});
   }
@@ -201,66 +118,55 @@ CsfAdjacency buildCsfWeightGraph(const Mesh& mesh, bool length_scaled) {
   return adjacency;
 }
 
-CsfSolveResult solveDirichletCsf(
-    const CsfAdjacency& adjacency,
+CsfSolveResult solveScreenedCsf(
+    const Mesh& mesh,
     const std::vector<double>& initial_values,
+    double smoothing_alpha,
     double residual_threshold) {
-  validateInputs(adjacency, initial_values);
+  validateRawValues(mesh, initial_values);
+  if (!std::isfinite(smoothing_alpha) || smoothing_alpha <= 0.0) {
+    throw std::runtime_error("CSF smoothing alpha must be positive");
+  }
+
+  const double mean_length = meanEdgeLength(mesh);
+  if (!std::isfinite(mean_length) || mean_length <= 0.0) {
+    throw std::runtime_error("CSF screened solve requires a positive mean edge length");
+  }
+
+  const CsfAdjacency adjacency = buildCsfWeightGraph(mesh);
+  validateAdjacency(adjacency);
+  const std::vector<double> masses = barycentricVertexMasses(mesh);
+  const double lambda = smoothing_alpha * mean_length * mean_length;
+  if (!std::isfinite(lambda) || lambda <= 0.0) {
+    throw std::runtime_error("CSF screened solve produced a non-positive diffusion strength");
+  }
 
   CsfSolveResult result;
-  result.values = initial_values;
-
-  if (initial_values.empty()) {
-    result.stats.solver_success = true;
-    return result;
-  }
-
-  const std::vector<char> fixed = selectFixedVertices(adjacency, initial_values);
-  std::vector<int> free_index(initial_values.size(), -1);
-  for (std::size_t i = 0; i < initial_values.size(); ++i) {
-    if (fixed[i]) {
-      ++result.stats.fixed_vertices;
-    } else {
-      free_index[i] = static_cast<int>(result.stats.free_vertices++);
-    }
-  }
-
-  if (result.stats.free_vertices == 0) {
-    result.stats.solver_success = true;
-    return result;
-  }
-
   const auto assembly_start = Clock::now();
   std::vector<Triplet> triplets;
-  triplets.reserve(result.stats.free_vertices * 8);
-  Eigen::VectorXd rhs = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(result.stats.free_vertices));
+  triplets.reserve(mesh.vertices.size() * 8);
+  Eigen::VectorXd rhs = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(mesh.vertices.size()));
 
   for (std::size_t i = 0; i < adjacency.size(); ++i) {
-    const int row = free_index[i];
-    if (row < 0) {
-      continue;
-    }
-
-    double diagonal = 0.0;
+    double diagonal = masses[i];
+    rhs[static_cast<Eigen::Index>(i)] = masses[i] * initial_values[i];
     for (const CsfNeighbor& neighbor : adjacency[i]) {
       const double weight = neighbor.weight;
-      diagonal += weight;
-      const int col = free_index[static_cast<std::size_t>(neighbor.vertex)];
-      if (col >= 0) {
-        triplets.emplace_back(row, col, -weight);
-      } else {
-        rhs[row] += weight * initial_values[static_cast<std::size_t>(neighbor.vertex)];
-      }
+      diagonal += lambda * weight;
+      triplets.emplace_back(
+          static_cast<int>(i),
+          neighbor.vertex,
+          -lambda * weight);
     }
-    if (diagonal <= 0.0 || !std::isfinite(diagonal)) {
-      throw std::runtime_error("CSF free vertex has no positive finite Laplace diagonal");
+    if (!std::isfinite(diagonal) || diagonal <= 0.0) {
+      throw std::runtime_error("CSF screened matrix has a non-positive diagonal");
     }
-    triplets.emplace_back(row, row, diagonal);
+    triplets.emplace_back(static_cast<int>(i), static_cast<int>(i), diagonal);
   }
 
   SparseMatrix matrix(
-      static_cast<Eigen::Index>(result.stats.free_vertices),
-      static_cast<Eigen::Index>(result.stats.free_vertices));
+      static_cast<Eigen::Index>(mesh.vertices.size()),
+      static_cast<Eigen::Index>(mesh.vertices.size()));
   matrix.setFromTriplets(triplets.begin(), triplets.end());
   matrix.makeCompressed();
   result.stats.matrix_nonzeros = static_cast<std::size_t>(matrix.nonZeros());
@@ -271,17 +177,17 @@ CsfSolveResult solveDirichletCsf(
   solver.compute(matrix);
   const auto factor_end = Clock::now();
   if (solver.info() != Eigen::Success) {
-    throw std::runtime_error("CSF Laplace factorization failed");
+    throw std::runtime_error("CSF screened factorization failed");
   }
 
   const auto solve_start = Clock::now();
   const Eigen::VectorXd solution = solver.solve(rhs);
   const auto solve_end = Clock::now();
   if (solver.info() != Eigen::Success) {
-    throw std::runtime_error("CSF Laplace solve failed");
+    throw std::runtime_error("CSF screened solve failed");
   }
   if (!solution.allFinite()) {
-    throw std::runtime_error("CSF Laplace solve produced non-finite values");
+    throw std::runtime_error("CSF screened solve produced non-finite values");
   }
 
   const Eigen::VectorXd residual = matrix * solution - rhs;
@@ -293,14 +199,12 @@ CsfSolveResult solveDirichletCsf(
       2.0 * result.stats.residual_abs / (matrix_inf * solution_inf + rhs_inf + std::numeric_limits<double>::epsilon());
   if (result.stats.residual_scaled > residual_threshold) {
     throw std::runtime_error(
-        "CSF Laplace residual too high: " + std::to_string(result.stats.residual_scaled));
+        "CSF screened residual too high: " + std::to_string(result.stats.residual_scaled));
   }
 
-  for (std::size_t i = 0; i < free_index.size(); ++i) {
-    const int idx = free_index[i];
-    if (idx >= 0) {
-      result.values[i] = solution[idx];
-    }
+  result.values.resize(static_cast<std::size_t>(solution.size()));
+  for (Eigen::Index i = 0; i < solution.size(); ++i) {
+    result.values[static_cast<std::size_t>(i)] = solution[i];
   }
 
   result.stats.assembly_time_ms = elapsedMs(assembly_start, assembly_end);

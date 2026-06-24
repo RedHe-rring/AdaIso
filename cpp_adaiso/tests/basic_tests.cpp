@@ -97,15 +97,6 @@ adaiso::Mesh makeTwoDisconnectedOctahedra() {
   return mesh;
 }
 
-adaiso::detail::CsfAdjacency makeChainAdjacency(int vertices) {
-  adaiso::detail::CsfAdjacency adjacency(static_cast<std::size_t>(vertices));
-  for (int i = 0; i + 1 < vertices; ++i) {
-    adjacency[static_cast<std::size_t>(i)].push_back({i + 1, 1.0});
-    adjacency[static_cast<std::size_t>(i + 1)].push_back({i, 1.0});
-  }
-  return adjacency;
-}
-
 void assertNear(double actual, double expected, double eps = 1e-10) {
   assert(std::abs(actual - expected) <= eps);
 }
@@ -134,16 +125,34 @@ void assertSymmetricPositive(const adaiso::detail::CsfAdjacency& adjacency) {
   }
 }
 
-void assertHarmonicResidual(
-    const adaiso::detail::CsfAdjacency& adjacency,
+std::vector<double> vertexMasses(const adaiso::Mesh& mesh) {
+  std::vector<double> masses(mesh.vertices.size(), 0.0);
+  for (const auto& face : mesh.faces) {
+    const double area = adaiso::triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
+    const double share = area / 3.0;
+    masses[static_cast<std::size_t>(face[0])] += share;
+    masses[static_cast<std::size_t>(face[1])] += share;
+    masses[static_cast<std::size_t>(face[2])] += share;
+  }
+  return masses;
+}
+
+void assertScreenedResidual(
+    const adaiso::Mesh& mesh,
+    const std::vector<double>& raw,
     const std::vector<double>& values,
-    const std::vector<int>& free_vertices,
+    double alpha,
     double eps = 1e-10) {
-  for (int i : free_vertices) {
-    double residual = 0.0;
-    for (const auto& neighbor : adjacency[static_cast<std::size_t>(i)]) {
-      residual += neighbor.weight * (values[static_cast<std::size_t>(i)] - values[static_cast<std::size_t>(neighbor.vertex)]);
+  const auto adjacency = adaiso::detail::buildCsfWeightGraph(mesh);
+  const auto masses = vertexMasses(mesh);
+  const double h = adaiso::meanEdgeLength(mesh);
+  const double lambda = alpha * h * h;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    double laplacian = 0.0;
+    for (const auto& neighbor : adjacency[i]) {
+      laplacian += neighbor.weight * (values[i] - values[static_cast<std::size_t>(neighbor.vertex)]);
     }
+    const double residual = masses[i] * (values[i] - raw[i]) + lambda * laplacian;
     assert(std::abs(residual) <= eps);
   }
 }
@@ -225,80 +234,81 @@ void testOffLoad() {
   assert(loaded.faceCount() == 2);
 }
 
-void testCsfKnownChainSolution() {
-  const auto adjacency = makeChainAdjacency(4);
-  const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 0.0, 0.0, 1.0});
+void testCsfScreenedKnownTriangleSolution() {
+  const adaiso::Mesh mesh = makeSingleTriangle();
+  const std::vector<double> raw = {0.0, 0.0, 1.0};
+  const double alpha = 1.0;
+  const auto result = adaiso::detail::solveScreenedCsf(mesh, raw, alpha);
   assert(result.stats.solver_success);
-  assert(result.stats.fixed_vertices == 2);
-  assert(result.stats.free_vertices == 2);
-  assert(result.stats.matrix_nonzeros == 4);
+  assert(result.stats.matrix_nonzeros == 9);
   assert(result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
-  assertNear(result.values[0], 0.0);
-  assertNear(result.values[1], 1.0 / 3.0);
-  assertNear(result.values[2], 2.0 / 3.0);
-  assertNear(result.values[3], 1.0);
-  assertHarmonicResidual(adjacency, result.values, {1, 2});
-  for (double value : result.values) {
-    assert(value >= -1e-12 && value <= 1.0 + 1e-12);
-  }
+  assertFiniteValues(result.values);
+  assertNear(result.values[0], 0.30699714, 1e-8);
+  assertNear(result.values[1], 0.24419278, 1e-8);
+  assertNear(result.values[2], 0.44881008, 1e-8);
+  assertScreenedResidual(mesh, raw, result.values, alpha);
 }
 
-void testCsfDisconnectedAndConstantComponents() {
-  auto adjacency = makeChainAdjacency(9);
-  adjacency[3].clear();
-  adjacency[4].clear();
-  adjacency[3].push_back({2, 1.0});
-  adjacency[4].push_back({5, 1.0});
-  adjacency[2].clear();
-  adjacency[2].push_back({1, 1.0});
-  adjacency[2].push_back({3, 1.0});
-  adjacency[5].clear();
-  adjacency[5].push_back({4, 1.0});
-  adjacency[5].push_back({6, 1.0});
-  adjacency[6].clear();
-  adjacency[6].push_back({5, 1.0});
-  adjacency[6].push_back({7, 1.0});
-  adjacency[7].clear();
-  adjacency[7].push_back({6, 1.0});
-  adjacency[8].clear();
-
-  const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 5.0, 7.0});
-  assert(result.stats.solver_success);
-  assert(result.stats.fixed_vertices == 5);
-  assert(result.stats.free_vertices == 4);
-  assertNear(result.values[1], 1.0 / 3.0);
-  assertNear(result.values[2], 2.0 / 3.0);
-  assertNear(result.values[5], 3.0);
-  assertNear(result.values[6], 4.0);
-  assertNear(result.values[8], 7.0);
-  assert(result.values[4] != result.values[5]);
-  assertHarmonicResidual(adjacency, result.values, {1, 2, 5, 6});
-
-  const auto constant = adaiso::detail::solveDirichletCsf(makeChainAdjacency(4), {2.0, 2.0, 2.0, 2.0});
-  assert(constant.stats.solver_success);
-  assert(constant.stats.free_vertices == 0);
-  assert(constant.stats.fixed_vertices == 4);
-  for (double value : constant.values) {
-    assertNear(value, 2.0);
-  }
-}
-
-void testCsfVariantWeightGraphs() {
+void testCsfScreenedConstantField() {
   const adaiso::Mesh mesh = makePyramid();
-  const auto paper = adaiso::detail::buildCsfWeightGraph(mesh, false);
-  const auto code = adaiso::detail::buildCsfWeightGraph(mesh, true);
-  assertSymmetricPositive(paper);
-  assertSymmetricPositive(code);
+  const std::vector<double> raw(mesh.vertexCount(), 2.0);
+  const auto result = adaiso::detail::solveScreenedCsf(mesh, raw, 0.5);
+  assert(result.stats.solver_success);
+  assertFiniteValues(result.values);
+  for (double value : result.values) {
+    assertNear(value, 2.0, 1e-10);
+  }
+  assertScreenedResidual(mesh, raw, result.values, 0.5);
+}
 
-  const std::vector<double> initial = {0.0, 0.2, 0.4, 0.6, 1.0};
-  const auto paper_result = adaiso::detail::solveDirichletCsf(paper, initial);
-  const auto code_result = adaiso::detail::solveDirichletCsf(code, initial);
-  assert(paper_result.stats.solver_success);
-  assert(code_result.stats.solver_success);
-  assertFiniteValues(paper_result.values);
-  assertFiniteValues(code_result.values);
-  assert(paper_result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
-  assert(code_result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
+void testCsfScreenedWeightGraphAndStrictValidation() {
+  const adaiso::Mesh mesh = makePyramid();
+  const auto graph = adaiso::detail::buildCsfWeightGraph(mesh);
+  assertSymmetricPositive(graph);
+
+  const std::vector<double> raw = {0.0, 0.2, 0.4, 0.6, 1.0};
+  const auto result = adaiso::detail::solveScreenedCsf(mesh, raw, 0.5);
+  assert(result.stats.solver_success);
+  assertFiniteValues(result.values);
+  assert(result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
+
+  bool threw = false;
+  try {
+    (void)adaiso::detail::solveScreenedCsf(mesh, raw, 0.0);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    adaiso::Mesh empty;
+    (void)adaiso::detail::solveScreenedCsf(empty, {}, 0.5);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    adaiso::Mesh point_cloud;
+    point_cloud.vertices = {{0.0, 0.0, 0.0}};
+    (void)adaiso::detail::solveScreenedCsf(point_cloud, {0.0}, 0.5);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    adaiso::Mesh degenerate;
+    degenerate.vertices = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {2.0, 0.0, 0.0}};
+    degenerate.faces = {{0, 1, 2}};
+    (void)adaiso::detail::solveScreenedCsf(degenerate, {0.0, 0.0, 0.0}, 0.5);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
 }
 
 void testTargetLengthFieldQueries() {
@@ -438,6 +448,19 @@ void testTargetFieldConfigValidation() {
     threw = true;
   }
   assert(threw);
+
+  threw = false;
+  try {
+    adaiso::AdaIsoConfig config;
+    config.csf_smoothing_alpha = 0.0;
+    config.project_to_surface = false;
+    config.verbose = false;
+    adaiso::AdaIsoRemesher remesher(config);
+    (void)remesher.remesh(makeSingleTriangle());
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -465,7 +488,7 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
 }
 
 void testRemeshEdgeCases() {
-  auto run = [](const adaiso::Mesh& input) {
+  auto run_valid = [](const adaiso::Mesh& input) {
     adaiso::AdaIsoConfig config;
     config.global_iterations = 0;
     config.project_to_surface = false;
@@ -479,21 +502,36 @@ void testRemeshEdgeCases() {
     assert(remesher.stats().iterations.empty());
   };
 
-  run(makeSingleTriangle());
-  run(makeDisconnectedTriangles());
+  run_valid(makeSingleTriangle());
+  run_valid(makeDisconnectedTriangles());
+
+  auto assert_invalid = [](const adaiso::Mesh& input) {
+    adaiso::AdaIsoConfig config;
+    config.global_iterations = 0;
+    config.project_to_surface = false;
+    config.verbose = false;
+    adaiso::AdaIsoRemesher remesher(config);
+    bool threw = false;
+    try {
+      (void)remesher.remesh(input);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    assert(threw);
+  };
 
   adaiso::Mesh empty;
-  run(empty);
+  assert_invalid(empty);
 
   adaiso::Mesh degenerate;
   degenerate.vertices = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {2.0, 0.0, 0.0}};
   degenerate.faces = {{0, 1, 2}};
-  run(degenerate);
+  assert_invalid(degenerate);
 
   adaiso::Mesh short_edge;
   short_edge.vertices = {{0.0, 0.0, 0.0}, {1e-15, 0.0, 0.0}, {0.0, 1.0, 0.0}};
   short_edge.faces = {{0, 1, 2}};
-  run(short_edge);
+  assert_invalid(short_edge);
 
 }
 
@@ -548,9 +586,9 @@ int main() {
   testObjRoundtrip();
   testPlyRoundtripAndWriteMeshDispatch();
   testOffLoad();
-  testCsfKnownChainSolution();
-  testCsfDisconnectedAndConstantComponents();
-  testCsfVariantWeightGraphs();
+  testCsfScreenedKnownTriangleSolution();
+  testCsfScreenedConstantField();
+  testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
   testEdgeRatioStats();
   testRemeshSmoke();

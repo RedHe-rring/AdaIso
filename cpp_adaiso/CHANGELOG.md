@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.3.0
+
+Breaking change:
+CSF now uses a screened Laplace sparse solve instead of Dirichlet harmonic
+interpolation.
+
+- Replaced the fixed-anchor Dirichlet CSF system with `(M + alpha h^2 L)c = M r`.
+- Added `--csf-alpha` and `AdaIsoConfig::csf_smoothing_alpha`; default is `0.5`.
+- Unified raw CSF curvature to mean vertex-normal angle for all variants.
+- Removed fixed/free CSF vertex statistics from the public summary.
+- Removed the old Dirichlet solver entry point and anchor-selection helpers.
+
 ## 2.2.0
 
 Feature update:
