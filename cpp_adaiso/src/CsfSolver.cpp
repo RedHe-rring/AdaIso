@@ -214,4 +214,12 @@ CsfSolveResult solveScreenedCsf(
   return result;
 }
 
+CsfSolveResult solveScreenedScalarField(
+    const Mesh& mesh,
+    const std::vector<double>& initial_values,
+    double smoothing_alpha,
+    double residual_threshold) {
+  return solveScreenedCsf(mesh, initial_values, smoothing_alpha, residual_threshold);
+}
+
 }  // namespace adaiso::detail

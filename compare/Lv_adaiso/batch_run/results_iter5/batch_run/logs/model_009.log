@@ -1,0 +1,245 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\compare\Lv_adaiso\batch_run\batch_run\converted_obj\model_009.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:0.253428
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:5680
+Mesh Split_Collapse start!
+iter:5
+Split start:9805,2731,0.
+Collapse start:11237,1299,1914,295,35,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:1604,85,5,0.
+Tangent smoothing start:Edge Point:6965
+iter:4
+Split start:1723,47,4,3,3,3,3,3,3,3,
+Collapse start:2174,107,4,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:822,49,1,0.
+Tangent smoothing start:Edge Point:6924
+iter:3
+Split start:1288,18,0.
+Collapse start:1161,37,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:636,40,0.
+Tangent smoothing start:Edge Point:6906
+iter:2
+Split start:1020,0.
+Collapse start:701,21,2,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:610,36,0.
+Tangent smoothing start:Edge Point:6897
+iter:1
+Split start:740,7,0.
+Collapse start:546,14,2,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:531,32,0.
+Tangent smoothing start:Edge Point:6895
+
+,finished! time:254.643s
+Update point location

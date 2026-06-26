@@ -1,20 +1,51 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
 #include "adaiso/Geometry.hpp"
+#include "adaiso/KDTree.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
 #include "adaiso/detail/TargetLengthMapping.hpp"
 
 #include <Eigen/Geometry>
 
+#include <igl/barycenter.h>
+#include <igl/box_surface_area.h>
+#include <igl/doublearea.h>
+#include <igl/EPS.h>
+#include <igl/pad_box.h>
+#include <igl/point_simplex_squared_distance.h>
+#include <igl/project_to_line_segment.h>
+#include <igl/ray_box_intersect.h>
+#include <igl/volume.h>
+
+// vcpkg's libigl is header-only here. Keep ray_mesh_intersect declarations
+// visible, but do not include its body because this package lacks iglraytri.c.
+#ifndef IGL_STATIC_LIBRARY
+#define ADAISO_DEFINED_IGL_STATIC_LIBRARY
+#define IGL_STATIC_LIBRARY
+#endif
+#include <igl/ray_mesh_intersect.h>
+#include <igl/AABB.h>
+#ifdef ADAISO_DEFINED_IGL_STATIC_LIBRARY
+#undef IGL_STATIC_LIBRARY
+#undef ADAISO_DEFINED_IGL_STATIC_LIBRARY
+#endif
+#include <igl/AABB.cpp>
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +57,8 @@ namespace {
 
 constexpr double kEps = 1e-14;
 constexpr double kPi = 3.141592653589793238462643383279502884;
+
+using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
 bool faceContains(const Eigen::Vector3i& face, int v) {
   return face[0] == v || face[1] == v || face[2] == v;
@@ -153,11 +186,666 @@ double minQuality(const Mesh& mesh) {
   return *std::min_element(qualities.begin(), qualities.end());
 }
 
+Eigen::MatrixXd verticesToMatrix(const Mesh& mesh) {
+  Eigen::MatrixXd vertices(static_cast<Eigen::Index>(mesh.vertices.size()), 3);
+  for (Eigen::Index i = 0; i < vertices.rows(); ++i) {
+    vertices.row(i) = mesh.vertices[static_cast<std::size_t>(i)].transpose();
+  }
+  return vertices;
+}
+
+Eigen::MatrixXi facesToMatrix(const Mesh& mesh) {
+  Eigen::MatrixXi faces(static_cast<Eigen::Index>(mesh.faces.size()), 3);
+  for (Eigen::Index i = 0; i < faces.rows(); ++i) {
+    const auto& face = mesh.faces[static_cast<std::size_t>(i)];
+    faces(i, 0) = face[0];
+    faces(i, 1) = face[1];
+    faces(i, 2) = face[2];
+  }
+  return faces;
+}
+
+Eigen::Vector3d barycentricOnTriangle(
+    const Eigen::Vector3d& point,
+    const Eigen::Vector3d& a,
+    const Eigen::Vector3d& b,
+    const Eigen::Vector3d& c) {
+  const Eigen::Vector3d ab = b - a;
+  const Eigen::Vector3d ac = c - a;
+  const Eigen::Vector3d ap = point - a;
+  const double d00 = ab.dot(ab);
+  const double d01 = ab.dot(ac);
+  const double d11 = ac.dot(ac);
+  const double d20 = ap.dot(ab);
+  const double d21 = ap.dot(ac);
+  const double denom = d00 * d11 - d01 * d01;
+  if (std::abs(denom) <= kEps || !std::isfinite(denom)) {
+    const double da = (point - a).squaredNorm();
+    const double db = (point - b).squaredNorm();
+    const double dc = (point - c).squaredNorm();
+    if (da <= db && da <= dc) {
+      return {1.0, 0.0, 0.0};
+    }
+    if (db <= dc) {
+      return {0.0, 1.0, 0.0};
+    }
+    return {0.0, 0.0, 1.0};
+  }
+  const double v = (d11 * d20 - d01 * d21) / denom;
+  const double w = (d00 * d21 - d01 * d20) / denom;
+  Eigen::Vector3d bary(1.0 - v - w, v, w);
+  for (int i = 0; i < 3; ++i) {
+    bary[i] = std::clamp(bary[i], 0.0, 1.0);
+  }
+  const double sum = bary.sum();
+  if (sum <= kEps || !std::isfinite(sum)) {
+    return {1.0, 0.0, 0.0};
+  }
+  return bary / sum;
+}
+
+struct Rgb {
+  int r = 0;
+  int g = 0;
+  int b = 0;
+};
+
+struct TargetFieldStageData {
+  std::vector<double> raw_curvature;
+  std::vector<double> csf_curvature;
+  std::vector<double> x0_log;
+  std::vector<double> xsmooth_log;
+  std::vector<double> xfinal_log;
+  double base_length = 0.0;
+  double min_log_length = 0.0;
+  double max_log_length = 0.0;
+};
+
+struct EdgeFieldRecord {
+  Edge edge;
+  double edge_length = 0.0;
+  double abs_dx = 0.0;
+  double ratio = 1.0;
+  double log_slope = 0.0;
+  bool violated = false;
+};
+
+struct FaceFieldRecord {
+  double grad_log_h_norm = 0.0;
+  double max_edge_ratio = 1.0;
+};
+
+std::ofstream openOutputFile(const std::filesystem::path& path) {
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path());
+  }
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write file: " + path.string());
+  }
+  out << std::setprecision(17);
+  return out;
+}
+
+void writeTextFile(const std::filesystem::path& path, const std::string& text) {
+  auto out = openOutputFile(path);
+  out << text;
+}
+
+std::pair<double, double> scalarRange(const std::vector<double>& values) {
+  double lo = std::numeric_limits<double>::infinity();
+  double hi = -std::numeric_limits<double>::infinity();
+  for (double value : values) {
+    if (!std::isfinite(value)) {
+      continue;
+    }
+    lo = std::min(lo, value);
+    hi = std::max(hi, value);
+  }
+  if (!std::isfinite(lo) || !std::isfinite(hi)) {
+    return {0.0, 1.0};
+  }
+  if (hi <= lo) {
+    const double pad = std::max(1.0, std::abs(lo)) * 0.5;
+    return {lo - pad, hi + pad};
+  }
+  return {lo, hi};
+}
+
+double normalizedScalar(double value, double lo, double hi) {
+  if (!std::isfinite(value)) {
+    return 0.0;
+  }
+  if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo) {
+    return 0.5;
+  }
+  return std::clamp((value - lo) / (hi - lo), 0.0, 1.0);
+}
+
+int colorByte(double value) {
+  return static_cast<int>(std::round(std::clamp(value, 0.0, 1.0) * 255.0));
+}
+
+Rgb lerpColor(const Rgb& a, const Rgb& b, double t) {
+  t = std::clamp(t, 0.0, 1.0);
+  return {
+      colorByte((1.0 - t) * static_cast<double>(a.r) / 255.0 + t * static_cast<double>(b.r) / 255.0),
+      colorByte((1.0 - t) * static_cast<double>(a.g) / 255.0 + t * static_cast<double>(b.g) / 255.0),
+      colorByte((1.0 - t) * static_cast<double>(a.b) / 255.0 + t * static_cast<double>(b.b) / 255.0)};
+}
+
+Rgb heatColor(double t) {
+  t = std::clamp(t, 0.0, 1.0);
+  const std::array<Rgb, 5> palette = {{
+      {45, 70, 180},
+      {0, 170, 210},
+      {80, 190, 80},
+      {245, 210, 70},
+      {210, 40, 40},
+  }};
+  const double scaled = t * static_cast<double>(palette.size() - 1);
+  const auto index = static_cast<std::size_t>(std::min<double>(
+      std::floor(scaled),
+      static_cast<double>(palette.size() - 2)));
+  return lerpColor(palette[index], palette[index + 1], scaled - static_cast<double>(index));
+}
+
+Rgb divergingColor(double value, double max_abs) {
+  if (!std::isfinite(max_abs) || max_abs <= 0.0) {
+    return {245, 245, 245};
+  }
+  const double t = std::clamp(value / max_abs, -1.0, 1.0);
+  if (t < 0.0) {
+    return lerpColor({45, 90, 190}, {245, 245, 245}, 1.0 + t);
+  }
+  return lerpColor({245, 245, 245}, {210, 40, 40}, t);
+}
+
+void writeVertexColorPly(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const std::vector<Rgb>& colors) {
+  if (colors.size() != mesh.vertices.size()) {
+    throw std::runtime_error("vertex color count does not match mesh vertices");
+  }
+  auto out = openOutputFile(path);
+  out << "ply\n";
+  out << "format ascii 1.0\n";
+  out << "element vertex " << mesh.vertices.size() << '\n';
+  out << "property float x\n";
+  out << "property float y\n";
+  out << "property float z\n";
+  out << "property uchar red\n";
+  out << "property uchar green\n";
+  out << "property uchar blue\n";
+  out << "element face " << mesh.faces.size() << '\n';
+  out << "property list uchar int vertex_indices\n";
+  out << "end_header\n";
+  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+    const auto& v = mesh.vertices[i];
+    const Rgb& color = colors[i];
+    out << v[0] << ' ' << v[1] << ' ' << v[2] << ' '
+        << color.r << ' ' << color.g << ' ' << color.b << '\n';
+  }
+  for (const auto& f : mesh.faces) {
+    out << "3 " << f[0] << ' ' << f[1] << ' ' << f[2] << '\n';
+  }
+}
+
+void writeFaceColorPly(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const std::vector<Rgb>& colors) {
+  if (colors.size() != mesh.faces.size()) {
+    throw std::runtime_error("face color count does not match mesh faces");
+  }
+  auto out = openOutputFile(path);
+  out << "ply\n";
+  out << "format ascii 1.0\n";
+  out << "element vertex " << mesh.vertices.size() << '\n';
+  out << "property float x\n";
+  out << "property float y\n";
+  out << "property float z\n";
+  out << "element face " << mesh.faces.size() << '\n';
+  out << "property list uchar int vertex_indices\n";
+  out << "property uchar red\n";
+  out << "property uchar green\n";
+  out << "property uchar blue\n";
+  out << "end_header\n";
+  for (const auto& v : mesh.vertices) {
+    out << v[0] << ' ' << v[1] << ' ' << v[2] << '\n';
+  }
+  for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
+    const auto& f = mesh.faces[i];
+    const Rgb& color = colors[i];
+    out << "3 " << f[0] << ' ' << f[1] << ' ' << f[2] << ' '
+        << color.r << ' ' << color.g << ' ' << color.b << '\n';
+  }
+}
+
+void writeVertexHeatPly(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const std::vector<double>& values,
+    double lo,
+    double hi) {
+  if (values.size() != mesh.vertices.size()) {
+    throw std::runtime_error("vertex scalar count does not match mesh vertices");
+  }
+  std::vector<Rgb> colors;
+  colors.reserve(values.size());
+  for (double value : values) {
+    colors.push_back(heatColor(normalizedScalar(value, lo, hi)));
+  }
+  writeVertexColorPly(path, mesh, colors);
+}
+
+void writeVertexDivergingPly(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const std::vector<double>& values) {
+  if (values.size() != mesh.vertices.size()) {
+    throw std::runtime_error("vertex scalar count does not match mesh vertices");
+  }
+  double max_abs = 0.0;
+  for (double value : values) {
+    if (std::isfinite(value)) {
+      max_abs = std::max(max_abs, std::abs(value));
+    }
+  }
+  std::vector<Rgb> colors;
+  colors.reserve(values.size());
+  for (double value : values) {
+    colors.push_back(divergingColor(value, max_abs));
+  }
+  writeVertexColorPly(path, mesh, colors);
+}
+
+void writeVertexMaskPly(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const std::vector<double>& mask) {
+  if (mask.size() != mesh.vertices.size()) {
+    throw std::runtime_error("vertex mask count does not match mesh vertices");
+  }
+  std::vector<Rgb> colors;
+  colors.reserve(mask.size());
+  for (double value : mask) {
+    colors.push_back(value > 0.0 ? Rgb{220, 20, 20} : Rgb{230, 230, 230});
+  }
+  writeVertexColorPly(path, mesh, colors);
+}
+
+std::vector<double> computeRawCurvatureField(const Mesh& mesh) {
+  const auto normals = vertexNormals(mesh);
+  const auto neigh = vertexNeighbors(mesh);
+  std::vector<double> curvature(mesh.vertexCount(), 0.0);
+
+  for (std::size_t i = 0; i < neigh.size(); ++i) {
+    if (neigh[i].empty()) {
+      continue;
+    }
+    double accum = 0.0;
+    int count = 0;
+    for (int j : neigh[i]) {
+      const double dot = std::clamp(normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
+      accum += std::acos(dot);
+      ++count;
+    }
+    curvature[i] = accum / static_cast<double>(count);
+  }
+  return curvature;
+}
+
+std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
+    const Mesh& mesh,
+    const std::vector<double>& log_lengths,
+    double max_adjacent_ratio,
+    std::vector<double>& incident_max_ratio,
+    std::vector<double>& incident_violation) {
+  if (log_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target diagnostic log length size mismatch");
+  }
+  const double violation_tol = 1e-10;
+  incident_max_ratio.assign(mesh.vertices.size(), 1.0);
+  incident_violation.assign(mesh.vertices.size(), 0.0);
+
+  std::vector<EdgeFieldRecord> records;
+  const auto edges = uniqueEdges(mesh);
+  records.reserve(edges.size());
+  for (const auto& edge : edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    const double length =
+        (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
+    const double abs_dx =
+        std::abs(log_lengths[static_cast<std::size_t>(a)] - log_lengths[static_cast<std::size_t>(b)]);
+    const double ratio = std::exp(abs_dx);
+    const bool violated = ratio > max_adjacent_ratio + violation_tol;
+    EdgeFieldRecord record;
+    record.edge = edge;
+    record.edge_length = length;
+    record.abs_dx = abs_dx;
+    record.ratio = ratio;
+    record.log_slope = length > kEps ? abs_dx / length : 0.0;
+    record.violated = violated;
+    records.push_back(record);
+
+    incident_max_ratio[static_cast<std::size_t>(a)] =
+        std::max(incident_max_ratio[static_cast<std::size_t>(a)], ratio);
+    incident_max_ratio[static_cast<std::size_t>(b)] =
+        std::max(incident_max_ratio[static_cast<std::size_t>(b)], ratio);
+    if (violated) {
+      incident_violation[static_cast<std::size_t>(a)] = 1.0;
+      incident_violation[static_cast<std::size_t>(b)] = 1.0;
+    }
+  }
+  return records;
+}
+
+double faceLogGradientNorm(
+    const Mesh& mesh,
+    const Eigen::Vector3i& face,
+    const std::vector<double>& log_lengths) {
+  const Eigen::Vector3d& p0 = mesh.vertices[static_cast<std::size_t>(face[0])];
+  const Eigen::Vector3d& p1 = mesh.vertices[static_cast<std::size_t>(face[1])];
+  const Eigen::Vector3d& p2 = mesh.vertices[static_cast<std::size_t>(face[2])];
+  const Eigen::Vector3d e1 = p1 - p0;
+  const Eigen::Vector3d e2 = p2 - p0;
+  const double g00 = e1.dot(e1);
+  const double g01 = e1.dot(e2);
+  const double g11 = e2.dot(e2);
+  const double det = g00 * g11 - g01 * g01;
+  if (std::abs(det) <= kEps || !std::isfinite(det)) {
+    return 0.0;
+  }
+  const double rhs0 =
+      log_lengths[static_cast<std::size_t>(face[1])] - log_lengths[static_cast<std::size_t>(face[0])];
+  const double rhs1 =
+      log_lengths[static_cast<std::size_t>(face[2])] - log_lengths[static_cast<std::size_t>(face[0])];
+  const double a = (rhs0 * g11 - rhs1 * g01) / det;
+  const double b = (g00 * rhs1 - g01 * rhs0) / det;
+  return (a * e1 + b * e2).norm();
+}
+
+std::vector<FaceFieldRecord> computeFaceFieldRecords(
+    const Mesh& mesh,
+    const std::vector<double>& log_lengths,
+    const std::unordered_map<Edge, double, EdgeHash>& edge_ratios) {
+  std::vector<FaceFieldRecord> records;
+  records.reserve(mesh.faces.size());
+  for (const auto& face : mesh.faces) {
+    double max_ratio = 1.0;
+    for (const Edge& edge : {
+             makeEdge(face[0], face[1]),
+             makeEdge(face[1], face[2]),
+             makeEdge(face[2], face[0]),
+         }) {
+      const auto found = edge_ratios.find(edge);
+      if (found != edge_ratios.end()) {
+        max_ratio = std::max(max_ratio, found->second);
+      }
+    }
+    records.push_back({faceLogGradientNorm(mesh, face, log_lengths), max_ratio});
+  }
+  return records;
+}
+
+void writeVerticesCsv(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const TargetFieldStageData& data) {
+  auto out = openOutputFile(path);
+  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,x0_log,xsmooth_log,xfinal_log,h0,hsmooth,hfinal\n";
+  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+    const auto& p = mesh.vertices[i];
+    out << i << ','
+        << p[0] << ',' << p[1] << ',' << p[2] << ','
+        << data.raw_curvature[i] << ','
+        << data.csf_curvature[i] << ','
+        << data.x0_log[i] << ','
+        << data.xsmooth_log[i] << ','
+        << data.xfinal_log[i] << ','
+        << std::exp(data.x0_log[i]) << ','
+        << std::exp(data.xsmooth_log[i]) << ','
+        << std::exp(data.xfinal_log[i]) << '\n';
+  }
+}
+
+void writeEdgesCsv(
+    const std::filesystem::path& path,
+    const std::vector<EdgeFieldRecord>& records) {
+  auto out = openOutputFile(path);
+  out << "i,j,edge_length,abs_dx,ratio,log_slope,violated\n";
+  for (const auto& record : records) {
+    out << record.edge.first << ','
+        << record.edge.second << ','
+        << record.edge_length << ','
+        << record.abs_dx << ','
+        << record.ratio << ','
+        << record.log_slope << ','
+        << (record.violated ? 1 : 0) << '\n';
+  }
+}
+
+void writeFacesCsv(
+    const std::filesystem::path& path,
+    const std::vector<FaceFieldRecord>& records) {
+  auto out = openOutputFile(path);
+  out << "face_id,grad_log_h_norm,max_edge_ratio\n";
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    out << i << ','
+        << records[i].grad_log_h_norm << ','
+        << records[i].max_edge_ratio << '\n';
+  }
+}
+
+void writeEdgeRatioHistogramCsv(
+    const std::filesystem::path& path,
+    const std::vector<double>& sorted_ratios,
+    double max_adjacent_ratio) {
+  auto out = openOutputFile(path);
+  out << "bin_min,bin_max,count,cdf\n";
+  if (sorted_ratios.empty()) {
+    return;
+  }
+  constexpr int kBins = 50;
+  const double lo = 1.0;
+  double hi = std::max(sorted_ratios.back(), max_adjacent_ratio);
+  if (hi <= lo) {
+    hi = lo + 1e-12;
+  }
+  const double width = (hi - lo) / static_cast<double>(kBins);
+  std::size_t cursor = 0;
+  std::size_t cumulative = 0;
+  for (int bin = 0; bin < kBins; ++bin) {
+    const double bin_min = lo + static_cast<double>(bin) * width;
+    const double bin_max = bin + 1 == kBins ? hi : bin_min + width;
+    std::size_t count = 0;
+    while (cursor < sorted_ratios.size() &&
+           (bin + 1 == kBins || sorted_ratios[cursor] < bin_max)) {
+      ++count;
+      ++cursor;
+    }
+    cumulative += count;
+    out << bin_min << ','
+        << bin_max << ','
+        << count << ','
+        << static_cast<double>(cumulative) / static_cast<double>(sorted_ratios.size()) << '\n';
+  }
+}
+
+std::string targetFieldStatsJson(
+    const TargetFieldStageData& data,
+    const std::vector<EdgeFieldRecord>& edge_records,
+    const std::vector<FaceFieldRecord>& face_records,
+    double max_adjacent_ratio,
+    double target_min_factor,
+    double target_max_factor) {
+  std::vector<double> ratios;
+  ratios.reserve(edge_records.size());
+  std::size_t violation_count = 0;
+  for (const auto& record : edge_records) {
+    ratios.push_back(record.ratio);
+    if (record.violated) {
+      ++violation_count;
+    }
+  }
+  std::sort(ratios.begin(), ratios.end());
+
+  std::vector<double> gradients;
+  gradients.reserve(face_records.size());
+  for (const auto& record : face_records) {
+    gradients.push_back(record.grad_log_h_norm);
+  }
+  std::sort(gradients.begin(), gradients.end());
+
+  double observed_min_log = std::numeric_limits<double>::infinity();
+  double observed_max_log = -std::numeric_limits<double>::infinity();
+  for (double value : data.xfinal_log) {
+    observed_min_log = std::min(observed_min_log, value);
+    observed_max_log = std::max(observed_max_log, value);
+  }
+  const bool range_ok =
+      observed_min_log + 1e-12 >= data.min_log_length &&
+      observed_max_log <= data.max_log_length + 1e-12;
+  const double max_ratio = ratios.empty() ? 0.0 : ratios.back();
+  const double violation_rate =
+      edge_records.empty() ? 0.0 : static_cast<double>(violation_count) / static_cast<double>(edge_records.size());
+  int theoretical_min_edge_rings = 0;
+  if (max_adjacent_ratio > 1.0 && target_max_factor > target_min_factor) {
+    theoretical_min_edge_rings = static_cast<int>(
+        std::ceil(std::log(target_max_factor / target_min_factor) / std::log(max_adjacent_ratio)));
+  }
+  const bool acceptance_pass =
+      range_ok && max_ratio <= max_adjacent_ratio + 1e-10 && violation_count == 0;
+
+  std::ostringstream out;
+  out << std::setprecision(17);
+  out << "{\n";
+  out << "  \"base_length\": " << data.base_length << ",\n";
+  out << "  \"h_min\": " << std::exp(data.min_log_length) << ",\n";
+  out << "  \"h_max\": " << std::exp(data.max_log_length) << ",\n";
+  out << "  \"max_adjacent_ratio\": " << max_adjacent_ratio << ",\n";
+  out << "  \"delta_log\": " << std::log(max_adjacent_ratio) << ",\n";
+  out << "  \"theoretical_min_edge_rings\": " << theoretical_min_edge_rings << ",\n";
+  out << "  \"observed_h_min\": " << std::exp(observed_min_log) << ",\n";
+  out << "  \"observed_h_max\": " << std::exp(observed_max_log) << ",\n";
+  out << "  \"range_ok\": " << (range_ok ? "true" : "false") << ",\n";
+  out << "  \"edge_count\": " << edge_records.size() << ",\n";
+  out << "  \"max_edge_ratio\": " << max_ratio << ",\n";
+  out << "  \"p95_edge_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
+  out << "  \"p99_edge_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
+  out << "  \"violation_count\": " << violation_count << ",\n";
+  out << "  \"violation_rate\": " << violation_rate << ",\n";
+  out << "  \"face_count\": " << face_records.size() << ",\n";
+  out << "  \"max_grad_log_h_norm\": " << (gradients.empty() ? 0.0 : gradients.back()) << ",\n";
+  out << "  \"p95_grad_log_h_norm\": " << quantileOfSorted(gradients, 0.95) << ",\n";
+  out << "  \"p99_grad_log_h_norm\": " << quantileOfSorted(gradients, 0.99) << ",\n";
+  out << "  \"acceptance_pass\": " << (acceptance_pass ? "true" : "false") << "\n";
+  out << "}\n";
+  return out.str();
+}
+
+void writeTargetFieldDiagnostics(
+    const std::filesystem::path& out_dir,
+    const Mesh& mesh,
+    const TargetFieldStageData& data,
+    const AdaIsoConfig& config) {
+  if (out_dir.empty()) {
+    return;
+  }
+  const std::size_t n = mesh.vertices.size();
+  if (data.raw_curvature.size() != n || data.csf_curvature.size() != n ||
+      data.x0_log.size() != n || data.xsmooth_log.size() != n ||
+      data.xfinal_log.size() != n) {
+    throw std::runtime_error("target diagnostic field size mismatch");
+  }
+  std::filesystem::create_directories(out_dir);
+
+  std::vector<double> incident_max_ratio;
+  std::vector<double> incident_violation;
+  const auto edge_records = computeEdgeFieldRecords(
+      mesh,
+      data.xfinal_log,
+      config.target_max_adjacent_ratio,
+      incident_max_ratio,
+      incident_violation);
+  std::unordered_map<Edge, double, EdgeHash> edge_ratios;
+  edge_ratios.reserve(edge_records.size());
+  std::vector<double> sorted_ratios;
+  sorted_ratios.reserve(edge_records.size());
+  for (const auto& record : edge_records) {
+    edge_ratios.emplace(record.edge, record.ratio);
+    sorted_ratios.push_back(record.ratio);
+  }
+  std::sort(sorted_ratios.begin(), sorted_ratios.end());
+  const auto face_records = computeFaceFieldRecords(mesh, data.xfinal_log, edge_ratios);
+
+  writeVerticesCsv(out_dir / "vertices.csv", mesh, data);
+  writeEdgesCsv(out_dir / "edges.csv", edge_records);
+  writeFacesCsv(out_dir / "faces.csv", face_records);
+  writeEdgeRatioHistogramCsv(out_dir / "edge_ratio_histogram.csv", sorted_ratios, config.target_max_adjacent_ratio);
+  writeTextFile(
+      out_dir / "field_stats.json",
+      targetFieldStatsJson(
+          data,
+          edge_records,
+          face_records,
+          config.target_max_adjacent_ratio,
+          config.target_min_factor,
+          config.target_max_factor));
+
+  const auto [raw_min, raw_max] = scalarRange(data.raw_curvature);
+  const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
+  writeVertexHeatPly(out_dir / "raw_curvature_heat.ply", mesh, data.raw_curvature, raw_min, raw_max);
+  writeVertexHeatPly(out_dir / "csf_curvature_heat.ply", mesh, data.csf_curvature, csf_min, csf_max);
+  writeVertexHeatPly(out_dir / "raw_target_h_heat.ply", mesh, data.x0_log, data.min_log_length, data.max_log_length);
+  writeVertexHeatPly(
+      out_dir / "smoothed_target_h_heat.ply",
+      mesh,
+      data.xsmooth_log,
+      data.min_log_length,
+      data.max_log_length);
+  writeVertexHeatPly(
+      out_dir / "final_target_h_heat.ply",
+      mesh,
+      data.xfinal_log,
+      data.min_log_length,
+      data.max_log_length);
+
+  std::vector<double> delta_log(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    delta_log[i] = data.xfinal_log[i] - data.x0_log[i];
+  }
+  writeVertexDivergingPly(out_dir / "target_delta_log_heat.ply", mesh, delta_log);
+
+  const double edge_ratio_hi =
+      config.target_max_adjacent_ratio > 1.0
+          ? config.target_max_adjacent_ratio
+          : (sorted_ratios.empty() ? 1.0 : std::max(1.0, sorted_ratios.back()));
+  writeVertexHeatPly(out_dir / "edge_ratio_hotspot.ply", mesh, incident_max_ratio, 1.0, edge_ratio_hi);
+  writeVertexMaskPly(out_dir / "violation_mask.ply", mesh, incident_violation);
+
+  std::vector<double> face_gradients;
+  face_gradients.reserve(face_records.size());
+  for (const auto& record : face_records) {
+    face_gradients.push_back(record.grad_log_h_norm);
+  }
+  const auto [grad_min, grad_max] = scalarRange(face_gradients);
+  std::vector<Rgb> face_colors;
+  face_colors.reserve(face_gradients.size());
+  for (double value : face_gradients) {
+    face_colors.push_back(heatColor(normalizedScalar(value, grad_min, grad_max)));
+  }
+  writeFaceColorPly(out_dir / "face_log_gradient_heat.ply", mesh, face_colors);
+}
+
 }  // namespace
 
 namespace detail {
 
-std::vector<double> continuousTargetLengths(
+std::vector<double> continuousTargetLogLengths(
     const std::vector<double>& curvature,
     double base_length,
     double mesh_scale,
@@ -197,7 +885,7 @@ std::vector<double> continuousTargetLengths(
     throw std::runtime_error("scaled target base length must be positive");
   }
 
-  std::vector<double> result(curvature.size(), scaled_base);
+  std::vector<double> result(curvature.size(), std::log(scaled_base));
   const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
   if (std::abs(*max_it - *min_it) <= 1e-14) {
     return result;
@@ -234,12 +922,12 @@ std::vector<double> continuousTargetLengths(
     const double mean_rank = 0.5 * static_cast<double>(first + last - 1);
     const double q = mean_rank / denom;
     const double alpha = std::pow(q, target_gamma);
-    const double h = std::exp((1.0 - alpha) * log_h_max + alpha * log_h_min);
-    if (!std::isfinite(h) || h <= 0.0) {
+    const double log_h = (1.0 - alpha) * log_h_max + alpha * log_h_min;
+    if (!std::isfinite(log_h)) {
       throw std::runtime_error("computed target length must be positive");
     }
     for (std::size_t i = first; i < last; ++i) {
-      result[sorted[i].second] = h;
+      result[sorted[i].second] = log_h;
     }
     first = last;
   }
@@ -247,124 +935,146 @@ std::vector<double> continuousTargetLengths(
   return result;
 }
 
-}  // namespace detail
-
-TargetLengthField::TargetLengthField(TargetLengthField&& other)
-    : positions_(std::move(other.positions_)), lengths_(std::move(other.lengths_)) {
-  if (!positions_.empty()) {
-    index_.build(positions_);
+void clampTargetLogLengths(std::vector<double>& log_lengths, double min_log_length, double max_log_length) {
+  if (min_log_length > max_log_length || !std::isfinite(min_log_length) || !std::isfinite(max_log_length)) {
+    throw std::runtime_error("target log length bounds are invalid");
   }
-  other.clear();
+  for (double& value : log_lengths) {
+    if (!std::isfinite(value)) {
+      throw std::runtime_error("target log length is not finite");
+    }
+    value = std::clamp(value, min_log_length, max_log_length);
+  }
 }
 
-TargetLengthField& TargetLengthField::operator=(TargetLengthField&& other) {
-  if (this == &other) {
-    return *this;
+void projectTargetLogGradation(
+    const Mesh& mesh,
+    std::vector<double>& log_lengths,
+    double min_log_length,
+    double max_log_length,
+    double max_adjacent_ratio,
+    int iterations) {
+  if (log_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target log length size mismatch");
   }
-  positions_ = std::move(other.positions_);
-  lengths_ = std::move(other.lengths_);
-  index_ = NearestNeighborIndex();
-  if (!positions_.empty()) {
-    index_.build(positions_);
-  }
-  other.clear();
-  return *this;
-}
-
-void TargetLengthField::build(const std::vector<Eigen::Vector3d>& positions, const std::vector<double>& lengths) {
-  if (positions.size() != lengths.size()) {
-    throw std::runtime_error("target field positions and lengths have different sizes");
-  }
-  positions_ = positions;
-  lengths_ = lengths;
-  if (positions_.empty()) {
-    index_ = NearestNeighborIndex();
+  clampTargetLogLengths(log_lengths, min_log_length, max_log_length);
+  if (iterations <= 0 || max_adjacent_ratio <= 1.0) {
     return;
   }
-  index_.build(positions_);
+  if (!std::isfinite(max_adjacent_ratio)) {
+    throw std::runtime_error("target max adjacent ratio must be finite");
+  }
+
+  const double delta = std::log(max_adjacent_ratio);
+  const auto edges = uniqueEdges(mesh);
+  for (int iter = 0; iter < iterations; ++iter) {
+    bool changed = false;
+    for (const auto& [a, b] : edges) {
+      double& xa = log_lengths[static_cast<std::size_t>(a)];
+      double& xb = log_lengths[static_cast<std::size_t>(b)];
+      if (xa > xb + delta) {
+        const double next = std::clamp(xb + delta, min_log_length, max_log_length);
+        changed = changed || std::abs(next - xa) > 1e-14;
+        xa = next;
+      }
+      if (xb > xa + delta) {
+        const double next = std::clamp(xa + delta, min_log_length, max_log_length);
+        changed = changed || std::abs(next - xb) > 1e-14;
+        xb = next;
+      }
+    }
+    clampTargetLogLengths(log_lengths, min_log_length, max_log_length);
+    if (!changed) {
+      break;
+    }
+  }
+}
+
+}  // namespace detail
+
+struct TargetLengthFieldImpl {
+  Mesh mesh;
+  std::vector<double> log_lengths;
+  Eigen::MatrixXd vertices;
+  Eigen::MatrixXi faces;
+  SurfaceAabb tree;
+  bool built = false;
+};
+
+TargetLengthField::TargetLengthField() : impl_(std::make_unique<TargetLengthFieldImpl>()) {}
+
+TargetLengthField::~TargetLengthField() = default;
+
+TargetLengthField::TargetLengthField(TargetLengthField&& other) noexcept = default;
+
+TargetLengthField& TargetLengthField::operator=(TargetLengthField&& other) noexcept = default;
+
+void TargetLengthField::build(const Mesh& input, const std::vector<double>& log_lengths) {
+  if (input.vertices.empty() || input.faces.empty()) {
+    throw std::runtime_error("target field requires a non-empty input mesh");
+  }
+  input.validate();
+  if (input.vertices.size() != log_lengths.size()) {
+    throw std::runtime_error("target field vertex/log-length size mismatch");
+  }
+  for (double value : log_lengths) {
+    if (!std::isfinite(value)) {
+      throw std::runtime_error("target log length is not finite");
+    }
+  }
+  impl_ = std::make_unique<TargetLengthFieldImpl>();
+  impl_->mesh = input;
+  impl_->log_lengths = log_lengths;
+  impl_->vertices = verticesToMatrix(input);
+  impl_->faces = facesToMatrix(input);
+  impl_->tree.init(impl_->vertices, impl_->faces);
+  impl_->built = true;
 }
 
 void TargetLengthField::clear() {
-  positions_.clear();
-  lengths_.clear();
-  index_ = NearestNeighborIndex();
+  impl_ = std::make_unique<TargetLengthFieldImpl>();
 }
 
 bool TargetLengthField::empty() const {
-  return index_.empty() || lengths_.empty();
+  return !impl_ || !impl_->built || impl_->log_lengths.empty() || impl_->faces.rows() == 0;
 }
 
-double TargetLengthField::valueAt(
-    const Eigen::Vector3d& point,
-    TargetLookupMode mode,
-    int k,
-    double sigma_factor) const {
+double TargetLengthField::valueAt(const Eigen::Vector3d& point) const {
   if (empty()) {
     throw std::runtime_error("target lengths have not been initialized");
   }
-  if (k <= 0) {
-    throw std::runtime_error("target k must be positive");
+  if (!finiteVector(point)) {
+    throw std::runtime_error("target query point is not finite");
   }
 
-  const std::size_t nearest_idx = index_.nearest(point);
-  if (mode == TargetLookupMode::Nearest || k == 1 || lengths_.size() == 1) {
-    return lengths_[nearest_idx];
-  }
-  if (sigma_factor <= 0.0 || !std::isfinite(sigma_factor)) {
-    throw std::runtime_error("target gaussian sigma factor must be positive");
-  }
-
-  const std::size_t query_k = std::min<std::size_t>(static_cast<std::size_t>(k), lengths_.size());
-  const auto knn = index_.nearestK(point, query_k);
-  if (knn.empty()) {
-    return lengths_[nearest_idx];
-  }
-  if (knn.size() == 1) {
-    return lengths_[knn.front().first];
+  const Eigen::RowVector3d query = point.transpose();
+  Eigen::RowVector3d closest = Eigen::RowVector3d::Zero();
+  int face_index = -1;
+  (void)impl_->tree.squared_distance(impl_->vertices, impl_->faces, query, face_index, closest);
+  if (face_index < 0 || face_index >= impl_->faces.rows()) {
+    throw std::runtime_error("target field closest-triangle query failed");
   }
 
-  std::vector<double> dists;
-  dists.reserve(knn.size());
-  for (const auto& item : knn) {
-    dists.push_back(std::sqrt(std::max(0.0, item.second)));
+  const Eigen::Vector3i face = impl_->mesh.faces[static_cast<std::size_t>(face_index)];
+  const Eigen::Vector3d bary = barycentricOnTriangle(
+      closest.transpose(),
+      impl_->mesh.vertices[static_cast<std::size_t>(face[0])],
+      impl_->mesh.vertices[static_cast<std::size_t>(face[1])],
+      impl_->mesh.vertices[static_cast<std::size_t>(face[2])]);
+  const double log_length =
+      bary[0] * impl_->log_lengths[static_cast<std::size_t>(face[0])] +
+      bary[1] * impl_->log_lengths[static_cast<std::size_t>(face[1])] +
+      bary[2] * impl_->log_lengths[static_cast<std::size_t>(face[2])];
+  const double value = std::exp(log_length);
+  if (!std::isfinite(value) || value <= 0.0) {
+    throw std::runtime_error("target field query produced an invalid length");
   }
-
-  const double dk = dists.back();
-  const double dk_prev = dists[dists.size() - 2];
-  const double raw_h = dk + std::max(0.0, dk - dk_prev);
-  const double h = std::max(sigma_factor * std::max(raw_h, 1e-12), 1e-12);
-  if (!std::isfinite(h) || h <= 0.0) {
-    return lengths_[nearest_idx];
-  }
-
-  double sum_w = 0.0;
-  double sum_l = 0.0;
-  for (std::size_t i = 0; i < knn.size(); ++i) {
-    const std::size_t idx = knn[i].first;
-    if (idx >= lengths_.size()) {
-      continue;
-    }
-    const double ratio = dists[i] / h;
-    const double w = std::exp(-(ratio * ratio));
-    if (!std::isfinite(w)) {
-      continue;
-    }
-    sum_w += w;
-    sum_l += w * lengths_[idx];
-  }
-  if (sum_w <= kEps) {
-    return lengths_[nearest_idx];
-  }
-  const double value = sum_l / sum_w;
-  return std::isfinite(value) ? value : lengths_[nearest_idx];
+  return value;
 }
 
 EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,
-    TargetLookupMode mode,
-    int target_knn_k,
-    double target_gaussian_sigma_factor,
     double collapse_factor,
     double split_factor) {
   EdgeRatioStats stats;
@@ -381,8 +1091,8 @@ EdgeRatioStats computeEdgeRatioStats(
     const int b = edge.second;
     const double length = (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
     const double target = std::min(
-        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(a)], mode, target_knn_k, target_gaussian_sigma_factor),
-        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(b)], mode, target_knn_k, target_gaussian_sigma_factor));
+        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(a)]),
+        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(b)]));
     if (target <= kEps || !std::isfinite(length) || !std::isfinite(target)) {
       continue;
     }
@@ -445,33 +1155,9 @@ std::string toString(Variant variant) {
   return variant == Variant::Paper ? "paper" : "code";
 }
 
-TargetLookupMode parseTargetLookupMode(const std::string& value) {
-  std::string lower = value;
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (lower == "nearest" || lower == "nn") {
-    return TargetLookupMode::Nearest;
-  }
-  if (lower == "gaussian" || lower == "gaussian-knn" || lower == "gaussianknn") {
-    return TargetLookupMode::GaussianKnn;
-  }
-  throw std::runtime_error("unknown target lookup mode: " + value);
-}
-
-std::string toString(TargetLookupMode mode) {
-  return mode == TargetLookupMode::Nearest ? "nearest" : "gaussian";
-}
-
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
-  if (config_.target_knn_k <= 0) {
-    throw std::runtime_error("target k must be positive");
-  }
-  if (config_.target_gaussian_sigma_factor <= 0.0 || !std::isfinite(config_.target_gaussian_sigma_factor)) {
-    throw std::runtime_error("target gaussian sigma factor must be positive");
-  }
   if (config_.csf_smoothing_alpha <= 0.0 || !std::isfinite(config_.csf_smoothing_alpha)) {
     throw std::runtime_error("CSF smoothing alpha must be positive");
   }
@@ -486,6 +1172,15 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
   if (config_.target_gamma <= 0.0 || !std::isfinite(config_.target_gamma)) {
     throw std::runtime_error("target gamma must be positive");
+  }
+  if (config_.target_smooth_alpha < 0.0 || !std::isfinite(config_.target_smooth_alpha)) {
+    throw std::runtime_error("target smooth alpha must be non-negative");
+  }
+  if (config_.target_max_adjacent_ratio <= 0.0 || !std::isfinite(config_.target_max_adjacent_ratio)) {
+    throw std::runtime_error("target max adjacent ratio must be positive");
+  }
+  if (config_.target_gradation_iterations < 0) {
+    throw std::runtime_error("target gradation iterations must be non-negative");
   }
 
   stats_ = {};
@@ -589,43 +1284,66 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   const double base_len = meanEdgeLength(mesh);
-  const auto curvature = computeCsf(mesh);
-  const auto target_lengths = detail::continuousTargetLengths(
+  const auto raw_curvature = computeRawCurvatureField(mesh);
+  const auto curvature = solveCsf(mesh, raw_curvature);
+  const auto x0_log_lengths = detail::continuousTargetLogLengths(
       curvature,
       base_len,
       config_.mesh_scale,
       config_.target_min_factor,
       config_.target_max_factor,
       config_.target_gamma);
-  target_field_.build(mesh.vertices, target_lengths);
+  auto log_lengths = x0_log_lengths;
 
-  if (config_.verbose && !target_lengths.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(target_lengths.begin(), target_lengths.end());
-    std::cerr << "target length: base=" << base_len << ", min=" << *min_it << ", max=" << *max_it << "\n";
+  const double scaled_base = base_len * config_.mesh_scale;
+  const double min_log_length = std::log(scaled_base * config_.target_min_factor);
+  const double max_log_length = std::log(scaled_base * config_.target_max_factor);
+  if (config_.target_smooth_alpha > 0.0 && !log_lengths.empty()) {
+    const auto smoothed = detail::solveScreenedScalarField(mesh, log_lengths, config_.target_smooth_alpha);
+    log_lengths = smoothed.values;
+  }
+  const auto xsmooth_log_lengths = log_lengths;
+  detail::projectTargetLogGradation(
+      mesh,
+      log_lengths,
+      min_log_length,
+      max_log_length,
+      config_.target_max_adjacent_ratio,
+      config_.target_gradation_iterations);
+
+  if (!config_.target_field_export_dir.empty()) {
+    writeTargetFieldDiagnostics(
+        std::filesystem::path(config_.target_field_export_dir),
+        mesh,
+        {raw_curvature,
+         curvature,
+         x0_log_lengths,
+         xsmooth_log_lengths,
+         log_lengths,
+         base_len,
+         min_log_length,
+         max_log_length},
+        config_);
+  }
+
+  target_field_.build(mesh, log_lengths);
+
+  if (config_.verbose && !log_lengths.empty()) {
+    const auto [min_it, max_it] = std::minmax_element(log_lengths.begin(), log_lengths.end());
+    std::cerr << "target length: base=" << base_len
+              << ", min=" << std::exp(*min_it)
+              << ", max=" << std::exp(*max_it) << "\n";
   }
 }
 
 std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
-  const auto normals = vertexNormals(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
+  return solveCsf(mesh, computeRawCurvatureField(mesh));
+}
 
-  for (std::size_t i = 0; i < neigh.size(); ++i) {
-    if (neigh[i].empty()) {
-      continue;
-    }
-    double accum = 0.0;
-    int count = 0;
-    for (int j : neigh[i]) {
-      const double dot = std::clamp(normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
-      const double angle = std::acos(dot);
-      accum += angle;
-      ++count;
-    }
-    curvature[i] = accum / static_cast<double>(count);
-  }
-
-  const auto solved = detail::solveScreenedCsf(mesh, curvature, config_.csf_smoothing_alpha);
+std::vector<double> AdaIsoRemesher::solveCsf(
+    const Mesh& mesh,
+    const std::vector<double>& raw_curvature) {
+  const auto solved = detail::solveScreenedCsf(mesh, raw_curvature, config_.csf_smoothing_alpha);
   stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
   stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
   stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
@@ -637,11 +1355,7 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
 }
 
 double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {
-  return target_field_.valueAt(
-      point,
-      config_.target_lookup_mode,
-      config_.target_knn_k,
-      config_.target_gaussian_sigma_factor);
+  return target_field_.valueAt(point);
 }
 
 double AdaIsoRemesher::edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const {
@@ -654,9 +1368,6 @@ EdgeRatioStats AdaIsoRemesher::edgeRatioStats(const Mesh& mesh) const {
   return computeEdgeRatioStats(
       mesh,
       target_field_,
-      config_.target_lookup_mode,
-      config_.target_knn_k,
-      config_.target_gaussian_sigma_factor,
       config_.collapseFactor(),
       config_.splitFactor());
 }

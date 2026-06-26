@@ -1,0 +1,239 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\cpp_adaiso\examples\C4.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:1.07987
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:0
+Mesh Split_Collapse start!
+iter:30
+Split start:14677,3463,0.
+Collapse start:10284,2084,205,27,4,2,2,1,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:2410,81,1,0.
+Tangent smoothing start:Edge Point:5
+iter:29
+Split start:1051,0.
+Collapse start:2766,137,2,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:507,10,0.
+Tangent smoothing start:Edge Point:6
+iter:28
+Split start:607,0.
+Collapse start:1184,51,1,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:198,3,0.
+Tangent smoothing start:Edge Point:6
+iter:27
+Split start:471,0.
+Collapse start:714,26,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:153,5,0.
+Tangent smoothing start:Edge Point:6
+iter:26
+Split start:472,0.
+Collapse start:596,19,3,1,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:132,8,0.
+Tangent smoothing start:Edge Point:6
+iter:25
+Split start:462,0.
+Collapse start:537,15,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:131,2,0.
+Tangent smoothing start:Edge Point:6
+iter:24
+Split start:419,0.
+Collapse start:508,19,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:101,3,0.
+Tangent smoothing start:Edge Point:6
+iter:23
+Split start:423,0.
+Collapse start:525,14,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:121,2,0.
+Tangent smoothing start:Edge Point:6
+iter:22
+Split start:418,0.
+Collapse start:501,19,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:115,4,0.
+Tangent smoothing start:Edge Point:6
+iter:21
+Split start:412,0.
+Collapse start:536,17,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:106,4,0.
+Tangent smoothing start:Edge Point:6
+iter:20
+Split start:419,0.
+Collapse start:493,15,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:112,3,0.
+Tangent smoothing start:Edge Point:6
+iter:19
+Split start:414,0.
+Collapse start:521,20,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:92,5,0.
+Tangent smoothing start:Edge Point:6
+iter:18
+Split start:420,0.
+Collapse start:496,13,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:103,0.
+Tangent smoothing start:Edge Point:6
+iter:17
+Split start:432,0.
+Collapse start:523,14,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:110,1,0.
+Tangent smoothing start:Edge Point:6
+iter:16
+Split start:466,0.
+Collapse start:542,24,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:117,3,0.
+Tangent smoothing start:Edge Point:6
+iter:15
+Split start:451,0.
+Collapse start:510,30,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:102,3,0.
+Tangent smoothing start:Edge Point:6
+iter:14
+Split start:442,0.
+Collapse start:507,17,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:110,2,0.
+Tangent smoothing start:Edge Point:6
+iter:13
+Split start:462,0.
+Collapse start:509,12,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:108,1,0.
+Tangent smoothing start:Edge Point:6
+iter:12
+Split start:457,0.
+Collapse start:509,29,2,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:111,6,0.
+Tangent smoothing start:Edge Point:6
+iter:11
+Split start:442,0.
+Collapse start:502,12,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:83,4,0.
+Tangent smoothing start:Edge Point:6
+iter:10
+Split start:458,0.
+Collapse start:519,9,1,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:104,1,0.
+Tangent smoothing start:Edge Point:6
+iter:9
+Split start:493,0.
+Collapse start:541,17,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:118,5,0.
+Tangent smoothing start:Edge Point:6
+iter:8
+Split start:483,0.
+Collapse start:532,24,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:106,2,0.
+Tangent smoothing start:Edge Point:6
+iter:7
+Split start:448,0.
+Collapse start:501,12,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:116,2,0.
+Tangent smoothing start:Edge Point:6
+iter:6
+Split start:445,0.
+Collapse start:507,16,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:102,0.
+Tangent smoothing start:Edge Point:6
+iter:5
+Split start:475,0.
+Collapse start:500,16,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:125,4,1,0.
+Tangent smoothing start:Edge Point:6
+iter:4
+Split start:440,0.
+Collapse start:494,17,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:110,3,0.
+Tangent smoothing start:Edge Point:6
+iter:3
+Split start:465,1,0.
+Collapse start:505,21,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:108,4,0.
+Tangent smoothing start:Edge Point:6
+iter:2
+Split start:466,0.
+Collapse start:502,8,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:109,1,0.
+Tangent smoothing start:Edge Point:6
+iter:1
+Split start:486,1,0.
+Collapse start:515,24,2,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:126,3,0.
+Tangent smoothing start:Edge Point:6
+
+,finished! time:994.523s
+Update point location

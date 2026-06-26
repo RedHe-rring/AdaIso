@@ -1,0 +1,83 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\compare\Lv_adaiso\batch_run\batch_run\converted_obj\model_004.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:0.4185
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:0
+Mesh Split_Collapse start!
+iter:5
+Split start:10721,1902,0.
+Collapse start:6796,1196,118,11,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:1782,96,2,0.
+Tangent smoothing start:Edge Point:1
+iter:4
+Split start:1117,1,0.
+Collapse start:1932,89,4,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:534,21,0.
+Tangent smoothing start:Edge Point:0
+iter:3
+Split start:682,0.
+Collapse start:997,46,2,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:249,11,0.
+Tangent smoothing start:Edge Point:0
+iter:2
+Split start:540,0.
+Collapse start:723,28,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:187,5,0.
+Tangent smoothing start:Edge Point:0
+iter:1
+Split start:519,0.
+Collapse start:630,20,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:176,8,0.
+Tangent smoothing start:Edge Point:0
+
+,finished! time:154.148s
+Update point location

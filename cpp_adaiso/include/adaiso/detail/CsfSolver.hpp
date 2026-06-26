@@ -41,4 +41,10 @@ struct CsfSolveResult {
     double smoothing_alpha,
     double residual_threshold = kResidualThreshold);
 
+[[nodiscard]] CsfSolveResult solveScreenedScalarField(
+    const Mesh& mesh,
+    const std::vector<double>& initial_values,
+    double smoothing_alpha,
+    double residual_threshold = kResidualThreshold);
+
 }  // namespace adaiso::detail

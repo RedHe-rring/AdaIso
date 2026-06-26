@@ -4,14 +4,15 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.4.0. The CSF stage is computed exclusively with a screened
+This is version 2.5.0. The CSF stage is computed exclusively with a screened
 Laplace sparse solve, `(M + alpha h^2 L)c = M r`, using barycentric vertex
 masses and clamped cotangent weights. The old Dirichlet harmonic CSF solve and
 its fixed/free anchor statistics have been removed.
 
-Version 2.4.0 replaces the old five-level curvature histogram target assignment
-with a continuous empirical-quantile mapping from CSF curvature to local target
-edge length.
+Version 2.5.0 builds a surface-aware log-size target field: CSF curvature is
+mapped to target log length, smoothed with screened regularization, constrained
+by a local gradation projection, and queried by closest-triangle barycentric
+interpolation on the input surface.
 
 ## Scope
 
@@ -24,8 +25,8 @@ Implemented:
 - Degenerate and duplicate unoriented triangle cleanup.
 - Area-weighted vertex normals.
 - Curvature-smoothed field from mean vertex-normal variation and a screened Laplace sparse solve.
-- Continuous empirical-quantile local target edge length assignment.
-- KD-tree target length lookup via nanoflann, with nearest-neighbor and Gaussian kNN modes.
+- Continuous empirical-quantile local target log-length assignment.
+- Surface-aware target lookup with libigl AABB closest-triangle queries and barycentric log-size interpolation.
 - Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
 - Optional area-sampled Chamfer Distance against a GT mesh.
@@ -63,9 +64,9 @@ cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Too
 cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && ctest --test-dir cpp_adaiso/build --output-on-failure"
 ```
 
-`Eigen3` and `nanoflann` are first resolved with `find_package`, so vcpkg
-packages are used when a vcpkg toolchain file is supplied. If they are not
-available, CMake falls back to `FetchContent`.
+`Eigen3`, `nanoflann`, and `Libigl` are resolved with `find_package` when a
+vcpkg toolchain file is supplied. `Eigen3` and `nanoflann` still have
+`FetchContent` fallbacks; `Libigl` is required for the surface target field.
 
 ## CLI
 
@@ -104,13 +105,14 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 
 - `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
 - `--variant code|paper`: controls remeshing thresholds and collapse reference behavior; CSF curvature smoothing is shared by both variants.
-- `--target-mode nearest|gaussian`: target edge-length lookup. Default: `gaussian`.
-- `--target-k`: neighbor count for Gaussian kNN target lookup. Default: `8`.
-- `--target-sigma-factor`: bandwidth multiplier for Gaussian kNN target lookup. Default: `1.0`.
 - `--csf-alpha`: screened CSF smoothing strength in `lambda = alpha h^2`. Default: `0.5`.
 - `--target-min-factor`: minimum continuous target length factor. Default: `0.6`.
 - `--target-max-factor`: maximum continuous target length factor. Default: `1.8`.
 - `--target-gamma`: continuous target curvature response exponent. Default: `1.0`.
+- `--target-smooth-alpha`: screened target log-size smoothing strength. Default: `0.3`.
+- `--target-max-adjacent-ratio`: maximum adjacent input-edge target length ratio. Default: `1.30`.
+- `--target-gradation-iters`: gradation projection iterations. Default: `20`.
+- `--export-target-field`: optional directory for target-field diagnostics. It writes vertex/edge/face CSV files, edge-ratio statistics, and colored PLY heatmaps for raw curvature, CSF curvature, raw/smoothed/final target size, target delta, edge-ratio hotspots, violation masks, and face log-gradient.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.
@@ -174,10 +176,6 @@ Version 2.4.0 replaces the five-level target-length assignment with a continuous
 mapping: each vertex uses the empirical quantile of its CSF curvature, raises it
 by `target_gamma`, and interpolates in log length between `target_max_factor`
 and `target_min_factor`.
-
-Nearest-neighbor target lookup produces a piecewise constant field with jumps at
-KD-tree Voronoi boundaries. Gaussian kNN lookup replaces that hard assignment
-with a weighted average over nearby target samples, which is continuous while
-the selected kNN set is fixed and empirically reduces late-iteration edge-ratio
-violations and local split/collapse/flip oscillation. Because kNN membership is
-still truncated, the implementation does not claim strict global continuity.
+Version 2.5.0 smooths the target field in `log(h)`, applies an adjacent-edge
+gradation limit, and evaluates the field on the input surface through libigl
+AABB closest-triangle queries and barycentric interpolation.

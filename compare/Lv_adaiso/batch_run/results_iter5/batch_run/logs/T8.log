@@ -1,0 +1,62 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\compare\Lv_adaiso\batch_run\batch_run\converted_obj\T8.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:0.0197588
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:0
+Mesh Split_Collapse start!
+iter:5
+Split start:4614,1288,43,1,0.
+Collapse start:5408,538,962,164,18,2,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:840,53,3,0.
+Tangent smoothing start:Edge Point:24
+iter:4
+Split start:789,4,0.
+Collapse start:1346,83,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:332,24,0.
+Tangent smoothing start:Edge Point:25
+iter:3
+Split start:629,2,0.
+Collapse start:726,30,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:294,16,0.
+Tangent smoothing start:Edge Point:24
+iter:2
+Split start:651,4,0.
+Collapse start:518,19,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:365,17,1,0.
+Tangent smoothing start:Edge Point:23
+iter:1
+Split start:538,1,0.
+Collapse start:518,11,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:344,16,1,0.
+Tangent smoothing start:Edge Point:23
+
+,finished! time:95.817s
+Update point location

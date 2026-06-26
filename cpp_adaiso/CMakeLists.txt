@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(cpp_adaiso VERSION 2.4.0 LANGUAGES CXX)
+project(cpp_adaiso VERSION 2.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,8 @@ if(NOT TARGET nanoflann::nanoflann)
   FetchContent_MakeAvailable(nanoflann)
 endif()
 
+find_package(Libigl CONFIG REQUIRED)
+
 add_library(adaiso_core
   src/AdaIsoRemesher.cpp
   src/CsfSolver.cpp
@@ -54,6 +56,8 @@ if(TARGET nanoflann::nanoflann)
 else()
   target_include_directories(adaiso_core PUBLIC ${nanoflann_SOURCE_DIR}/include)
 endif()
+
+target_link_libraries(adaiso_core PUBLIC igl::igl_core)
 
 if(MSVC)
   target_compile_options(adaiso_core PRIVATE /W4 /permissive-)

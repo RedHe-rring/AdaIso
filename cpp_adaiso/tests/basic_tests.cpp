@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -314,66 +315,84 @@ void testCsfScreenedWeightGraphAndStrictValidation() {
 
 void testTargetLengthFieldQueries() {
   adaiso::TargetLengthField field;
-  field.build(
-      {
-          {0.0, 0.0, 0.0},
-          {1.0, 0.0, 0.0},
-      },
-      {1.0, 3.0});
+  const adaiso::Mesh triangle = makeSingleTriangle();
+  field.build(triangle, {std::log(1.0), std::log(4.0), std::log(16.0)});
 
-  const Eigen::Vector3d left(0.49, 0.0, 0.0);
-  const Eigen::Vector3d right(0.51, 0.0, 0.0);
-  const double nearest_left = field.valueAt(left, adaiso::TargetLookupMode::Nearest, 2, 1.0);
-  const double nearest_right = field.valueAt(right, adaiso::TargetLookupMode::Nearest, 2, 1.0);
-  assertNear(nearest_left, 1.0);
-  assertNear(nearest_right, 3.0);
+  assertNear(field.valueAt(triangle.vertices[0]), 1.0);
+  assertNear(field.valueAt(0.5 * (triangle.vertices[0] + triangle.vertices[1])), 2.0);
+  assertNear(field.valueAt({0.25, 0.25, 0.0}), std::sqrt(8.0));
+  assertNear(field.valueAt({0.25, 0.25, 2.0}), std::sqrt(8.0));
 
-  const double smooth_left = field.valueAt(left, adaiso::TargetLookupMode::GaussianKnn, 2, 1.0);
-  const double smooth_right = field.valueAt(right, adaiso::TargetLookupMode::GaussianKnn, 2, 1.0);
-  assert(smooth_left > 1.0 && smooth_left < 3.0);
-  assert(smooth_right > 1.0 && smooth_right < 3.0);
-  assert(std::abs(smooth_right - smooth_left) < std::abs(nearest_right - nearest_left));
-
-  const double k1_right = field.valueAt(right, adaiso::TargetLookupMode::GaussianKnn, 1, 1.0);
-  assertNear(k1_right, nearest_right);
+  adaiso::Mesh square;
+  square.vertices = {
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {0.0, 1.0, 0.0},
+      {1.0, 1.0, 0.0},
+  };
+  square.faces = {{0, 1, 2}, {1, 3, 2}};
+  field.build(square, {std::log(1.0), std::log(4.0), std::log(9.0), std::log(16.0)});
+  assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.0);
 }
 
 void testContinuousTargetLengthMapping() {
-  const auto lengths = adaiso::detail::continuousTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+  const auto lengths = adaiso::detail::continuousTargetLogLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
   assert(lengths.size() == 3);
-  assertNear(lengths[0], 3.6);
-  assertNear(lengths[1], std::sqrt(3.6 * 1.2));
-  assertNear(lengths[2], 1.2);
+  assertNear(std::exp(lengths[0]), 3.6);
+  assertNear(std::exp(lengths[1]), std::sqrt(3.6 * 1.2));
+  assertNear(std::exp(lengths[2]), 1.2);
 
-  const auto tied = adaiso::detail::continuousTargetLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+  const auto tied = adaiso::detail::continuousTargetLogLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
   assert(tied.size() == 4);
   assertNear(tied[1], tied[2]);
   assert(tied[0] > tied[1]);
   assert(tied[1] > tied[3]);
 
-  const auto constant = adaiso::detail::continuousTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 1.0);
+  const auto constant = adaiso::detail::continuousTargetLogLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 1.0);
   assert(constant.size() == 3);
   for (double value : constant) {
-    assertNear(value, 3.0);
+    assertNear(std::exp(value), 3.0);
   }
 
-  const auto monotonic = adaiso::detail::continuousTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
+  const auto monotonic = adaiso::detail::continuousTargetLogLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
   for (std::size_t i = 1; i < monotonic.size(); ++i) {
     assert(monotonic[i - 1] >= monotonic[i]);
+  }
+}
+
+void testTargetLogGradationProjection() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {0.0, 1.0, 0.0},
+      {1.0, 1.0, 0.0},
+  };
+  mesh.faces = {{0, 1, 2}, {1, 3, 2}};
+  std::vector<double> logs = {std::log(1.0), std::log(100.0), std::log(100.0), std::log(100.0)};
+  const double lo = std::log(1.0);
+  const double hi = std::log(100.0);
+  const double ratio = 2.0;
+  adaiso::detail::projectTargetLogGradation(mesh, logs, lo, hi, ratio, 8);
+
+  for (double value : logs) {
+    assert(value + 1e-12 >= lo);
+    assert(value <= hi + 1e-12);
+  }
+  for (const auto& [a, b] : adaiso::uniqueEdges(mesh)) {
+    const double diff = std::abs(logs[static_cast<std::size_t>(a)] - logs[static_cast<std::size_t>(b)]);
+    assert(diff <= std::log(ratio) + 1e-12);
   }
 }
 
 void testEdgeRatioStats() {
   adaiso::Mesh mesh = makeSingleTriangle();
   adaiso::TargetLengthField field;
-  field.build(mesh.vertices, {1.0, 1.0, 1.0});
+  field.build(mesh, {std::log(1.0), std::log(1.0), std::log(1.0)});
 
   const auto stats = adaiso::computeEdgeRatioStats(
       mesh,
       field,
-      adaiso::TargetLookupMode::Nearest,
-      1,
-      1.0,
       0.8,
       1.33);
 
@@ -431,28 +450,66 @@ void testRemeshSmoke() {
   }
 }
 
-void testNearestTargetModeRemeshSmoke() {
+void testTargetFieldDiagnosticExport() {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "adaiso_target_field_diagnostic_export";
+  std::filesystem::remove_all(dir);
+
   adaiso::AdaIsoConfig config;
-  config.variant = adaiso::Variant::Code;
-  config.target_lookup_mode = adaiso::TargetLookupMode::Nearest;
-  config.mesh_scale = 0.8;
-  config.global_iterations = 1;
+  config.global_iterations = 0;
   config.project_to_surface = false;
   config.verbose = false;
+  config.target_field_export_dir = dir.string();
 
   adaiso::AdaIsoRemesher remesher(config);
   const adaiso::Mesh output = remesher.remesh(makePyramid());
   output.validate();
-  assert(output.vertexCount() > 0);
-  assert(output.faceCount() > 0);
-  assert(remesher.stats().iterations.size() == 1);
+  assert(remesher.stats().csf_solver_success);
+
+  const std::vector<std::filesystem::path> expected = {
+      dir / "vertices.csv",
+      dir / "edges.csv",
+      dir / "faces.csv",
+      dir / "edge_ratio_histogram.csv",
+      dir / "field_stats.json",
+      dir / "raw_curvature_heat.ply",
+      dir / "csf_curvature_heat.ply",
+      dir / "raw_target_h_heat.ply",
+      dir / "smoothed_target_h_heat.ply",
+      dir / "final_target_h_heat.ply",
+      dir / "target_delta_log_heat.ply",
+      dir / "edge_ratio_hotspot.ply",
+      dir / "violation_mask.ply",
+      dir / "face_log_gradient_heat.ply",
+  };
+  for (const auto& path : expected) {
+    assert(std::filesystem::exists(path));
+    assert(std::filesystem::file_size(path) > 0);
+  }
+
+  {
+    std::ifstream vertices(dir / "vertices.csv");
+    std::string header;
+    std::getline(vertices, header);
+    assert(header == "vertex_id,x,y,z,raw_curvature,csf_curvature,x0_log,xsmooth_log,xfinal_log,h0,hsmooth,hfinal");
+
+    std::ifstream edges(dir / "edges.csv");
+    std::getline(edges, header);
+    assert(header == "i,j,edge_length,abs_dx,ratio,log_slope,violated");
+
+    std::ifstream faces(dir / "faces.csv");
+    std::getline(faces, header);
+    assert(header == "face_id,grad_log_h_norm,max_edge_ratio");
+  }
+
+  std::filesystem::remove_all(dir);
 }
 
 void testTargetFieldConfigValidation() {
   bool threw = false;
   try {
     adaiso::AdaIsoConfig config;
-    config.target_knn_k = 0;
+    config.target_smooth_alpha = -1.0;
     config.project_to_surface = false;
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
@@ -465,7 +522,7 @@ void testTargetFieldConfigValidation() {
   threw = false;
   try {
     adaiso::AdaIsoConfig config;
-    config.target_gaussian_sigma_factor = 0.0;
+    config.target_max_adjacent_ratio = 0.0;
     config.project_to_surface = false;
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
@@ -520,6 +577,11 @@ void testTargetFieldConfigValidation() {
   {
     adaiso::AdaIsoConfig config;
     config.target_gamma = 0.0;
+    assert_invalid_target_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_gradation_iterations = -1;
     assert_invalid_target_config(config);
   }
 }
@@ -652,9 +714,10 @@ int main() {
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
   testContinuousTargetLengthMapping();
+  testTargetLogGradationProjection();
   testEdgeRatioStats();
   testRemeshSmoke();
-  testNearestTargetModeRemeshSmoke();
+  testTargetFieldDiagnosticExport();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
   testRemeshEdgeCases();

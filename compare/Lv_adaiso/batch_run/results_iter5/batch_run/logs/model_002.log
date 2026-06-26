@@ -1,0 +1,85 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\compare\Lv_adaiso\batch_run\batch_run\converted_obj\model_002.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:0.552804
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:2254
+Mesh Split_Collapse start!
+iter:5
+Split start:1816,139,0.
+Collapse start:1955,2186,532,73,4,0.
+Repeat face check:Error, points_Keep!
+Check Neighbor Structure:
+Flip start:635,33,0.
+Tangent smoothing start:Edge Point:2384
+iter:4
+Split start:513,1,0.
+Collapse start:687,39,1,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:304,17,0.
+Tangent smoothing start:Edge Point:2365
+iter:3
+Split start:375,3,0.
+Collapse start:327,7,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:204,11,0.
+Tangent smoothing start:Edge Point:2355
+iter:2
+Split start:269,3,0.
+Collapse start:195,1,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:171,12,1,0.
+Tangent smoothing start:Edge Point:2349
+iter:1
+Split start:231,3,0.
+Collapse start:157,2,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:166,8,0.
+Tangent smoothing start:Edge Point:2347
+
+,finished! time:74.719s
+Update point location

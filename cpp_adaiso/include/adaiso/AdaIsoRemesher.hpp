@@ -1,10 +1,10 @@
 #pragma once
 
 #include "adaiso/Geometry.hpp"
-#include "adaiso/KDTree.hpp"
 #include "adaiso/Mesh.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -16,11 +16,6 @@ enum class Variant {
   Code,
 };
 
-enum class TargetLookupMode {
-  Nearest,
-  GaussianKnn,
-};
-
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
   double std_ratio = 0.0;
@@ -29,41 +24,38 @@ struct EdgeRatioStats {
   double violation_rate = 0.0;
 };
 
+struct TargetLengthFieldImpl;
+
 class TargetLengthField {
  public:
-  TargetLengthField() = default;
-  ~TargetLengthField() = default;
+  TargetLengthField();
+  ~TargetLengthField();
 
   TargetLengthField(const TargetLengthField&) = delete;
   TargetLengthField& operator=(const TargetLengthField&) = delete;
-  TargetLengthField(TargetLengthField&& other);
-  TargetLengthField& operator=(TargetLengthField&& other);
+  TargetLengthField(TargetLengthField&& other) noexcept;
+  TargetLengthField& operator=(TargetLengthField&& other) noexcept;
 
-  void build(const std::vector<Eigen::Vector3d>& positions, const std::vector<double>& lengths);
+  void build(const Mesh& input, const std::vector<double>& log_lengths);
   void clear();
   [[nodiscard]] bool empty() const;
-  [[nodiscard]] double valueAt(
-      const Eigen::Vector3d& point,
-      TargetLookupMode mode,
-      int k,
-      double sigma_factor) const;
+  [[nodiscard]] double valueAt(const Eigen::Vector3d& point) const;
 
  private:
-  std::vector<Eigen::Vector3d> positions_;
-  std::vector<double> lengths_;
-  NearestNeighborIndex index_;
+  std::unique_ptr<TargetLengthFieldImpl> impl_;
 };
 
 struct AdaIsoConfig {
   double mesh_scale = 1.0;
   Variant variant = Variant::Code;
-  TargetLookupMode target_lookup_mode = TargetLookupMode::GaussianKnn;
-  int target_knn_k = 8;
-  double target_gaussian_sigma_factor = 1.0;
   double csf_smoothing_alpha = 0.5;
   double target_min_factor = 0.6;
   double target_max_factor = 1.8;
   double target_gamma = 1.0;
+  double target_smooth_alpha = 0.3;
+  double target_max_adjacent_ratio = 1.30;
+  int target_gradation_iterations = 20;
+  std::string target_field_export_dir;
   bool preprocess = false;
   int global_iterations = 5;
   double subremesh_multiplier = 1.5;
@@ -125,6 +117,9 @@ class AdaIsoRemesher {
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
   void buildTargetLengths(const Mesh& mesh);
   [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
+  [[nodiscard]] std::vector<double> solveCsf(
+      const Mesh& mesh,
+      const std::vector<double>& raw_curvature);
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] double edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
@@ -159,14 +154,9 @@ class AdaIsoRemesher {
 
 [[nodiscard]] Variant parseVariant(const std::string& value);
 [[nodiscard]] std::string toString(Variant variant);
-[[nodiscard]] TargetLookupMode parseTargetLookupMode(const std::string& value);
-[[nodiscard]] std::string toString(TargetLookupMode mode);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,
-    TargetLookupMode mode,
-    int target_knn_k,
-    double target_gaussian_sigma_factor,
     double collapse_factor,
     double split_factor);
 

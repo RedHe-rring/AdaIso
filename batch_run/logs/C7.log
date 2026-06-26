@@ -1,0 +1,198 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\cpp_adaiso\examples\C7.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:0.544033
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:0
+Mesh Split_Collapse start!
+iter:30
+Split start:3913,698,0.
+Collapse start:4611,2636,608,83,5,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:936,42,0.
+Tangent smoothing start:Edge Point:95
+iter:29
+Split start:596,1,0.
+Collapse start:1618,168,6,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:375,23,0.
+Tangent smoothing start:Edge Point:75
+iter:28
+Split start:379,1,0.
+Collapse start:819,21,3,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:286,17,2,1,0.
+Tangent smoothing start:Edge Point:73
+iter:27
+Split start:214,0.
+Collapse start:497,20,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:239,10,1,0.
+Tangent smoothing start:Edge Point:73
+iter:26
+Split start:215,0.
+Collapse start:375,8,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:205,17,0.
+Tangent smoothing start:Edge Point:73
+iter:25
+Split start:184,0.
+Collapse start:245,8,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:202,14,0.
+Tangent smoothing start:Edge Point:73
+iter:24
+Split start:200,1,0.
+Collapse start:248,8,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:171,9,2,0.
+Tangent smoothing start:Edge Point:73
+iter:23
+Split start:196,1,1,1,1,1,0.
+Collapse start:195,4,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:187,15,0.
+Tangent smoothing start:Edge Point:73
+iter:22
+Split start:182,0.
+Collapse start:212,7,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:166,7,0.
+Tangent smoothing start:Edge Point:73
+iter:21
+Split start:189,0.
+Collapse start:202,5,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:193,13,0.
+Tangent smoothing start:Edge Point:73
+iter:20
+Split start:179,1,0.
+Collapse start:183,6,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:187,12,0.
+Tangent smoothing start:Edge Point:70
+iter:19
+Split start:159,0.
+Collapse start:171,4,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:174,8,0.
+Tangent smoothing start:Edge Point:70
+iter:18
+Split start:147,0.
+Collapse start:175,4,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:174,10,0.
+Tangent smoothing start:Edge Point:70
+iter:17
+Split start:144,0.
+Collapse start:172,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:194,19,4,1,0.
+Tangent smoothing start:Edge Point:70
+iter:16
+Split start:154,0.
+Collapse start:152,8,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:176,15,0.
+Tangent smoothing start:Edge Point:70
+iter:15
+Split start:147,0.
+Collapse start:154,5,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:151,11,1,0.
+Tangent smoothing start:Edge Point:70
+iter:14
+Split start:148,0.
+Collapse start:148,2,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:176,19,2,1,0.
+Tangent smoothing start:Edge Point:70
+iter:13
+Split start:133,0.
+Collapse start:123,2,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:159,13,1,0.
+Tangent smoothing start:Edge Point:70
+iter:12
+Split start:126,2,0.
+Collapse start:148,5,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:141,10,0.
+Tangent smoothing start:Edge Point:70
+iter:11
+Split start:126,0.
+Collapse start:113,3,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:167,20,2,0.
+Tangent smoothing start:Edge Point:70
+iter:10
+Split start:114,0.
+Collapse start:132,5,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:141,9,0.
+Tangent smoothing start:Edge Point:70
+iter:9
+Split start:129,0.
+Collapse start:115,2,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:149,7,0.
+Tangent smoothing start:Edge Point:70
+iter:8
+Split start:138,0.
+Collapse start:117,6,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:157,20,1,0.
+Tangent smoothing start:Edge Point:70
+iter:7
+Split start:121,1,0.
+Collapse start:128,3,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:150,9,0.
+Tangent smoothing start:Edge Point:70
+iter:6
+Split start:107,0.
+Collapse start:114,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:145,12,0.
+Tangent smoothing start:Edge Point:70
+iter:5
+Split start:124,0.
+Collapse start:127,2,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:155,12,0.
+Tangent smoothing start:Edge Point:70
+iter:4
+Split start:139,1,0.
+Collapse start:128,1,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:176,14,0.
+Tangent smoothing start:Edge Point:70
+iter:3
+Split start:119,0.
+Collapse start:133,3,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:157,11,0.
+Tangent smoothing start:Edge Point:70
+iter:2
+Split start:134,0.
+Collapse start:154,3,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:152,13,0.
+Tangent smoothing start:Edge Point:68
+iter:1
+Split start:140,1,0.
+Collapse start:148,5,0.
+Repeat face check:Check Neighbor Structure:
+Flip start:178,9,0.
+Tangent smoothing start:Edge Point:68
+
+,finished! time:988.042s
+Update point location

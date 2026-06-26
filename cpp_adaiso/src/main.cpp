@@ -23,13 +23,14 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --mesh-scale <value>       Default: 1.0\n"
       << "  --variant <code|paper>     Default: code\n"
-      << "  --target-mode <nearest|gaussian> Default: gaussian\n"
-      << "  --target-k <n>             Gaussian kNN target field neighbors. Default: 8\n"
-      << "  --target-sigma-factor <v>  Gaussian target field bandwidth scale. Default: 1.0\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 0.5\n"
       << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
       << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
       << "  --target-gamma <v>         Continuous target response exponent. Default: 1.0\n"
+      << "  --target-smooth-alpha <v>  Screened log-size smoothing strength. Default: 0.3\n"
+      << "  --target-max-adjacent-ratio <v> Max adjacent target length ratio. Default: 1.30\n"
+      << "  --target-gradation-iters <n> Gradation projection iterations. Default: 20\n"
+      << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -187,13 +188,17 @@ std::string buildSummaryJson(
   out << "  \"parameters\": {\n";
   out << "    \"mesh_scale\": " << config.mesh_scale << ",\n";
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
-  out << "    \"target_mode\": \"" << adaiso::toString(config.target_lookup_mode) << "\",\n";
-  out << "    \"target_k\": " << config.target_knn_k << ",\n";
-  out << "    \"target_sigma_factor\": " << config.target_gaussian_sigma_factor << ",\n";
+  out << "    \"target_lookup\": \"surface_barycentric\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_min_factor\": " << config.target_min_factor << ",\n";
   out << "    \"target_max_factor\": " << config.target_max_factor << ",\n";
   out << "    \"target_gamma\": " << config.target_gamma << ",\n";
+  out << "    \"target_smooth_alpha\": " << config.target_smooth_alpha << ",\n";
+  out << "    \"target_max_adjacent_ratio\": " << config.target_max_adjacent_ratio << ",\n";
+  out << "    \"target_gradation_iterations\": " << config.target_gradation_iterations << ",\n";
+  if (!config.target_field_export_dir.empty()) {
+    out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
+  }
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
@@ -266,12 +271,6 @@ int main(int argc, char** argv) {
         config.mesh_scale = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--variant") {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-mode") {
-        config.target_lookup_mode = adaiso::parseTargetLookupMode(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-k") {
-        config.target_knn_k = std::stoi(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-sigma-factor") {
-        config.target_gaussian_sigma_factor = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--csf-alpha") {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-min-factor") {
@@ -280,6 +279,14 @@ int main(int argc, char** argv) {
         config.target_max_factor = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-gamma") {
         config.target_gamma = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-smooth-alpha") {
+        config.target_smooth_alpha = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-max-adjacent-ratio") {
+        config.target_max_adjacent_ratio = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-gradation-iters") {
+        config.target_gradation_iterations = std::stoi(requireValue(i, argc, argv, arg));
+      } else if (arg == "--export-target-field") {
+        config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
@@ -315,12 +322,6 @@ int main(int argc, char** argv) {
     if (config.global_iterations < 0) {
       throw std::runtime_error("--iters must be non-negative");
     }
-    if (config.target_knn_k <= 0) {
-      throw std::runtime_error("--target-k must be positive");
-    }
-    if (config.target_gaussian_sigma_factor <= 0.0 || !std::isfinite(config.target_gaussian_sigma_factor)) {
-      throw std::runtime_error("--target-sigma-factor must be positive");
-    }
     if (config.csf_smoothing_alpha <= 0.0 || !std::isfinite(config.csf_smoothing_alpha)) {
       throw std::runtime_error("--csf-alpha must be positive");
     }
@@ -335,6 +336,15 @@ int main(int argc, char** argv) {
     }
     if (config.target_gamma <= 0.0 || !std::isfinite(config.target_gamma)) {
       throw std::runtime_error("--target-gamma must be positive");
+    }
+    if (config.target_smooth_alpha < 0.0 || !std::isfinite(config.target_smooth_alpha)) {
+      throw std::runtime_error("--target-smooth-alpha must be non-negative");
+    }
+    if (config.target_max_adjacent_ratio <= 0.0 || !std::isfinite(config.target_max_adjacent_ratio)) {
+      throw std::runtime_error("--target-max-adjacent-ratio must be positive");
+    }
+    if (config.target_gradation_iterations < 0) {
+      throw std::runtime_error("--target-gradation-iters must be non-negative");
     }
 
     const auto started = std::chrono::steady_clock::now();

@@ -1,0 +1,82 @@
+Command:
+E:\Remeshing\2024Lv_Adaptively-Isotropic-Remeshing-main\Adaptively-Isotropic-Remeshing-main\SHFVCG2021remesh_Hist\x64\Debug\SHFVCGRemesh_Hist.exe E:\adaiso\compare\Lv_adaiso\batch_run\batch_run\converted_obj\model_003.obj 0 2 1.2
+
+Output:
+start!
+Load data...
+SHFRemeshing Start:
+Mesh optimization start!
+L_ave:0.648776
+Compute Curvature:
+initial N and cotangent wij
+initial cotangent wij with distanc weight
+smooth processing.
+Edge Point:1094
+Mesh Split_Collapse start!
+iter:5
+Split start:4076,345,0.
+Collapse start:4421,4712,1067,107,3,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:920,50,4,0.
+Tangent smoothing start:Edge Point:1174
+iter:4
+Split start:499,1,0.
+Collapse start:1129,41,2,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:313,16,1,0.
+Tangent smoothing start:Edge Point:1161
+iter:3
+Split start:345,0.
+Collapse start:454,4,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:224,14,1,0.
+Tangent smoothing start:Edge Point:1146
+iter:2
+Split start:225,0.
+Collapse start:251,4,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:163,4,1,0.
+Tangent smoothing start:Edge Point:1144
+iter:1
+Split start:196,1,0.
+Collapse start:198,0.
+Repeat face check:Error, points_Keep!
+Error, points_Keep!
+Error, points_Keep!
+Check Neighbor Structure:
+Flip start:150,9,0.
+Tangent smoothing start:Edge Point:1141
+
+,finished! time:126.737s
+Update point location
