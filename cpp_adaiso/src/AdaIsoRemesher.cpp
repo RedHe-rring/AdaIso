@@ -1,5 +1,6 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
+#include "adaiso/Curvature.hpp"
 #include "adaiso/Geometry.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
@@ -516,43 +517,17 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
 }
 
 std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
-  const auto normals = vertexNormals(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
-
-  for (std::size_t i = 0; i < neigh.size(); ++i) {
-    if (neigh[i].empty()) {
-      continue;
-    }
-    double accum = 0.0;
-    double max_angle = 0.0;
-    int count = 0;
-    for (int j : neigh[i]) {
-      const double dot = std::clamp(normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
-      const double angle = std::acos(dot);
-      accum += angle;
-      max_angle = std::max(max_angle, angle);
-      ++count;
-    }
-    curvature[i] = config_.variant == Variant::Paper ? max_angle : accum / static_cast<double>(count);
-  }
-
-  if (curvature.empty()) {
-    return curvature;
-  }
-
-  const auto adjacency = detail::buildCsfWeightGraph(mesh, config_.variant == Variant::Code);
-  const auto solved = detail::solveDirichletCsf(adjacency, curvature);
-  stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
-  stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
-  stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
-  stats_.csf_residual_abs = solved.stats.residual_abs;
-  stats_.csf_residual_scaled = solved.stats.residual_scaled;
-  stats_.csf_free_vertices = solved.stats.free_vertices;
-  stats_.csf_fixed_vertices = solved.stats.fixed_vertices;
-  stats_.csf_matrix_nonzeros = solved.stats.matrix_nonzeros;
-  stats_.csf_solver_success = solved.stats.solver_success;
-  return solved.values;
+  const CurvatureFields fields = computeCurvatureFields(mesh, config_.variant);
+  stats_.csf_assembly_time_ms = fields.stats.assembly_time_ms;
+  stats_.csf_factorization_time_ms = fields.stats.factorization_time_ms;
+  stats_.csf_solve_time_ms = fields.stats.solve_time_ms;
+  stats_.csf_residual_abs = fields.stats.residual_abs;
+  stats_.csf_residual_scaled = fields.stats.residual_scaled;
+  stats_.csf_free_vertices = fields.stats.free_vertices;
+  stats_.csf_fixed_vertices = fields.stats.fixed_vertices;
+  stats_.csf_matrix_nonzeros = fields.stats.matrix_nonzeros;
+  stats_.csf_solver_success = fields.stats.solver_success;
+  return fields.diffused;
 }
 
 std::vector<double> AdaIsoRemesher::histogramMultipliers(const std::vector<double>& curvature) const {

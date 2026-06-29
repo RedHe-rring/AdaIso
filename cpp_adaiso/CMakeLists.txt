@@ -30,6 +30,7 @@ endif()
 
 add_library(adaiso_core
   src/AdaIsoRemesher.cpp
+  src/Curvature.cpp
   src/CsfSolver.cpp
   src/Geometry.cpp
   src/IO.cpp
@@ -63,6 +64,9 @@ endif()
 
 add_executable(adaiso_cli src/main.cpp)
 target_link_libraries(adaiso_cli PRIVATE adaiso_core)
+
+add_executable(adaiso_curvature_viz src/curvature_viz_main.cpp)
+target_link_libraries(adaiso_curvature_viz PRIVATE adaiso_core)
 
 option(ADAISO_BUILD_TESTS "Build basic smoke tests" ON)
 if(ADAISO_BUILD_TESTS)

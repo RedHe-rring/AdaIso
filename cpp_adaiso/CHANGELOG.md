@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.0.0
+
+Feature update:
+Reworks CSF Dirichlet anchor selection and adds curvature visualization support.
+
+- Changed CSF fixed-point selection to choose stable anchors from low/high
+  curvature quantile regions instead of directly fixing global min/max curvature
+  vertices.
+- Added reusable curvature helpers for raw and diffused curvature fields.
+- Added `adaiso_curvature_viz` for writing raw/diffused curvature as colored
+  ASCII PLY files.
+- Added blue-green-red curvature color mapping with independent raw and diffused
+  min/max normalization.
+- Added regression coverage for stable CSF anchors, curvature fields, color
+  mapping, and colored PLY output.
+
 ## 2.2.0
 
 Feature update:

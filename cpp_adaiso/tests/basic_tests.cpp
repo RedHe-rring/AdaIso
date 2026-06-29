@@ -1,4 +1,5 @@
 #include "adaiso/AdaIsoRemesher.hpp"
+#include "adaiso/Curvature.hpp"
 #include "adaiso/Geometry.hpp"
 #include "adaiso/IO.hpp"
 #include "adaiso/Mesh.hpp"
@@ -10,7 +11,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -116,6 +119,12 @@ void assertFiniteValues(const std::vector<double>& values) {
   }
 }
 
+void assertColor(adaiso::Rgb8 actual, int r, int g, int b) {
+  assert(static_cast<int>(actual.r) == r);
+  assert(static_cast<int>(actual.g) == g);
+  assert(static_cast<int>(actual.b) == b);
+}
+
 void assertSymmetricPositive(const adaiso::detail::CsfAdjacency& adjacency) {
   for (std::size_t i = 0; i < adjacency.size(); ++i) {
     for (const auto& neighbor : adjacency[i]) {
@@ -205,6 +214,40 @@ void testPlyRoundtripAndWriteMeshDispatch() {
   assert(loaded_dispatch.faceCount() == mesh.faceCount());
 }
 
+void testCurvatureColorMappingAndColoredPly() {
+  assertColor(adaiso::blueGreenRedColor(0.0, 0.0, 2.0), 0, 0, 255);
+  assertColor(adaiso::blueGreenRedColor(1.0, 0.0, 2.0), 0, 255, 0);
+  assertColor(adaiso::blueGreenRedColor(2.0, 0.0, 2.0), 255, 0, 0);
+  assertColor(adaiso::blueGreenRedColor(4.0, 4.0, 4.0), 0, 255, 0);
+
+  const std::vector<double> raw = {0.0, 10.0, 20.0};
+  const std::vector<double> diffused = {10.0, 15.0, 20.0};
+  const auto raw_range = adaiso::scalarRange(raw);
+  const auto diffused_range = adaiso::scalarRange(diffused);
+  const auto raw_colors = adaiso::colorizeScalars(raw, raw_range.min, raw_range.max);
+  const auto diffused_colors = adaiso::colorizeScalars(diffused, diffused_range.min, diffused_range.max);
+  assertColor(raw_colors[1], 0, 255, 0);
+  assertColor(diffused_colors[0], 0, 0, 255);
+  assertColor(diffused_colors[1], 0, 255, 0);
+
+  const adaiso::Mesh mesh = makeSingleTriangle();
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cpp_adaiso_tests";
+  const std::filesystem::path path = dir / "colored_triangle.ply";
+  adaiso::writeColoredAsciiPly(path, mesh, {
+      {0, 0, 255},
+      {0, 255, 0},
+      {255, 0, 0},
+  });
+
+  std::ifstream in(path);
+  assert(in);
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  assert(text.find("property uchar red") != std::string::npos);
+  assert(text.find("property uchar green") != std::string::npos);
+  assert(text.find("property uchar blue") != std::string::npos);
+  assert(text.find("0 0 0 0 0 255") != std::string::npos);
+}
+
 void testOffLoad() {
   const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cpp_adaiso_tests";
   std::filesystem::create_directories(dir);
@@ -283,6 +326,35 @@ void testCsfDisconnectedAndConstantComponents() {
   }
 }
 
+void testCsfStableQuantileAnchors() {
+  const auto adjacency = makeChainAdjacency(6);
+  const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 10.0, 10.0, 10.0, 20.0, 100.0});
+  assert(result.stats.solver_success);
+  assert(result.stats.fixed_vertices == 2);
+  assert(result.stats.free_vertices == 4);
+  assertNear(result.values[0], 10.0);
+  assertNear(result.values[1], 10.0);
+  assertNear(result.values[2], 10.0);
+  assertNear(result.values[3], 15.0);
+  assertNear(result.values[4], 20.0);
+  assertNear(result.values[5], 20.0);
+  assertHarmonicResidual(adjacency, result.values, {0, 1, 3, 5});
+}
+
+void testCsfOverlappingQuantileFallback() {
+  const auto adjacency = makeChainAdjacency(5);
+  const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 0.0, 0.0, 0.0, 1.0});
+  assert(result.stats.solver_success);
+  assert(result.stats.fixed_vertices == 2);
+  assert(result.stats.free_vertices == 3);
+  assertNear(result.values[0], 0.0);
+  assertNear(result.values[1], 0.25);
+  assertNear(result.values[2], 0.5);
+  assertNear(result.values[3], 0.75);
+  assertNear(result.values[4], 1.0);
+  assertHarmonicResidual(adjacency, result.values, {1, 2, 3});
+}
+
 void testCsfVariantWeightGraphs() {
   const adaiso::Mesh mesh = makePyramid();
   const auto paper = adaiso::detail::buildCsfWeightGraph(mesh, false);
@@ -299,6 +371,24 @@ void testCsfVariantWeightGraphs() {
   assertFiniteValues(code_result.values);
   assert(paper_result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
   assert(code_result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
+}
+
+void testCurvatureFieldsOnPyramid() {
+  const adaiso::Mesh mesh = makePyramid();
+  const adaiso::CurvatureFields fields = adaiso::computeCurvatureFields(mesh, adaiso::Variant::Code);
+  assert(fields.raw.size() == mesh.vertexCount());
+  assert(fields.diffused.size() == mesh.vertexCount());
+  assertFiniteValues(fields.raw);
+  assertFiniteValues(fields.diffused);
+  assert(fields.stats.solver_success);
+  assert(fields.stats.residual_scaled < adaiso::detail::kResidualThreshold);
+
+  const auto raw_range = adaiso::scalarRange(fields.raw);
+  const auto diffused_range = adaiso::scalarRange(fields.diffused);
+  assert(std::isfinite(raw_range.min));
+  assert(std::isfinite(raw_range.max));
+  assert(std::isfinite(diffused_range.min));
+  assert(std::isfinite(diffused_range.max));
 }
 
 void testTargetLengthFieldQueries() {
@@ -547,10 +637,14 @@ int main() {
   testCleanupAndAdjacency();
   testObjRoundtrip();
   testPlyRoundtripAndWriteMeshDispatch();
+  testCurvatureColorMappingAndColoredPly();
   testOffLoad();
   testCsfKnownChainSolution();
   testCsfDisconnectedAndConstantComponents();
+  testCsfStableQuantileAnchors();
+  testCsfOverlappingQuantileFallback();
   testCsfVariantWeightGraphs();
+  testCurvatureFieldsOnPyramid();
   testTargetLengthFieldQueries();
   testEdgeRatioStats();
   testRemeshSmoke();

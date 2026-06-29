@@ -88,30 +88,94 @@ bool componentHasConstantValue(const std::vector<int>& component, const std::vec
   return max_value - min_value <= 1e-14;
 }
 
-int componentMaxVertex(const std::vector<int>& component, const std::vector<double>& values) {
-  return *std::max_element(component.begin(), component.end(), [&](int lhs, int rhs) {
-    const double lv = values[static_cast<std::size_t>(lhs)];
-    const double rv = values[static_cast<std::size_t>(rhs)];
-    if (lv == rv) {
-      return lhs > rhs;
-    }
-    return lv < rv;
-  });
+double quantileOfSorted(const std::vector<double>& sorted, double q) {
+  if (sorted.empty()) {
+    return 0.0;
+  }
+  if (sorted.size() == 1) {
+    return sorted.front();
+  }
+  q = std::clamp(q, 0.0, 1.0);
+  const double pos = q * static_cast<double>(sorted.size() - 1);
+  const auto lo = static_cast<std::size_t>(std::floor(pos));
+  const auto hi = static_cast<std::size_t>(std::ceil(pos));
+  const double t = pos - static_cast<double>(lo);
+  return sorted[lo] * (1.0 - t) + sorted[hi] * t;
 }
 
-int componentMinVertex(
+double componentStability(
+    int vertex,
+    const CsfAdjacency& adjacency,
+    const std::vector<double>& values,
+    double component_range) {
+  const auto& neighbors = adjacency[static_cast<std::size_t>(vertex)];
+  double sum_weight = 0.0;
+  double sum_value = 0.0;
+  for (const CsfNeighbor& neighbor : neighbors) {
+    sum_weight += neighbor.weight;
+    sum_value += neighbor.weight * values[static_cast<std::size_t>(neighbor.vertex)];
+  }
+  if (sum_weight <= 0.0 || !std::isfinite(sum_weight)) {
+    return std::numeric_limits<double>::infinity();
+  }
+
+  const double average = sum_value / sum_weight;
+  return std::abs(values[static_cast<std::size_t>(vertex)] - average) / (component_range + 1e-14);
+}
+
+bool stableAnchorLess(
+    int candidate,
+    int current,
+    const std::vector<double>& values,
+    const std::vector<double>& stability,
+    bool high_anchor) {
+  if (current < 0) {
+    return true;
+  }
+
+  const double candidate_stability = stability[static_cast<std::size_t>(candidate)];
+  const double current_stability = stability[static_cast<std::size_t>(current)];
+  if (candidate_stability < current_stability) {
+    return true;
+  }
+  if (candidate_stability > current_stability) {
+    return false;
+  }
+
+  const double candidate_value = values[static_cast<std::size_t>(candidate)];
+  const double current_value = values[static_cast<std::size_t>(current)];
+  if (high_anchor) {
+    if (candidate_value > current_value) {
+      return true;
+    }
+    if (candidate_value < current_value) {
+      return false;
+    }
+  } else {
+    if (candidate_value < current_value) {
+      return true;
+    }
+    if (candidate_value > current_value) {
+      return false;
+    }
+  }
+
+  return candidate < current;
+}
+
+template <typename CandidatePredicate>
+int selectStableAnchor(
     const std::vector<int>& component,
     const std::vector<double>& values,
-    const std::vector<char>& excluded) {
+    const std::vector<double>& stability,
+    CandidatePredicate is_candidate,
+    bool high_anchor) {
   int best = -1;
-  double best_value = std::numeric_limits<double>::infinity();
   for (int v : component) {
-    if (excluded[static_cast<std::size_t>(v)]) {
+    if (!is_candidate(v)) {
       continue;
     }
-    const double value = values[static_cast<std::size_t>(v)];
-    if (value < best_value || (value == best_value && (best < 0 || v < best))) {
-      best_value = value;
+    if (stableAnchorLess(v, best, values, stability, high_anchor)) {
       best = v;
     }
   }
@@ -136,25 +200,64 @@ std::vector<char> selectFixedVertices(const CsfAdjacency& adjacency, const std::
       continue;
     }
 
-    const int vmax = componentMaxVertex(component, values);
-    std::vector<char> excluded(values.size(), 0);
-    excluded[static_cast<std::size_t>(vmax)] = 1;
-    for (const CsfNeighbor& neighbor : adjacency[static_cast<std::size_t>(vmax)]) {
-      excluded[static_cast<std::size_t>(neighbor.vertex)] = 1;
+    std::vector<double> sorted_values;
+    sorted_values.reserve(component.size());
+    for (int v : component) {
+      sorted_values.push_back(values[static_cast<std::size_t>(v)]);
+    }
+    std::sort(sorted_values.begin(), sorted_values.end());
+    const double min_value = sorted_values.front();
+    const double max_value = sorted_values.back();
+    const double range = max_value - min_value;
+    const double q30 = quantileOfSorted(sorted_values, 0.30);
+    const double q70 = quantileOfSorted(sorted_values, 0.70);
+
+    std::vector<double> stability(values.size(), std::numeric_limits<double>::infinity());
+    for (int v : component) {
+      stability[static_cast<std::size_t>(v)] = componentStability(v, adjacency, values, range);
     }
 
-    int vmin = componentMinVertex(component, values, excluded);
-    if (vmin < 0) {
-      std::fill(excluded.begin(), excluded.end(), 0);
-      excluded[static_cast<std::size_t>(vmax)] = 1;
-      vmin = componentMinVertex(component, values, excluded);
-    }
-    if (vmin < 0) {
+    const int vlow = selectStableAnchor(
+        component,
+        values,
+        stability,
+        [&](int v) {
+          return values[static_cast<std::size_t>(v)] <= q30;
+        },
+        false);
+    if (vlow < 0) {
       throw std::runtime_error("CSF anchor selection failed");
     }
 
-    fixed[static_cast<std::size_t>(vmax)] = 1;
-    fixed[static_cast<std::size_t>(vmin)] = 1;
+    int vhigh = selectStableAnchor(
+        component,
+        values,
+        stability,
+        [&](int v) {
+          return values[static_cast<std::size_t>(v)] >= q70;
+        },
+        true);
+
+    const double low_value = values[static_cast<std::size_t>(vlow)];
+    if (vhigh < 0 || vhigh == vlow || values[static_cast<std::size_t>(vhigh)] <= low_value + 1e-14) {
+      vhigh = selectStableAnchor(
+          component,
+          values,
+          stability,
+          [&](int v) {
+            return values[static_cast<std::size_t>(v)] > low_value + 1e-14;
+          },
+          true);
+    }
+    if (vhigh < 0) {
+      for (int v : component) {
+        fixed[static_cast<std::size_t>(v)] = 1;
+      }
+      continue;
+    }
+
+    fixed[static_cast<std::size_t>(vlow)] = 1;
+    fixed[static_cast<std::size_t>(vhigh)] = 1;
   }
   return fixed;
 }
