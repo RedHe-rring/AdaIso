@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -103,11 +104,12 @@ double quantileOfSorted(const std::vector<double>& sorted, double q) {
   return sorted[lo] * (1.0 - t) + sorted[hi] * t;
 }
 
-double componentStability(
-    int vertex,
-    const CsfAdjacency& adjacency,
-    const std::vector<double>& values,
-    double component_range) {
+int targetAnchorCount(std::size_t component_size) {
+  const int count = static_cast<int>(std::floor(std::log2(static_cast<double>(component_size))));
+  return std::clamp(count, 4, 10);
+}
+
+double componentStability(int vertex, const CsfAdjacency& adjacency, const std::vector<double>& values) {
   const auto& neighbors = adjacency[static_cast<std::size_t>(vertex)];
   double sum_weight = 0.0;
   double sum_value = 0.0;
@@ -120,66 +122,164 @@ double componentStability(
   }
 
   const double average = sum_value / sum_weight;
-  return std::abs(values[static_cast<std::size_t>(vertex)] - average) / (component_range + 1e-14);
+  return std::abs(values[static_cast<std::size_t>(vertex)] - average);
 }
 
-bool stableAnchorLess(
-    int candidate,
-    int current,
+bool stableLowLess(
+    int lhs,
+    int rhs,
     const std::vector<double>& values,
-    const std::vector<double>& stability,
-    bool high_anchor) {
-  if (current < 0) {
+    const std::vector<double>& stability) {
+  if (rhs < 0) {
     return true;
   }
 
-  const double candidate_stability = stability[static_cast<std::size_t>(candidate)];
-  const double current_stability = stability[static_cast<std::size_t>(current)];
-  if (candidate_stability < current_stability) {
+  const double lhs_stability = stability[static_cast<std::size_t>(lhs)];
+  const double rhs_stability = stability[static_cast<std::size_t>(rhs)];
+  if (lhs_stability < rhs_stability) {
     return true;
   }
-  if (candidate_stability > current_stability) {
+  if (lhs_stability > rhs_stability) {
     return false;
   }
 
-  const double candidate_value = values[static_cast<std::size_t>(candidate)];
-  const double current_value = values[static_cast<std::size_t>(current)];
-  if (high_anchor) {
-    if (candidate_value > current_value) {
-      return true;
-    }
-    if (candidate_value < current_value) {
-      return false;
-    }
-  } else {
-    if (candidate_value < current_value) {
-      return true;
-    }
-    if (candidate_value > current_value) {
-      return false;
-    }
+  const double lhs_value = values[static_cast<std::size_t>(lhs)];
+  const double rhs_value = values[static_cast<std::size_t>(rhs)];
+  if (lhs_value < rhs_value) {
+    return true;
+  }
+  if (lhs_value > rhs_value) {
+    return false;
   }
 
-  return candidate < current;
+  return lhs < rhs;
 }
 
-template <typename CandidatePredicate>
-int selectStableAnchor(
-    const std::vector<int>& component,
+bool stableHighLess(
+    int lhs,
+    int rhs,
     const std::vector<double>& values,
-    const std::vector<double>& stability,
+    const std::vector<double>& stability) {
+  if (rhs < 0) {
+    return true;
+  }
+
+  const double lhs_stability = stability[static_cast<std::size_t>(lhs)];
+  const double rhs_stability = stability[static_cast<std::size_t>(rhs)];
+  if (lhs_stability < rhs_stability) {
+    return true;
+  }
+  if (lhs_stability > rhs_stability) {
+    return false;
+  }
+
+  const double lhs_value = values[static_cast<std::size_t>(lhs)];
+  const double rhs_value = values[static_cast<std::size_t>(rhs)];
+  if (lhs_value > rhs_value) {
+    return true;
+  }
+  if (lhs_value < rhs_value) {
+    return false;
+  }
+
+  return lhs < rhs;
+}
+
+template <typename CandidatePredicate, typename Less>
+int selectBestAnchor(
+    const std::vector<int>& component,
     CandidatePredicate is_candidate,
-    bool high_anchor) {
+    Less less) {
   int best = -1;
   for (int v : component) {
     if (!is_candidate(v)) {
       continue;
     }
-    if (stableAnchorLess(v, best, values, stability, high_anchor)) {
+    if (less(v, best)) {
       best = v;
     }
   }
   return best;
+}
+
+bool areNeighbors(const CsfAdjacency& adjacency, int a, int b) {
+  for (const CsfNeighbor& neighbor : adjacency[static_cast<std::size_t>(a)]) {
+    if (neighbor.vertex == b) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool haveCommonNeighbor(const CsfAdjacency& adjacency, int a, int b) {
+  const auto& lhs = adjacency[static_cast<std::size_t>(a)];
+  const auto& rhs = adjacency[static_cast<std::size_t>(b)];
+  std::size_t i = 0;
+  std::size_t j = 0;
+  while (i < lhs.size() && j < rhs.size()) {
+    if (lhs[i].vertex == rhs[j].vertex) {
+      return true;
+    }
+    if (lhs[i].vertex < rhs[j].vertex) {
+      ++i;
+    } else {
+      ++j;
+    }
+  }
+  return false;
+}
+
+bool tooCloseToAnchors(const CsfAdjacency& adjacency, int vertex, const std::vector<int>& anchors) {
+  for (int anchor : anchors) {
+    if (vertex == anchor ||
+        areNeighbors(adjacency, vertex, anchor) ||
+        haveCommonNeighbor(adjacency, vertex, anchor)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<int> stabilitySortedVertices(
+    const std::vector<int>& component,
+    const std::vector<double>& values,
+    const std::vector<double>& stability) {
+  std::vector<int> sorted = component;
+  std::sort(sorted.begin(), sorted.end(), [&](int lhs, int rhs) {
+    const double lhs_stability = stability[static_cast<std::size_t>(lhs)];
+    const double rhs_stability = stability[static_cast<std::size_t>(rhs)];
+    if (lhs_stability < rhs_stability) {
+      return true;
+    }
+    if (lhs_stability > rhs_stability) {
+      return false;
+    }
+    const double lhs_value = values[static_cast<std::size_t>(lhs)];
+    const double rhs_value = values[static_cast<std::size_t>(rhs)];
+    if (lhs_value < rhs_value) {
+      return true;
+    }
+    if (lhs_value > rhs_value) {
+      return false;
+    }
+    return lhs < rhs;
+  });
+  return sorted;
+}
+
+void addSpacedAnchors(
+    const CsfAdjacency& adjacency,
+    const std::vector<int>& candidates,
+    int target_count,
+    std::vector<int>& anchors) {
+  for (int v : candidates) {
+    if (static_cast<int>(anchors.size()) >= target_count) {
+      break;
+    }
+    if (!tooCloseToAnchors(adjacency, v, anchors)) {
+      anchors.push_back(v);
+    }
+  }
 }
 
 std::vector<char> selectFixedVertices(const CsfAdjacency& adjacency, const std::vector<double>& values) {
@@ -194,9 +294,11 @@ std::vector<char> selectFixedVertices(const CsfAdjacency& adjacency, const std::
       }
       continue;
     }
-    if (component.size() == 2) {
-      fixed[static_cast<std::size_t>(component[0])] = 1;
-      fixed[static_cast<std::size_t>(component[1])] = 1;
+    const int anchor_count = targetAnchorCount(component.size());
+    if (static_cast<int>(component.size()) <= anchor_count) {
+      for (int v : component) {
+        fixed[static_cast<std::size_t>(v)] = 1;
+      }
       continue;
     }
 
@@ -206,48 +308,45 @@ std::vector<char> selectFixedVertices(const CsfAdjacency& adjacency, const std::
       sorted_values.push_back(values[static_cast<std::size_t>(v)]);
     }
     std::sort(sorted_values.begin(), sorted_values.end());
-    const double min_value = sorted_values.front();
-    const double max_value = sorted_values.back();
-    const double range = max_value - min_value;
     const double q30 = quantileOfSorted(sorted_values, 0.30);
     const double q70 = quantileOfSorted(sorted_values, 0.70);
 
     std::vector<double> stability(values.size(), std::numeric_limits<double>::infinity());
     for (int v : component) {
-      stability[static_cast<std::size_t>(v)] = componentStability(v, adjacency, values, range);
+      stability[static_cast<std::size_t>(v)] = componentStability(v, adjacency, values);
     }
 
-    const int vlow = selectStableAnchor(
+    const int vlow = selectBestAnchor(
         component,
-        values,
-        stability,
         [&](int v) {
           return values[static_cast<std::size_t>(v)] <= q30;
         },
-        false);
+        [&](int lhs, int rhs) {
+          return stableLowLess(lhs, rhs, values, stability);
+        });
     if (vlow < 0) {
       throw std::runtime_error("CSF anchor selection failed");
     }
 
-    int vhigh = selectStableAnchor(
+    int vhigh = selectBestAnchor(
         component,
-        values,
-        stability,
         [&](int v) {
-          return values[static_cast<std::size_t>(v)] >= q70;
+          return v != vlow && values[static_cast<std::size_t>(v)] >= q70;
         },
-        true);
+        [&](int lhs, int rhs) {
+          return stableHighLess(lhs, rhs, values, stability);
+        });
 
     const double low_value = values[static_cast<std::size_t>(vlow)];
     if (vhigh < 0 || vhigh == vlow || values[static_cast<std::size_t>(vhigh)] <= low_value + 1e-14) {
-      vhigh = selectStableAnchor(
+      vhigh = selectBestAnchor(
           component,
-          values,
-          stability,
           [&](int v) {
-            return values[static_cast<std::size_t>(v)] > low_value + 1e-14;
+            return v != vlow && values[static_cast<std::size_t>(v)] > low_value + 1e-14;
           },
-          true);
+          [&](int lhs, int rhs) {
+            return stableHighLess(lhs, rhs, values, stability);
+          });
     }
     if (vhigh < 0) {
       for (int v : component) {
@@ -256,8 +355,21 @@ std::vector<char> selectFixedVertices(const CsfAdjacency& adjacency, const std::
       continue;
     }
 
-    fixed[static_cast<std::size_t>(vlow)] = 1;
-    fixed[static_cast<std::size_t>(vhigh)] = 1;
+    std::vector<int> anchors = {vlow, vhigh};
+    const std::vector<int> sorted_by_stability = stabilitySortedVertices(component, values, stability);
+    const std::size_t stable_count = std::max<std::size_t>(
+        1,
+        static_cast<std::size_t>(std::ceil(0.30 * static_cast<double>(component.size()))));
+    const std::vector<int> stable_candidates(
+        sorted_by_stability.begin(),
+        sorted_by_stability.begin() + static_cast<std::ptrdiff_t>(std::min(stable_count, sorted_by_stability.size())));
+
+    addSpacedAnchors(adjacency, stable_candidates, anchor_count, anchors);
+    addSpacedAnchors(adjacency, sorted_by_stability, anchor_count, anchors);
+
+    for (int v : anchors) {
+      fixed[static_cast<std::size_t>(v)] = 1;
+    }
   }
   return fixed;
 }

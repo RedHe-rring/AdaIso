@@ -268,22 +268,32 @@ void testOffLoad() {
   assert(loaded.faceCount() == 2);
 }
 
-void testCsfKnownChainSolution() {
-  const auto adjacency = makeChainAdjacency(4);
-  const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 0.0, 0.0, 1.0});
-  assert(result.stats.solver_success);
-  assert(result.stats.fixed_vertices == 2);
-  assert(result.stats.free_vertices == 2);
-  assert(result.stats.matrix_nonzeros == 4);
-  assert(result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
-  assertNear(result.values[0], 0.0);
-  assertNear(result.values[1], 1.0 / 3.0);
-  assertNear(result.values[2], 2.0 / 3.0);
-  assertNear(result.values[3], 1.0);
-  assertHarmonicResidual(adjacency, result.values, {1, 2});
-  for (double value : result.values) {
-    assert(value >= -1e-12 && value <= 1.0 + 1e-12);
+void testCsfMultiAnchorChainSolution() {
+  constexpr int vertices = 32;
+  const auto adjacency = makeChainAdjacency(vertices);
+  std::vector<double> initial(static_cast<std::size_t>(vertices), 0.0);
+  for (int i = 0; i < vertices; ++i) {
+    initial[static_cast<std::size_t>(i)] = static_cast<double>(i);
   }
+
+  const auto result = adaiso::detail::solveDirichletCsf(adjacency, initial);
+  assert(result.stats.solver_success);
+  assert(result.stats.fixed_vertices == 5);
+  assert(result.stats.free_vertices == 27);
+  assert(result.stats.residual_scaled < adaiso::detail::kResidualThreshold);
+  assertNear(result.values[0], 1.0);
+  for (int i = 1; i <= 30; ++i) {
+    assertNear(result.values[static_cast<std::size_t>(i)], static_cast<double>(i));
+  }
+  assertNear(result.values[31], 30.0);
+
+  std::vector<int> free_vertices;
+  for (int i = 0; i < vertices; ++i) {
+    if (i != 1 && i != 4 && i != 7 && i != 10 && i != 30) {
+      free_vertices.push_back(i);
+    }
+  }
+  assertHarmonicResidual(adjacency, result.values, free_vertices);
 }
 
 void testCsfDisconnectedAndConstantComponents() {
@@ -307,15 +317,17 @@ void testCsfDisconnectedAndConstantComponents() {
 
   const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 5.0, 7.0});
   assert(result.stats.solver_success);
-  assert(result.stats.fixed_vertices == 5);
-  assert(result.stats.free_vertices == 4);
-  assertNear(result.values[1], 1.0 / 3.0);
-  assertNear(result.values[2], 2.0 / 3.0);
-  assertNear(result.values[5], 3.0);
-  assertNear(result.values[6], 4.0);
+  assert(result.stats.fixed_vertices == 9);
+  assert(result.stats.free_vertices == 0);
+  assertNear(result.values[0], 0.0);
+  assertNear(result.values[1], 0.0);
+  assertNear(result.values[2], 0.0);
+  assertNear(result.values[3], 1.0);
+  assertNear(result.values[4], 2.0);
+  assertNear(result.values[5], 2.0);
+  assertNear(result.values[6], 2.0);
+  assertNear(result.values[7], 5.0);
   assertNear(result.values[8], 7.0);
-  assert(result.values[4] != result.values[5]);
-  assertHarmonicResidual(adjacency, result.values, {1, 2, 5, 6});
 
   const auto constant = adaiso::detail::solveDirichletCsf(makeChainAdjacency(4), {2.0, 2.0, 2.0, 2.0});
   assert(constant.stats.solver_success);
@@ -324,6 +336,17 @@ void testCsfDisconnectedAndConstantComponents() {
   for (double value : constant.values) {
     assertNear(value, 2.0);
   }
+}
+
+void testCsfSmallNonconstantComponentIsFullyFixed() {
+  const auto result = adaiso::detail::solveDirichletCsf(makeChainAdjacency(4), {0.0, 1.0, 2.0, 3.0});
+  assert(result.stats.solver_success);
+  assert(result.stats.fixed_vertices == 4);
+  assert(result.stats.free_vertices == 0);
+  assertNear(result.values[0], 0.0);
+  assertNear(result.values[1], 1.0);
+  assertNear(result.values[2], 2.0);
+  assertNear(result.values[3], 3.0);
 }
 
 void testCsfStableQuantileAnchors() {
@@ -341,7 +364,7 @@ void testCsfStableQuantileAnchors() {
   assertHarmonicResidual(adjacency, result.values, {0, 1, 3, 5});
 }
 
-void testCsfOverlappingQuantileFallback() {
+void testCsfOverlappingQuantileFallbackAndSpacing() {
   const auto adjacency = makeChainAdjacency(5);
   const auto result = adaiso::detail::solveDirichletCsf(adjacency, {0.0, 0.0, 0.0, 0.0, 1.0});
   assert(result.stats.solver_success);
@@ -639,10 +662,11 @@ int main() {
   testPlyRoundtripAndWriteMeshDispatch();
   testCurvatureColorMappingAndColoredPly();
   testOffLoad();
-  testCsfKnownChainSolution();
+  testCsfMultiAnchorChainSolution();
   testCsfDisconnectedAndConstantComponents();
+  testCsfSmallNonconstantComponentIsFullyFixed();
   testCsfStableQuantileAnchors();
-  testCsfOverlappingQuantileFallback();
+  testCsfOverlappingQuantileFallbackAndSpacing();
   testCsfVariantWeightGraphs();
   testCurvatureFieldsOnPyramid();
   testTargetLengthFieldQueries();

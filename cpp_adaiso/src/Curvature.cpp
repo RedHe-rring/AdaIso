@@ -93,7 +93,7 @@ Rgb8 blueGreenRedColor(double value, double min_value, double max_value) {
     throw std::runtime_error("color range max is smaller than min");
   }
   if (max_value - min_value <= kRangeEps) {
-    return {0, 255, 0};
+    return {128, 128, 128};
   }
 
   const double t = std::clamp((value - min_value) / (max_value - min_value), 0.0, 1.0);
