@@ -23,7 +23,7 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --mesh-scale <value>       Default: 1.0\n"
       << "  --variant <code|paper>     Default: code\n"
-      << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 0.5\n"
+      << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
       << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
       << "  --target-gamma <v>         Continuous target response exponent. Default: 1.0\n"

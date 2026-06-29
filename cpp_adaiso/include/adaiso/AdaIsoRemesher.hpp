@@ -48,7 +48,7 @@ class TargetLengthField {
 struct AdaIsoConfig {
   double mesh_scale = 1.0;
   Variant variant = Variant::Code;
-  double csf_smoothing_alpha = 0.5;
+  double csf_smoothing_alpha = 2.0;
   double target_min_factor = 0.6;
   double target_max_factor = 1.8;
   double target_gamma = 1.0;

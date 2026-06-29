@@ -105,7 +105,7 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 
 - `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
 - `--variant code|paper`: controls remeshing thresholds and collapse reference behavior; CSF curvature smoothing is shared by both variants.
-- `--csf-alpha`: screened CSF smoothing strength in `lambda = alpha h^2`. Default: `0.5`.
+- `--csf-alpha`: screened CSF smoothing strength in `lambda = alpha h^2`. Default: `2.0`.
 - `--target-min-factor`: minimum continuous target length factor. Default: `0.6`.
 - `--target-max-factor`: maximum continuous target length factor. Default: `1.8`.
 - `--target-gamma`: continuous target curvature response exponent. Default: `1.0`.

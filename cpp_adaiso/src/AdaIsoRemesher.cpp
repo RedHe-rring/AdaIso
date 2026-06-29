@@ -798,8 +798,10 @@ void writeTargetFieldDiagnostics(
 
   const auto [raw_min, raw_max] = scalarRange(data.raw_curvature);
   const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
-  writeVertexHeatPly(out_dir / "raw_curvature_heat.ply", mesh, data.raw_curvature, raw_min, raw_max);
-  writeVertexHeatPly(out_dir / "csf_curvature_heat.ply", mesh, data.csf_curvature, csf_min, csf_max);
+  const double curvature_min = std::min(raw_min, csf_min);
+  const double curvature_max = std::max(raw_max, csf_max);
+  writeVertexHeatPly(out_dir / "raw_curvature_heat.ply", mesh, data.raw_curvature, curvature_min, curvature_max);
+  writeVertexHeatPly(out_dir / "csf_curvature_heat.ply", mesh, data.csf_curvature, curvature_min, curvature_max);
   writeVertexHeatPly(out_dir / "raw_target_h_heat.ply", mesh, data.x0_log, data.min_log_length, data.max_log_length);
   writeVertexHeatPly(
       out_dir / "smoothed_target_h_heat.ply",
