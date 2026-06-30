@@ -15,14 +15,16 @@ CTestTestfile.cmake
 *.pdb
 *.ilk
 
-# Keep small source mesh examples even though .obj is also a build object suffix.
-!cpp_adaiso/examples/*.obj
-!python_adaiso/examples/*.obj
-
 # AdaIso run outputs
+**/example/**
+**/examples/**
+**/result/**
+**/results/**
 cpp_adaiso/results/
 cpp_adaiso/out*.obj
 cpp_adaiso/summary*.json
+compare/
+lfsiso/
 
 # Python caches
 __pycache__/
