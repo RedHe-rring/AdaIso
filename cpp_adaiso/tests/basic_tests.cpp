@@ -47,6 +47,17 @@ adaiso::Mesh makeSingleTriangle() {
   return mesh;
 }
 
+adaiso::Mesh makeSliverTriangle() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {1e-6, 1e-4, 0.0},
+  };
+  mesh.faces = {{0, 1, 2}};
+  return mesh;
+}
+
 adaiso::Mesh makeDisconnectedTriangles() {
   adaiso::Mesh mesh;
   mesh.vertices = {
@@ -409,6 +420,43 @@ void testEdgeRatioStats() {
   assertNear(stats.violation_rate, 1.0 / 3.0);
 }
 
+void testCurvatureModeParsing() {
+  assert(adaiso::parseCurvatureMode("normal-angle") == adaiso::CurvatureMode::NormalAngle);
+  assert(adaiso::parseCurvatureMode("ROBUST-MEAN") == adaiso::CurvatureMode::RobustMean);
+  assert(adaiso::toString(adaiso::CurvatureMode::NormalAngle) == "normal-angle");
+  assert(adaiso::toString(adaiso::CurvatureMode::RobustMean) == "robust-mean");
+
+  bool threw = false;
+  try {
+    (void)adaiso::parseCurvatureMode("gaussian");
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+}
+
+void testRobustMeanCurvatureRemeshInitialization() {
+  auto run = [](const adaiso::Mesh& input) {
+    adaiso::AdaIsoConfig config;
+    config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+    config.global_iterations = 0;
+    config.project_to_surface = false;
+    config.verbose = false;
+
+    adaiso::AdaIsoRemesher remesher(config);
+    const adaiso::Mesh output = remesher.remesh(input);
+    output.validate();
+    assert(output.vertexCount() > 0);
+    assert(output.faceCount() > 0);
+    assert(remesher.stats().csf_solver_success);
+    assert(std::isfinite(remesher.stats().csf_residual_abs));
+    assert(std::isfinite(remesher.stats().csf_residual_scaled));
+  };
+
+  run(makeSingleTriangle());
+  run(makeSliverTriangle());
+}
+
 void testRemeshSmoke() {
   const adaiso::Mesh input = makePyramid();
   const auto input_summary = adaiso::summarizeMesh(input);
@@ -716,6 +764,8 @@ int main() {
   testContinuousTargetLengthMapping();
   testTargetLogGradationProjection();
   testEdgeRatioStats();
+  testCurvatureModeParsing();
+  testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();
   testTargetFieldDiagnosticExport();
   testTargetFieldConfigValidation();

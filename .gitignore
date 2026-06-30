@@ -15,8 +15,6 @@ CTestTestfile.cmake
 *.pdb
 *.ilk
 
-# Keep Python sample mesh examples even though .obj is also a build object suffix.
-!python_adaiso/examples/*.obj
 
 # AdaIso local datasets and run outputs
 cpp_adaiso/examples/
@@ -37,3 +35,7 @@ __pycache__/
 
 # Source papers are local references, not source artifacts.
 papers/
+examples/
+results/
+lfsiso/
+compare/

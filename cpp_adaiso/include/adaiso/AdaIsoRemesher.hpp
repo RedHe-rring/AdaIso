@@ -16,6 +16,11 @@ enum class Variant {
   Code,
 };
 
+enum class CurvatureMode {
+  NormalAngle,
+  RobustMean,
+};
+
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
   double std_ratio = 0.0;
@@ -48,6 +53,7 @@ class TargetLengthField {
 struct AdaIsoConfig {
   double mesh_scale = 1.0;
   Variant variant = Variant::Code;
+  CurvatureMode curvature_mode = CurvatureMode::RobustMean;
   double csf_smoothing_alpha = 2.0;
   double target_min_factor = 0.6;
   double target_max_factor = 1.8;
@@ -154,6 +160,8 @@ class AdaIsoRemesher {
 
 [[nodiscard]] Variant parseVariant(const std::string& value);
 [[nodiscard]] std::string toString(Variant variant);
+[[nodiscard]] CurvatureMode parseCurvatureMode(const std::string& value);
+[[nodiscard]] std::string toString(CurvatureMode mode);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

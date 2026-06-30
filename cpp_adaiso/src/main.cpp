@@ -23,6 +23,7 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --mesh-scale <value>       Default: 1.0\n"
       << "  --variant <code|paper>     Default: code\n"
+      << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
       << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
@@ -188,6 +189,7 @@ std::string buildSummaryJson(
   out << "  \"parameters\": {\n";
   out << "    \"mesh_scale\": " << config.mesh_scale << ",\n";
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
+  out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_min_factor\": " << config.target_min_factor << ",\n";
@@ -271,6 +273,8 @@ int main(int argc, char** argv) {
         config.mesh_scale = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--variant") {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
+      } else if (arg == "--curvature-mode") {
+        config.curvature_mode = adaiso::parseCurvatureMode(requireValue(i, argc, argv, arg));
       } else if (arg == "--csf-alpha") {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-min-factor") {
