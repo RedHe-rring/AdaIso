@@ -553,6 +553,67 @@ void testTargetFieldDiagnosticExport() {
   std::filesystem::remove_all(dir);
 }
 
+void testIterationMeshExport() {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "adaiso_iteration_mesh_export";
+  std::filesystem::remove_all(dir);
+
+  adaiso::AdaIsoConfig config;
+  config.global_iterations = 2;
+  config.project_to_surface = false;
+  config.verbose = false;
+  config.iteration_mesh_export_dir = dir.string();
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(makePyramid());
+  output.validate();
+
+  const std::vector<std::filesystem::path> expected = {
+      dir / "iter001.ply",
+      dir / "iter002.ply",
+  };
+  for (const auto& path : expected) {
+    assert(std::filesystem::exists(path));
+    assert(std::filesystem::file_size(path) > 0);
+    const adaiso::Mesh loaded = adaiso::loadMesh(path);
+    loaded.validate();
+  }
+
+  assert(!std::filesystem::exists(dir / "iter003.ply"));
+  std::filesystem::remove_all(dir);
+}
+
+void testStageMeshExport() {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "adaiso_stage_mesh_export";
+  std::filesystem::remove_all(dir);
+
+  adaiso::AdaIsoConfig config;
+  config.global_iterations = 1;
+  config.project_to_surface = false;
+  config.verbose = false;
+  config.stage_mesh_export_dir = dir.string();
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(makePyramid());
+  output.validate();
+
+  const std::vector<std::filesystem::path> expected = {
+      dir / "iter001_after_split.ply",
+      dir / "iter001_after_collapse.ply",
+      dir / "iter001_after_flip.ply",
+      dir / "iter001_after_smooth.ply",
+  };
+  for (const auto& path : expected) {
+    assert(std::filesystem::exists(path));
+    assert(std::filesystem::file_size(path) > 0);
+    const adaiso::Mesh loaded = adaiso::loadMesh(path);
+    loaded.validate();
+  }
+
+  std::filesystem::remove_all(dir);
+}
+
 void testTargetFieldConfigValidation() {
   bool threw = false;
   try {
@@ -768,6 +829,8 @@ int main() {
   testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();
   testTargetFieldDiagnosticExport();
+  testIterationMeshExport();
+  testStageMeshExport();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
   testRemeshEdgeCases();

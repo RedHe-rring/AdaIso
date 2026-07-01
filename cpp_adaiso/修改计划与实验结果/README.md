@@ -113,6 +113,8 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 - `--target-max-adjacent-ratio`: maximum adjacent input-edge target length ratio. Default: `1.30`.
 - `--target-gradation-iters`: gradation projection iterations. Default: `20`.
 - `--export-target-field`: optional directory for target-field diagnostics. It writes vertex/edge/face CSV files, edge-ratio statistics, and colored PLY heatmaps for raw curvature, CSF curvature, raw/smoothed/final target size, target delta, edge-ratio hotspots, violation masks, and face log-gradient.
+- `--export-iteration-meshes`: optional directory for pre-projection mesh snapshots after each global remesh iteration.
+- `--export-stage-meshes`: optional directory for first-iteration stage snapshots after split, collapse, flip, and smoothing.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.

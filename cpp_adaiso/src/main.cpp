@@ -32,6 +32,8 @@ void printUsage(std::ostream& out) {
       << "  --target-max-adjacent-ratio <v> Max adjacent target length ratio. Default: 1.30\n"
       << "  --target-gradation-iters <n> Gradation projection iterations. Default: 20\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
+      << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
+      << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -201,6 +203,12 @@ std::string buildSummaryJson(
   if (!config.target_field_export_dir.empty()) {
     out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
   }
+  if (!config.iteration_mesh_export_dir.empty()) {
+    out << "    \"iteration_mesh_export_dir\": \"" << jsonEscape(config.iteration_mesh_export_dir) << "\",\n";
+  }
+  if (!config.stage_mesh_export_dir.empty()) {
+    out << "    \"stage_mesh_export_dir\": \"" << jsonEscape(config.stage_mesh_export_dir) << "\",\n";
+  }
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
@@ -291,6 +299,10 @@ int main(int argc, char** argv) {
         config.target_gradation_iterations = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
+      } else if (arg == "--export-iteration-meshes") {
+        config.iteration_mesh_export_dir = requireValue(i, argc, argv, arg);
+      } else if (arg == "--export-stage-meshes") {
+        config.stage_mesh_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {

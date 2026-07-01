@@ -62,6 +62,8 @@ struct AdaIsoConfig {
   double target_max_adjacent_ratio = 1.30;
   int target_gradation_iterations = 20;
   std::string target_field_export_dir;
+  std::string iteration_mesh_export_dir;
+  std::string stage_mesh_export_dir;
   bool preprocess = false;
   int global_iterations = 5;
   double subremesh_multiplier = 1.5;

@@ -1,6 +1,7 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
 #include "adaiso/Geometry.hpp"
+#include "adaiso/IO.hpp"
 #include "adaiso/KDTree.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
@@ -1335,14 +1336,33 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     if (config_.verbose) {
       std::cerr << "iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
     }
+    const bool export_first_iteration_stages = it == 0 && !config_.stage_mesh_export_dir.empty();
+    auto write_stage_mesh = [&](const std::string& stage) {
+      if (!export_first_iteration_stages) {
+        return;
+      }
+      writeMesh(
+          std::filesystem::path(config_.stage_mesh_export_dir) / ("iter001_after_" + stage + ".ply"),
+          mesh);
+    };
+
     const int split_count = splitLongEdges(mesh);
+    write_stage_mesh("split");
     const int collapse_count = collapseShortEdges(mesh);
     mesh = removeDegenerateFaces(mesh);
+    write_stage_mesh("collapse");
     const int flip_count = flipEdges(mesh);
+    write_stage_mesh("flip");
     tangentSmoothing(mesh);
     mesh = removeDegenerateFaces(mesh);
+    write_stage_mesh("smooth");
     const MeshSummary iteration_summary = summarizeMesh(mesh);
     const EdgeRatioStats ratio_stats = edgeRatioStats(mesh);
+    if (!config_.iteration_mesh_export_dir.empty()) {
+      std::ostringstream filename;
+      filename << "iter" << std::setw(3) << std::setfill('0') << (it + 1) << ".ply";
+      writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / filename.str(), mesh);
+    }
     stats_.iterations.push_back({
         it + 1,
         split_count,
