@@ -4,15 +4,15 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.5.0. The CSF stage is computed exclusively with a screened
+This is version 2.7.0. The CSF stage is computed exclusively with a screened
 Laplace sparse solve, `(M + alpha h^2 L)c = M r`, using barycentric vertex
 masses and clamped cotangent weights. The old Dirichlet harmonic CSF solve and
 its fixed/free anchor statistics have been removed.
 
-Version 2.5.0 builds a surface-aware log-size target field: CSF curvature is
-mapped to target log length, smoothed with screened regularization, constrained
-by a local gradation projection, and queried by closest-triangle barycentric
-interpolation on the input surface.
+Version 2.7.0 builds a surface-aware target field directly in real target
+lengths: CSF curvature is linearly mapped to `[h_min, h_max]`, with high
+curvature producing smaller `target_h`, and queried by closest-triangle
+barycentric interpolation on the input surface.
 
 ## Scope
 
@@ -24,9 +24,9 @@ Implemented:
 - OBJ and ASCII PLY output.
 - Degenerate and duplicate unoriented triangle cleanup.
 - Area-weighted vertex normals.
-- Curvature-smoothed field from mean vertex-normal variation and a screened Laplace sparse solve.
-- Continuous empirical-quantile local target log-length assignment.
-- Surface-aware target lookup with libigl AABB closest-triangle queries and barycentric log-size interpolation.
+- Curvature-smoothed field from selectable raw curvature and a screened Laplace sparse solve.
+- Direct linear local target-length assignment from CSF curvature.
+- Surface-aware target lookup with libigl AABB closest-triangle queries and barycentric target-length interpolation.
 - Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
 - MLS projection to the original mesh.
 - Optional area-sampled Chamfer Distance against a GT mesh.
@@ -108,11 +108,7 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 - `--csf-alpha`: screened CSF smoothing strength in `lambda = alpha h^2`. Default: `2.0`.
 - `--target-min-factor`: minimum continuous target length factor. Default: `0.6`.
 - `--target-max-factor`: maximum continuous target length factor. Default: `1.8`.
-- `--target-gamma`: continuous target curvature response exponent. Default: `1.0`.
-- `--target-smooth-alpha`: screened target log-size smoothing strength. Default: `0.3`.
-- `--target-max-adjacent-ratio`: maximum adjacent input-edge target length ratio. Default: `1.30`.
-- `--target-gradation-iters`: gradation projection iterations. Default: `20`.
-- `--export-target-field`: optional directory for target-field diagnostics. It writes vertex/edge/face CSV files, edge-ratio statistics, and colored PLY heatmaps for raw curvature, CSF curvature, raw/smoothed/final target size, target delta, edge-ratio hotspots, violation masks, and face log-gradient.
+- `--export-target-field`: optional directory for target-field diagnostics. It writes vertex/edge/face CSV files, target-field statistics, and colored PLY heatmaps for raw curvature, CSF curvature, and final `target_h`.
 - `--export-iteration-meshes`: optional directory for pre-projection mesh snapshots after each global remesh iteration.
 - `--export-stage-meshes`: optional directory for first-iteration stage snapshots after split, collapse, flip, and smoothing.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
@@ -175,9 +171,12 @@ Version 2.3.0 replaces the Dirichlet harmonic CSF solve with screened smoothing
 that preserves a data term at every vertex and no longer selects fixed anchor
 vertices.
 Version 2.4.0 replaces the five-level target-length assignment with a continuous
-mapping: each vertex uses the empirical quantile of its CSF curvature, raises it
-by `target_gamma`, and interpolates in log length between `target_max_factor`
-and `target_min_factor`.
+empirical-quantile mapping in log length.
 Version 2.5.0 smooths the target field in `log(h)`, applies an adjacent-edge
 gradation limit, and evaluates the field on the input surface through libigl
 AABB closest-triangle queries and barycentric interpolation.
+Version 2.6.0 changes the default raw curvature source to robust cotan mean
+curvature while keeping `normal-angle` available for comparison.
+Version 2.7.0 removes the quantile/log/smoothing/gradation target pipeline and
+maps CSF curvature directly to real target lengths with high curvature producing
+smaller `target_h`.

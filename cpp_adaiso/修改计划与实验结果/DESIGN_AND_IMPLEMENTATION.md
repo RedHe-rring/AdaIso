@@ -22,7 +22,6 @@ mesh_scale = 1.0
 global_iterations = 5
 target_min_factor = 0.6
 target_max_factor = 1.8
-target_gamma = 1.0
 split_factor = 1.33
 collapse_factor = 0.8
 tangent_lambda = 0.6
@@ -133,7 +132,6 @@ using Edge = std::pair<int, int>;
 - `mesh_scale`：全局目标边长缩放。
 - `global_iterations`：全局重网格化迭代次数。
 - `target_min_factor` / `target_max_factor`：连续目标边长范围。
-- `target_gamma`：连续曲率响应指数。
 - `project_to_surface`：是否做 MLS 投影。
 - `min_quality_after_collapse`：collapse 局部质量保护阈值。
 
@@ -202,7 +200,6 @@ Q = 6 * area / (sqrt(3) * half_perimeter * longest_edge)
 
 用途：
 
-- 目标边长查询：将初始目标长度绑定到原始目标点，后续网格操作后通过最近邻查当前点的局部目标边长。
 - MLS 投影：对原始网格顶点做 KNN 查询。
 
 注意：
@@ -229,9 +226,8 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input);
 4. buildTargetLengths()
    4.1 计算平均边长
    4.2 计算 CSF 曲率平滑场
-   4.3 使用经验分位数连续映射目标边长
-   4.4 为每个目标点保存目标边长
-   4.5 构建目标点 KD-tree
+   4.3 将 CSF 曲率线性映射为真实目标边长
+   4.4 在输入曲面上构建 barycentric 目标边长场
 5. 全局迭代 global_iterations 次：
    5.1 splitLongEdges()
    5.2 collapseShortEdges()
@@ -253,13 +249,11 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh);
 
 步骤：
 
-1. 计算面积加权顶点法向。
-2. 对每个顶点计算与一环邻居法向的夹角。
-3. 将平均夹角作为 raw curvature。
-4. 使用 screened sparse solve 平滑：
+1. 根据 `curvature_mode` 计算 raw curvature，默认使用 robust cotan mean curvature。
+2. 使用 screened sparse solve 平滑：
    `(M + alpha h^2 L)c = M r`
-5. `M` 使用 barycentric vertex mass，`L` 使用 clamped cotangent weights。
-6. 记录 assembly/factorization/solve 时间、residual、非零元数量和 solver success。
+3. `M` 使用 barycentric vertex mass，`L` 使用 clamped cotangent weights。
+4. 记录 assembly/factorization/solve 时间、residual、非零元数量和 solver success。
 
 `variant` 不再影响 CSF 曲率定义，只继续影响 split/collapse 阈值口径。
 
@@ -268,18 +262,17 @@ std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh);
 函数：
 
 ```cpp
-std::vector<double> adaiso::detail::continuousTargetLengths(...);
+std::vector<double> adaiso::detail::linearTargetLengths(...);
 ```
 
 流程：
 
-1. 对 CSF 曲率排序，计算每个顶点的经验分位数 `q_i`。
-2. 重复曲率值共享 tie block 的平均 rank。
-3. 计算 `alpha_i = q_i ^ target_gamma`。
-4. 在 log length 空间中从 `h_max` 连续插值到 `h_min`：
+1. 计算 CSF 曲率最小值 `k_min` 和最大值 `k_max`。
+2. 计算 `t_i = (k_i - k_min) / (k_max - k_min)`。
+3. 在真实长度空间中从 `h_max` 线性插值到 `h_min`：
 
 ```text
-h_i = exp((1 - alpha_i) * log(h_max) + alpha_i * log(h_min))
+h_i = clamp(h_max - t_i * (h_max - h_min), h_min, h_max)
 ```
 
 其中：
@@ -291,7 +284,7 @@ h_max = mean_edge_length * mesh_scale * target_max_factor
 
 常量曲率场直接映射为 `mean_edge_length * mesh_scale`。
 
-后续网格拓扑变化后，当前顶点的目标边长通过 KD-tree 最近邻查询原始目标点得到。
+后续网格拓扑变化后，当前顶点的目标边长通过 libigl AABB closest-triangle 查询和三角形 barycentric 插值得到。
 
 ## 11. 局部网格操作
 
@@ -462,7 +455,7 @@ adaiso_cli <input.obj|input.ply|input.off> -o <output.obj> `
 
 - OBJ 文件。
 - 可选 JSON 摘要。
-- JSON 中包括输入/输出路径、运行时间、参数、输入/输出质量指标、CSF 迭代次数。
+- JSON 中包括输入/输出路径、运行时间、参数、输入/输出质量指标、每轮 remesh 统计、CSF sparse solve 统计。
 
 ## 14. 测试
 

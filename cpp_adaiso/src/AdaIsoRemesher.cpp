@@ -256,26 +256,23 @@ struct Rgb {
 struct TargetFieldStageData {
   std::vector<double> raw_curvature;
   std::vector<double> csf_curvature;
-  std::vector<double> x0_log;
-  std::vector<double> xsmooth_log;
-  std::vector<double> xfinal_log;
+  std::vector<double> target_lengths;
   double base_length = 0.0;
-  double min_log_length = 0.0;
-  double max_log_length = 0.0;
+  double min_length = 0.0;
+  double max_length = 0.0;
 };
 
 struct EdgeFieldRecord {
   Edge edge;
   double edge_length = 0.0;
-  double abs_dx = 0.0;
-  double ratio = 1.0;
-  double log_slope = 0.0;
-  bool violated = false;
+  double abs_dh = 0.0;
+  double target_ratio = 1.0;
+  double h_slope = 0.0;
 };
 
 struct FaceFieldRecord {
-  double grad_log_h_norm = 0.0;
-  double max_edge_ratio = 1.0;
+  double grad_h_norm = 0.0;
+  double max_edge_target_ratio = 1.0;
 };
 
 std::ofstream openOutputFile(const std::filesystem::path& path) {
@@ -353,17 +350,6 @@ Rgb heatColor(double t) {
   return lerpColor(palette[index], palette[index + 1], scaled - static_cast<double>(index));
 }
 
-Rgb divergingColor(double value, double max_abs) {
-  if (!std::isfinite(max_abs) || max_abs <= 0.0) {
-    return {245, 245, 245};
-  }
-  const double t = std::clamp(value / max_abs, -1.0, 1.0);
-  if (t < 0.0) {
-    return lerpColor({45, 90, 190}, {245, 245, 245}, 1.0 + t);
-  }
-  return lerpColor({245, 245, 245}, {210, 40, 40}, t);
-}
-
 void writeVertexColorPly(
     const std::filesystem::path& path,
     const Mesh& mesh,
@@ -395,86 +381,24 @@ void writeVertexColorPly(
   }
 }
 
-void writeFaceColorPly(
-    const std::filesystem::path& path,
-    const Mesh& mesh,
-    const std::vector<Rgb>& colors) {
-  if (colors.size() != mesh.faces.size()) {
-    throw std::runtime_error("face color count does not match mesh faces");
-  }
-  auto out = openOutputFile(path);
-  out << "ply\n";
-  out << "format ascii 1.0\n";
-  out << "element vertex " << mesh.vertices.size() << '\n';
-  out << "property float x\n";
-  out << "property float y\n";
-  out << "property float z\n";
-  out << "element face " << mesh.faces.size() << '\n';
-  out << "property list uchar int vertex_indices\n";
-  out << "property uchar red\n";
-  out << "property uchar green\n";
-  out << "property uchar blue\n";
-  out << "end_header\n";
-  for (const auto& v : mesh.vertices) {
-    out << v[0] << ' ' << v[1] << ' ' << v[2] << '\n';
-  }
-  for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
-    const auto& f = mesh.faces[i];
-    const Rgb& color = colors[i];
-    out << "3 " << f[0] << ' ' << f[1] << ' ' << f[2] << ' '
-        << color.r << ' ' << color.g << ' ' << color.b << '\n';
-  }
-}
-
 void writeVertexHeatPly(
     const std::filesystem::path& path,
     const Mesh& mesh,
     const std::vector<double>& values,
     double lo,
-    double hi) {
+    double hi,
+    bool inverted = false) {
   if (values.size() != mesh.vertices.size()) {
     throw std::runtime_error("vertex scalar count does not match mesh vertices");
   }
   std::vector<Rgb> colors;
   colors.reserve(values.size());
   for (double value : values) {
-    colors.push_back(heatColor(normalizedScalar(value, lo, hi)));
-  }
-  writeVertexColorPly(path, mesh, colors);
-}
-
-void writeVertexDivergingPly(
-    const std::filesystem::path& path,
-    const Mesh& mesh,
-    const std::vector<double>& values) {
-  if (values.size() != mesh.vertices.size()) {
-    throw std::runtime_error("vertex scalar count does not match mesh vertices");
-  }
-  double max_abs = 0.0;
-  for (double value : values) {
-    if (std::isfinite(value)) {
-      max_abs = std::max(max_abs, std::abs(value));
+    double t = normalizedScalar(value, lo, hi);
+    if (inverted) {
+      t = 1.0 - t;
     }
-  }
-  std::vector<Rgb> colors;
-  colors.reserve(values.size());
-  for (double value : values) {
-    colors.push_back(divergingColor(value, max_abs));
-  }
-  writeVertexColorPly(path, mesh, colors);
-}
-
-void writeVertexMaskPly(
-    const std::filesystem::path& path,
-    const Mesh& mesh,
-    const std::vector<double>& mask) {
-  if (mask.size() != mesh.vertices.size()) {
-    throw std::runtime_error("vertex mask count does not match mesh vertices");
-  }
-  std::vector<Rgb> colors;
-  colors.reserve(mask.size());
-  for (double value : mask) {
-    colors.push_back(value > 0.0 ? Rgb{220, 20, 20} : Rgb{230, 230, 230});
+    colors.push_back(heatColor(t));
   }
   writeVertexColorPly(path, mesh, colors);
 }
@@ -603,16 +527,10 @@ std::vector<double> computeRawCurvatureField(const Mesh& mesh, CurvatureMode mod
 
 std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
     const Mesh& mesh,
-    const std::vector<double>& log_lengths,
-    double max_adjacent_ratio,
-    std::vector<double>& incident_max_ratio,
-    std::vector<double>& incident_violation) {
-  if (log_lengths.size() != mesh.vertices.size()) {
-    throw std::runtime_error("target diagnostic log length size mismatch");
+    const std::vector<double>& target_lengths) {
+  if (target_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target diagnostic length size mismatch");
   }
-  const double violation_tol = 1e-10;
-  incident_max_ratio.assign(mesh.vertices.size(), 1.0);
-  incident_violation.assign(mesh.vertices.size(), 0.0);
 
   std::vector<EdgeFieldRecord> records;
   const auto edges = uniqueEdges(mesh);
@@ -622,35 +540,28 @@ std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
     const int b = edge.second;
     const double length =
         (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
-    const double abs_dx =
-        std::abs(log_lengths[static_cast<std::size_t>(a)] - log_lengths[static_cast<std::size_t>(b)]);
-    const double ratio = std::exp(abs_dx);
-    const bool violated = ratio > max_adjacent_ratio + violation_tol;
+    const double ha = target_lengths[static_cast<std::size_t>(a)];
+    const double hb = target_lengths[static_cast<std::size_t>(b)];
+    if (ha <= 0.0 || hb <= 0.0 || !std::isfinite(ha) || !std::isfinite(hb)) {
+      throw std::runtime_error("target diagnostic length must be positive and finite");
+    }
+    const double abs_dh = std::abs(ha - hb);
+    const double ratio = std::max(ha, hb) / std::min(ha, hb);
     EdgeFieldRecord record;
     record.edge = edge;
     record.edge_length = length;
-    record.abs_dx = abs_dx;
-    record.ratio = ratio;
-    record.log_slope = length > kEps ? abs_dx / length : 0.0;
-    record.violated = violated;
+    record.abs_dh = abs_dh;
+    record.target_ratio = ratio;
+    record.h_slope = length > kEps ? abs_dh / length : 0.0;
     records.push_back(record);
-
-    incident_max_ratio[static_cast<std::size_t>(a)] =
-        std::max(incident_max_ratio[static_cast<std::size_t>(a)], ratio);
-    incident_max_ratio[static_cast<std::size_t>(b)] =
-        std::max(incident_max_ratio[static_cast<std::size_t>(b)], ratio);
-    if (violated) {
-      incident_violation[static_cast<std::size_t>(a)] = 1.0;
-      incident_violation[static_cast<std::size_t>(b)] = 1.0;
-    }
   }
   return records;
 }
 
-double faceLogGradientNorm(
+double faceTargetGradientNorm(
     const Mesh& mesh,
     const Eigen::Vector3i& face,
-    const std::vector<double>& log_lengths) {
+    const std::vector<double>& target_lengths) {
   const Eigen::Vector3d& p0 = mesh.vertices[static_cast<std::size_t>(face[0])];
   const Eigen::Vector3d& p1 = mesh.vertices[static_cast<std::size_t>(face[1])];
   const Eigen::Vector3d& p2 = mesh.vertices[static_cast<std::size_t>(face[2])];
@@ -664,9 +575,9 @@ double faceLogGradientNorm(
     return 0.0;
   }
   const double rhs0 =
-      log_lengths[static_cast<std::size_t>(face[1])] - log_lengths[static_cast<std::size_t>(face[0])];
+      target_lengths[static_cast<std::size_t>(face[1])] - target_lengths[static_cast<std::size_t>(face[0])];
   const double rhs1 =
-      log_lengths[static_cast<std::size_t>(face[2])] - log_lengths[static_cast<std::size_t>(face[0])];
+      target_lengths[static_cast<std::size_t>(face[2])] - target_lengths[static_cast<std::size_t>(face[0])];
   const double a = (rhs0 * g11 - rhs1 * g01) / det;
   const double b = (g00 * rhs1 - g01 * rhs0) / det;
   return (a * e1 + b * e2).norm();
@@ -674,7 +585,7 @@ double faceLogGradientNorm(
 
 std::vector<FaceFieldRecord> computeFaceFieldRecords(
     const Mesh& mesh,
-    const std::vector<double>& log_lengths,
+    const std::vector<double>& target_lengths,
     const std::unordered_map<Edge, double, EdgeHash>& edge_ratios) {
   std::vector<FaceFieldRecord> records;
   records.reserve(mesh.faces.size());
@@ -690,7 +601,7 @@ std::vector<FaceFieldRecord> computeFaceFieldRecords(
         max_ratio = std::max(max_ratio, found->second);
       }
     }
-    records.push_back({faceLogGradientNorm(mesh, face, log_lengths), max_ratio});
+    records.push_back({faceTargetGradientNorm(mesh, face, target_lengths), max_ratio});
   }
   return records;
 }
@@ -700,19 +611,14 @@ void writeVerticesCsv(
     const Mesh& mesh,
     const TargetFieldStageData& data) {
   auto out = openOutputFile(path);
-  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,x0_log,xsmooth_log,xfinal_log,h0,hsmooth,hfinal\n";
+  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,target_h\n";
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     const auto& p = mesh.vertices[i];
     out << i << ','
         << p[0] << ',' << p[1] << ',' << p[2] << ','
         << data.raw_curvature[i] << ','
         << data.csf_curvature[i] << ','
-        << data.x0_log[i] << ','
-        << data.xsmooth_log[i] << ','
-        << data.xfinal_log[i] << ','
-        << std::exp(data.x0_log[i]) << ','
-        << std::exp(data.xsmooth_log[i]) << ','
-        << std::exp(data.xfinal_log[i]) << '\n';
+        << data.target_lengths[i] << '\n';
   }
 }
 
@@ -720,15 +626,14 @@ void writeEdgesCsv(
     const std::filesystem::path& path,
     const std::vector<EdgeFieldRecord>& records) {
   auto out = openOutputFile(path);
-  out << "i,j,edge_length,abs_dx,ratio,log_slope,violated\n";
+  out << "i,j,edge_length,abs_dh,target_ratio,h_slope\n";
   for (const auto& record : records) {
     out << record.edge.first << ','
         << record.edge.second << ','
         << record.edge_length << ','
-        << record.abs_dx << ','
-        << record.ratio << ','
-        << record.log_slope << ','
-        << (record.violated ? 1 : 0) << '\n';
+        << record.abs_dh << ','
+        << record.target_ratio << ','
+        << record.h_slope << '\n';
   }
 }
 
@@ -736,117 +641,111 @@ void writeFacesCsv(
     const std::filesystem::path& path,
     const std::vector<FaceFieldRecord>& records) {
   auto out = openOutputFile(path);
-  out << "face_id,grad_log_h_norm,max_edge_ratio\n";
+  out << "face_id,grad_h_norm,max_edge_target_ratio\n";
   for (std::size_t i = 0; i < records.size(); ++i) {
     out << i << ','
-        << records[i].grad_log_h_norm << ','
-        << records[i].max_edge_ratio << '\n';
-  }
-}
-
-void writeEdgeRatioHistogramCsv(
-    const std::filesystem::path& path,
-    const std::vector<double>& sorted_ratios,
-    double max_adjacent_ratio) {
-  auto out = openOutputFile(path);
-  out << "bin_min,bin_max,count,cdf\n";
-  if (sorted_ratios.empty()) {
-    return;
-  }
-  constexpr int kBins = 50;
-  const double lo = 1.0;
-  double hi = std::max(sorted_ratios.back(), max_adjacent_ratio);
-  if (hi <= lo) {
-    hi = lo + 1e-12;
-  }
-  const double width = (hi - lo) / static_cast<double>(kBins);
-  std::size_t cursor = 0;
-  std::size_t cumulative = 0;
-  for (int bin = 0; bin < kBins; ++bin) {
-    const double bin_min = lo + static_cast<double>(bin) * width;
-    const double bin_max = bin + 1 == kBins ? hi : bin_min + width;
-    std::size_t count = 0;
-    while (cursor < sorted_ratios.size() &&
-           (bin + 1 == kBins || sorted_ratios[cursor] < bin_max)) {
-      ++count;
-      ++cursor;
-    }
-    cumulative += count;
-    out << bin_min << ','
-        << bin_max << ','
-        << count << ','
-        << static_cast<double>(cumulative) / static_cast<double>(sorted_ratios.size()) << '\n';
+        << records[i].grad_h_norm << ','
+        << records[i].max_edge_target_ratio << '\n';
   }
 }
 
 std::string targetFieldStatsJson(
     const TargetFieldStageData& data,
     const std::vector<EdgeFieldRecord>& edge_records,
-    const std::vector<FaceFieldRecord>& face_records,
-    double max_adjacent_ratio,
-    double target_min_factor,
-    double target_max_factor) {
+    const std::vector<FaceFieldRecord>& face_records) {
   std::vector<double> ratios;
   ratios.reserve(edge_records.size());
-  std::size_t violation_count = 0;
   for (const auto& record : edge_records) {
-    ratios.push_back(record.ratio);
-    if (record.violated) {
-      ++violation_count;
-    }
+    ratios.push_back(record.target_ratio);
   }
   std::sort(ratios.begin(), ratios.end());
 
   std::vector<double> gradients;
   gradients.reserve(face_records.size());
   for (const auto& record : face_records) {
-    gradients.push_back(record.grad_log_h_norm);
+    gradients.push_back(record.grad_h_norm);
   }
   std::sort(gradients.begin(), gradients.end());
 
-  double observed_min_log = std::numeric_limits<double>::infinity();
-  double observed_max_log = -std::numeric_limits<double>::infinity();
-  for (double value : data.xfinal_log) {
-    observed_min_log = std::min(observed_min_log, value);
-    observed_max_log = std::max(observed_max_log, value);
+  double observed_min = std::numeric_limits<double>::infinity();
+  double observed_max = -std::numeric_limits<double>::infinity();
+  for (double value : data.target_lengths) {
+    observed_min = std::min(observed_min, value);
+    observed_max = std::max(observed_max, value);
   }
   const bool range_ok =
-      observed_min_log + 1e-12 >= data.min_log_length &&
-      observed_max_log <= data.max_log_length + 1e-12;
+      observed_min + 1e-12 >= data.min_length &&
+      observed_max <= data.max_length + 1e-12;
   const double max_ratio = ratios.empty() ? 0.0 : ratios.back();
-  const double violation_rate =
-      edge_records.empty() ? 0.0 : static_cast<double>(violation_count) / static_cast<double>(edge_records.size());
-  int theoretical_min_edge_rings = 0;
-  if (max_adjacent_ratio > 1.0 && target_max_factor > target_min_factor) {
-    theoretical_min_edge_rings = static_cast<int>(
-        std::ceil(std::log(target_max_factor / target_min_factor) / std::log(max_adjacent_ratio)));
-  }
-  const bool acceptance_pass =
-      range_ok && max_ratio <= max_adjacent_ratio + 1e-10 && violation_count == 0;
 
   std::ostringstream out;
   out << std::setprecision(17);
   out << "{\n";
   out << "  \"base_length\": " << data.base_length << ",\n";
-  out << "  \"h_min\": " << std::exp(data.min_log_length) << ",\n";
-  out << "  \"h_max\": " << std::exp(data.max_log_length) << ",\n";
-  out << "  \"max_adjacent_ratio\": " << max_adjacent_ratio << ",\n";
-  out << "  \"delta_log\": " << std::log(max_adjacent_ratio) << ",\n";
-  out << "  \"theoretical_min_edge_rings\": " << theoretical_min_edge_rings << ",\n";
-  out << "  \"observed_h_min\": " << std::exp(observed_min_log) << ",\n";
-  out << "  \"observed_h_max\": " << std::exp(observed_max_log) << ",\n";
+  out << "  \"h_min\": " << data.min_length << ",\n";
+  out << "  \"h_max\": " << data.max_length << ",\n";
+  out << "  \"observed_h_min\": " << observed_min << ",\n";
+  out << "  \"observed_h_max\": " << observed_max << ",\n";
   out << "  \"range_ok\": " << (range_ok ? "true" : "false") << ",\n";
   out << "  \"edge_count\": " << edge_records.size() << ",\n";
-  out << "  \"max_edge_ratio\": " << max_ratio << ",\n";
-  out << "  \"p95_edge_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
-  out << "  \"p99_edge_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
-  out << "  \"violation_count\": " << violation_count << ",\n";
-  out << "  \"violation_rate\": " << violation_rate << ",\n";
+  out << "  \"max_edge_target_ratio\": " << max_ratio << ",\n";
+  out << "  \"p95_edge_target_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
+  out << "  \"p99_edge_target_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
   out << "  \"face_count\": " << face_records.size() << ",\n";
-  out << "  \"max_grad_log_h_norm\": " << (gradients.empty() ? 0.0 : gradients.back()) << ",\n";
-  out << "  \"p95_grad_log_h_norm\": " << quantileOfSorted(gradients, 0.95) << ",\n";
-  out << "  \"p99_grad_log_h_norm\": " << quantileOfSorted(gradients, 0.99) << ",\n";
-  out << "  \"acceptance_pass\": " << (acceptance_pass ? "true" : "false") << "\n";
+  out << "  \"max_grad_h_norm\": " << (gradients.empty() ? 0.0 : gradients.back()) << ",\n";
+  out << "  \"p95_grad_h_norm\": " << quantileOfSorted(gradients, 0.95) << ",\n";
+  out << "  \"p99_grad_h_norm\": " << quantileOfSorted(gradients, 0.99) << "\n";
+  out << "}\n";
+  return out.str();
+}
+
+std::string colorScalesJson(
+    double shared_curvature_min,
+    double shared_curvature_max,
+    double raw_curvature_min,
+    double raw_curvature_max,
+    double csf_curvature_min,
+    double csf_curvature_max,
+    double target_h_min,
+    double target_h_max) {
+  std::ostringstream out;
+  out << std::setprecision(17);
+  out << "{\n";
+  out << "  \"palette\": \"heat\",\n";
+  out << "  \"normalization\": \"linear_clamp\",\n";
+  out << "  \"scales\": {\n";
+  out << "    \"raw_curvature_shared\": {\n";
+  out << "      \"file\": \"raw_curvature_heat_shared.ply\",\n";
+  out << "      \"field\": \"raw_curvature\",\n";
+  out << "      \"min\": " << shared_curvature_min << ",\n";
+  out << "      \"max\": " << shared_curvature_max << "\n";
+  out << "    },\n";
+  out << "    \"csf_curvature_shared\": {\n";
+  out << "      \"file\": \"csf_curvature_heat_shared.ply\",\n";
+  out << "      \"field\": \"csf_curvature\",\n";
+  out << "      \"min\": " << shared_curvature_min << ",\n";
+  out << "      \"max\": " << shared_curvature_max << "\n";
+  out << "    },\n";
+  out << "    \"raw_curvature_independent\": {\n";
+  out << "      \"file\": \"raw_curvature_heat_independent.ply\",\n";
+  out << "      \"field\": \"raw_curvature\",\n";
+  out << "      \"min\": " << raw_curvature_min << ",\n";
+  out << "      \"max\": " << raw_curvature_max << "\n";
+  out << "    },\n";
+  out << "    \"csf_curvature_independent\": {\n";
+  out << "      \"file\": \"csf_curvature_heat_independent.ply\",\n";
+  out << "      \"field\": \"csf_curvature\",\n";
+  out << "      \"min\": " << csf_curvature_min << ",\n";
+  out << "      \"max\": " << csf_curvature_max << "\n";
+  out << "    },\n";
+  out << "    \"target_h\": {\n";
+  out << "      \"file\": \"target_h_heat.ply\",\n";
+  out << "      \"field\": \"target_h\",\n";
+  out << "      \"min\": " << target_h_min << ",\n";
+  out << "      \"max\": " << target_h_max << ",\n";
+  out << "      \"inverted\": true\n";
+  out << "    }\n";
+  out << "  }\n";
   out << "}\n";
   return out.str();
 }
@@ -854,110 +753,93 @@ std::string targetFieldStatsJson(
 void writeTargetFieldDiagnostics(
     const std::filesystem::path& out_dir,
     const Mesh& mesh,
-    const TargetFieldStageData& data,
-    const AdaIsoConfig& config) {
+    const TargetFieldStageData& data) {
   if (out_dir.empty()) {
     return;
   }
   const std::size_t n = mesh.vertices.size();
   if (data.raw_curvature.size() != n || data.csf_curvature.size() != n ||
-      data.x0_log.size() != n || data.xsmooth_log.size() != n ||
-      data.xfinal_log.size() != n) {
+      data.target_lengths.size() != n) {
     throw std::runtime_error("target diagnostic field size mismatch");
   }
   std::filesystem::create_directories(out_dir);
 
-  std::vector<double> incident_max_ratio;
-  std::vector<double> incident_violation;
-  const auto edge_records = computeEdgeFieldRecords(
-      mesh,
-      data.xfinal_log,
-      config.target_max_adjacent_ratio,
-      incident_max_ratio,
-      incident_violation);
+  const auto edge_records = computeEdgeFieldRecords(mesh, data.target_lengths);
   std::unordered_map<Edge, double, EdgeHash> edge_ratios;
   edge_ratios.reserve(edge_records.size());
-  std::vector<double> sorted_ratios;
-  sorted_ratios.reserve(edge_records.size());
   for (const auto& record : edge_records) {
-    edge_ratios.emplace(record.edge, record.ratio);
-    sorted_ratios.push_back(record.ratio);
+    edge_ratios.emplace(record.edge, record.target_ratio);
   }
-  std::sort(sorted_ratios.begin(), sorted_ratios.end());
-  const auto face_records = computeFaceFieldRecords(mesh, data.xfinal_log, edge_ratios);
+  const auto face_records = computeFaceFieldRecords(mesh, data.target_lengths, edge_ratios);
 
   writeVerticesCsv(out_dir / "vertices.csv", mesh, data);
   writeEdgesCsv(out_dir / "edges.csv", edge_records);
   writeFacesCsv(out_dir / "faces.csv", face_records);
-  writeEdgeRatioHistogramCsv(out_dir / "edge_ratio_histogram.csv", sorted_ratios, config.target_max_adjacent_ratio);
   writeTextFile(
       out_dir / "field_stats.json",
       targetFieldStatsJson(
           data,
           edge_records,
-          face_records,
-          config.target_max_adjacent_ratio,
-          config.target_min_factor,
-          config.target_max_factor));
+          face_records));
 
   const auto [raw_min, raw_max] = scalarRange(data.raw_curvature);
   const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
   const double curvature_min = std::min(raw_min, csf_min);
   const double curvature_max = std::max(raw_max, csf_max);
-  writeVertexHeatPly(out_dir / "raw_curvature_heat.ply", mesh, data.raw_curvature, curvature_min, curvature_max);
-  writeVertexHeatPly(out_dir / "csf_curvature_heat.ply", mesh, data.csf_curvature, curvature_min, curvature_max);
-  writeVertexHeatPly(out_dir / "raw_target_h_heat.ply", mesh, data.x0_log, data.min_log_length, data.max_log_length);
+  writeTextFile(
+      out_dir / "color_scales.json",
+      colorScalesJson(
+          curvature_min,
+          curvature_max,
+          raw_min,
+          raw_max,
+          csf_min,
+          csf_max,
+          data.min_length,
+          data.max_length));
   writeVertexHeatPly(
-      out_dir / "smoothed_target_h_heat.ply",
+      out_dir / "raw_curvature_heat_shared.ply",
       mesh,
-      data.xsmooth_log,
-      data.min_log_length,
-      data.max_log_length);
+      data.raw_curvature,
+      curvature_min,
+      curvature_max);
   writeVertexHeatPly(
-      out_dir / "final_target_h_heat.ply",
+      out_dir / "csf_curvature_heat_shared.ply",
       mesh,
-      data.xfinal_log,
-      data.min_log_length,
-      data.max_log_length);
-
-  std::vector<double> delta_log(n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    delta_log[i] = data.xfinal_log[i] - data.x0_log[i];
-  }
-  writeVertexDivergingPly(out_dir / "target_delta_log_heat.ply", mesh, delta_log);
-
-  const double edge_ratio_hi =
-      config.target_max_adjacent_ratio > 1.0
-          ? config.target_max_adjacent_ratio
-          : (sorted_ratios.empty() ? 1.0 : std::max(1.0, sorted_ratios.back()));
-  writeVertexHeatPly(out_dir / "edge_ratio_hotspot.ply", mesh, incident_max_ratio, 1.0, edge_ratio_hi);
-  writeVertexMaskPly(out_dir / "violation_mask.ply", mesh, incident_violation);
-
-  std::vector<double> face_gradients;
-  face_gradients.reserve(face_records.size());
-  for (const auto& record : face_records) {
-    face_gradients.push_back(record.grad_log_h_norm);
-  }
-  const auto [grad_min, grad_max] = scalarRange(face_gradients);
-  std::vector<Rgb> face_colors;
-  face_colors.reserve(face_gradients.size());
-  for (double value : face_gradients) {
-    face_colors.push_back(heatColor(normalizedScalar(value, grad_min, grad_max)));
-  }
-  writeFaceColorPly(out_dir / "face_log_gradient_heat.ply", mesh, face_colors);
+      data.csf_curvature,
+      curvature_min,
+      curvature_max);
+  writeVertexHeatPly(
+      out_dir / "raw_curvature_heat_independent.ply",
+      mesh,
+      data.raw_curvature,
+      raw_min,
+      raw_max);
+  writeVertexHeatPly(
+      out_dir / "csf_curvature_heat_independent.ply",
+      mesh,
+      data.csf_curvature,
+      csf_min,
+      csf_max);
+  writeVertexHeatPly(
+      out_dir / "target_h_heat.ply",
+      mesh,
+      data.target_lengths,
+      data.min_length,
+      data.max_length,
+      true);
 }
 
 }  // namespace
 
 namespace detail {
 
-std::vector<double> continuousTargetLogLengths(
+std::vector<double> linearTargetLengths(
     const std::vector<double>& curvature,
     double base_length,
     double mesh_scale,
     double target_min_factor,
-    double target_max_factor,
-    double target_gamma) {
+    double target_max_factor) {
   if (curvature.empty()) {
     return {};
   }
@@ -976,9 +858,6 @@ std::vector<double> continuousTargetLogLengths(
   if (target_min_factor > target_max_factor) {
     throw std::runtime_error("target min factor must not exceed target max factor");
   }
-  if (target_gamma <= 0.0 || !std::isfinite(target_gamma)) {
-    throw std::runtime_error("target gamma must be positive");
-  }
 
   for (double value : curvature) {
     if (!std::isfinite(value)) {
@@ -991,116 +870,36 @@ std::vector<double> continuousTargetLogLengths(
     throw std::runtime_error("scaled target base length must be positive");
   }
 
-  std::vector<double> result(curvature.size(), std::log(scaled_base));
-  const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
-  if (std::abs(*max_it - *min_it) <= 1e-14) {
-    return result;
-  }
-
   const double h_min = scaled_base * target_min_factor;
   const double h_max = scaled_base * target_max_factor;
   if (h_min <= 0.0 || h_max <= 0.0 || !std::isfinite(h_min) || !std::isfinite(h_max)) {
     throw std::runtime_error("target length bounds must be positive");
   }
 
-  std::vector<std::pair<double, std::size_t>> sorted;
-  sorted.reserve(curvature.size());
-  for (std::size_t i = 0; i < curvature.size(); ++i) {
-    sorted.emplace_back(curvature[i], i);
+  std::vector<double> result(curvature.size(), std::clamp(scaled_base, h_min, h_max));
+  const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
+  if (std::abs(*max_it - *min_it) <= 1e-14) {
+    return result;
   }
-  std::sort(sorted.begin(), sorted.end(), [](const auto& lhs, const auto& rhs) {
-    if (lhs.first == rhs.first) {
-      return lhs.second < rhs.second;
-    }
-    return lhs.first < rhs.first;
-  });
 
-  const double denom = static_cast<double>(curvature.size() - 1);
-  const double log_h_min = std::log(h_min);
-  const double log_h_max = std::log(h_max);
-  std::size_t first = 0;
-  while (first < sorted.size()) {
-    std::size_t last = first + 1;
-    while (last < sorted.size() && sorted[last].first == sorted[first].first) {
-      ++last;
-    }
-
-    const double mean_rank = 0.5 * static_cast<double>(first + last - 1);
-    const double q = mean_rank / denom;
-    const double alpha = std::pow(q, target_gamma);
-    const double log_h = (1.0 - alpha) * log_h_max + alpha * log_h_min;
-    if (!std::isfinite(log_h)) {
+  const double denom = *max_it - *min_it;
+  for (std::size_t i = 0; i < curvature.size(); ++i) {
+    const double t = (curvature[i] - *min_it) / denom;
+    const double h = std::clamp(h_max - t * (h_max - h_min), h_min, h_max);
+    if (!std::isfinite(h) || h <= 0.0) {
       throw std::runtime_error("computed target length must be positive");
     }
-    for (std::size_t i = first; i < last; ++i) {
-      result[sorted[i].second] = log_h;
-    }
-    first = last;
+    result[i] = h;
   }
 
   return result;
-}
-
-void clampTargetLogLengths(std::vector<double>& log_lengths, double min_log_length, double max_log_length) {
-  if (min_log_length > max_log_length || !std::isfinite(min_log_length) || !std::isfinite(max_log_length)) {
-    throw std::runtime_error("target log length bounds are invalid");
-  }
-  for (double& value : log_lengths) {
-    if (!std::isfinite(value)) {
-      throw std::runtime_error("target log length is not finite");
-    }
-    value = std::clamp(value, min_log_length, max_log_length);
-  }
-}
-
-void projectTargetLogGradation(
-    const Mesh& mesh,
-    std::vector<double>& log_lengths,
-    double min_log_length,
-    double max_log_length,
-    double max_adjacent_ratio,
-    int iterations) {
-  if (log_lengths.size() != mesh.vertices.size()) {
-    throw std::runtime_error("target log length size mismatch");
-  }
-  clampTargetLogLengths(log_lengths, min_log_length, max_log_length);
-  if (iterations <= 0 || max_adjacent_ratio <= 1.0) {
-    return;
-  }
-  if (!std::isfinite(max_adjacent_ratio)) {
-    throw std::runtime_error("target max adjacent ratio must be finite");
-  }
-
-  const double delta = std::log(max_adjacent_ratio);
-  const auto edges = uniqueEdges(mesh);
-  for (int iter = 0; iter < iterations; ++iter) {
-    bool changed = false;
-    for (const auto& [a, b] : edges) {
-      double& xa = log_lengths[static_cast<std::size_t>(a)];
-      double& xb = log_lengths[static_cast<std::size_t>(b)];
-      if (xa > xb + delta) {
-        const double next = std::clamp(xb + delta, min_log_length, max_log_length);
-        changed = changed || std::abs(next - xa) > 1e-14;
-        xa = next;
-      }
-      if (xb > xa + delta) {
-        const double next = std::clamp(xa + delta, min_log_length, max_log_length);
-        changed = changed || std::abs(next - xb) > 1e-14;
-        xb = next;
-      }
-    }
-    clampTargetLogLengths(log_lengths, min_log_length, max_log_length);
-    if (!changed) {
-      break;
-    }
-  }
 }
 
 }  // namespace detail
 
 struct TargetLengthFieldImpl {
   Mesh mesh;
-  std::vector<double> log_lengths;
+  std::vector<double> target_lengths;
   Eigen::MatrixXd vertices;
   Eigen::MatrixXi faces;
   SurfaceAabb tree;
@@ -1115,22 +914,22 @@ TargetLengthField::TargetLengthField(TargetLengthField&& other) noexcept = defau
 
 TargetLengthField& TargetLengthField::operator=(TargetLengthField&& other) noexcept = default;
 
-void TargetLengthField::build(const Mesh& input, const std::vector<double>& log_lengths) {
+void TargetLengthField::build(const Mesh& input, const std::vector<double>& target_lengths) {
   if (input.vertices.empty() || input.faces.empty()) {
     throw std::runtime_error("target field requires a non-empty input mesh");
   }
   input.validate();
-  if (input.vertices.size() != log_lengths.size()) {
-    throw std::runtime_error("target field vertex/log-length size mismatch");
+  if (input.vertices.size() != target_lengths.size()) {
+    throw std::runtime_error("target field vertex/length size mismatch");
   }
-  for (double value : log_lengths) {
-    if (!std::isfinite(value)) {
-      throw std::runtime_error("target log length is not finite");
+  for (double value : target_lengths) {
+    if (!std::isfinite(value) || value <= 0.0) {
+      throw std::runtime_error("target length must be positive and finite");
     }
   }
   impl_ = std::make_unique<TargetLengthFieldImpl>();
   impl_->mesh = input;
-  impl_->log_lengths = log_lengths;
+  impl_->target_lengths = target_lengths;
   impl_->vertices = verticesToMatrix(input);
   impl_->faces = facesToMatrix(input);
   impl_->tree.init(impl_->vertices, impl_->faces);
@@ -1142,7 +941,7 @@ void TargetLengthField::clear() {
 }
 
 bool TargetLengthField::empty() const {
-  return !impl_ || !impl_->built || impl_->log_lengths.empty() || impl_->faces.rows() == 0;
+  return !impl_ || !impl_->built || impl_->target_lengths.empty() || impl_->faces.rows() == 0;
 }
 
 double TargetLengthField::valueAt(const Eigen::Vector3d& point) const {
@@ -1167,11 +966,10 @@ double TargetLengthField::valueAt(const Eigen::Vector3d& point) const {
       impl_->mesh.vertices[static_cast<std::size_t>(face[0])],
       impl_->mesh.vertices[static_cast<std::size_t>(face[1])],
       impl_->mesh.vertices[static_cast<std::size_t>(face[2])]);
-  const double log_length =
-      bary[0] * impl_->log_lengths[static_cast<std::size_t>(face[0])] +
-      bary[1] * impl_->log_lengths[static_cast<std::size_t>(face[1])] +
-      bary[2] * impl_->log_lengths[static_cast<std::size_t>(face[2])];
-  const double value = std::exp(log_length);
+  const double value =
+      bary[0] * impl_->target_lengths[static_cast<std::size_t>(face[0])] +
+      bary[1] * impl_->target_lengths[static_cast<std::size_t>(face[1])] +
+      bary[2] * impl_->target_lengths[static_cast<std::size_t>(face[2])];
   if (!std::isfinite(value) || value <= 0.0) {
     throw std::runtime_error("target field query produced an invalid length");
   }
@@ -1300,18 +1098,6 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.target_min_factor > config_.target_max_factor) {
     throw std::runtime_error("target min factor must not exceed target max factor");
   }
-  if (config_.target_gamma <= 0.0 || !std::isfinite(config_.target_gamma)) {
-    throw std::runtime_error("target gamma must be positive");
-  }
-  if (config_.target_smooth_alpha < 0.0 || !std::isfinite(config_.target_smooth_alpha)) {
-    throw std::runtime_error("target smooth alpha must be non-negative");
-  }
-  if (config_.target_max_adjacent_ratio <= 0.0 || !std::isfinite(config_.target_max_adjacent_ratio)) {
-    throw std::runtime_error("target max adjacent ratio must be positive");
-  }
-  if (config_.target_gradation_iterations < 0) {
-    throw std::runtime_error("target gradation iterations must be non-negative");
-  }
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
@@ -1435,30 +1221,15 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   const double base_len = meanEdgeLength(mesh);
   const auto raw_curvature = computeRawCurvatureField(mesh, config_.curvature_mode);
   const auto curvature = solveCsf(mesh, raw_curvature);
-  const auto x0_log_lengths = detail::continuousTargetLogLengths(
+  const auto target_lengths = detail::linearTargetLengths(
       curvature,
       base_len,
       config_.mesh_scale,
       config_.target_min_factor,
-      config_.target_max_factor,
-      config_.target_gamma);
-  auto log_lengths = x0_log_lengths;
-
+      config_.target_max_factor);
   const double scaled_base = base_len * config_.mesh_scale;
-  const double min_log_length = std::log(scaled_base * config_.target_min_factor);
-  const double max_log_length = std::log(scaled_base * config_.target_max_factor);
-  if (config_.target_smooth_alpha > 0.0 && !log_lengths.empty()) {
-    const auto smoothed = detail::solveScreenedScalarField(mesh, log_lengths, config_.target_smooth_alpha);
-    log_lengths = smoothed.values;
-  }
-  const auto xsmooth_log_lengths = log_lengths;
-  detail::projectTargetLogGradation(
-      mesh,
-      log_lengths,
-      min_log_length,
-      max_log_length,
-      config_.target_max_adjacent_ratio,
-      config_.target_gradation_iterations);
+  const double min_length = scaled_base * config_.target_min_factor;
+  const double max_length = scaled_base * config_.target_max_factor;
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
@@ -1466,22 +1237,19 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
         mesh,
         {raw_curvature,
          curvature,
-         x0_log_lengths,
-         xsmooth_log_lengths,
-         log_lengths,
+         target_lengths,
          base_len,
-         min_log_length,
-         max_log_length},
-        config_);
+         min_length,
+         max_length});
   }
 
-  target_field_.build(mesh, log_lengths);
+  target_field_.build(mesh, target_lengths);
 
-  if (config_.verbose && !log_lengths.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(log_lengths.begin(), log_lengths.end());
+  if (config_.verbose && !target_lengths.empty()) {
+    const auto [min_it, max_it] = std::minmax_element(target_lengths.begin(), target_lengths.end());
     std::cerr << "target length: base=" << base_len
-              << ", min=" << std::exp(*min_it)
-              << ", max=" << std::exp(*max_it) << "\n";
+              << ", min=" << *min_it
+              << ", max=" << *max_it << "\n";
   }
 }
 

@@ -11,8 +11,11 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -327,12 +330,12 @@ void testCsfScreenedWeightGraphAndStrictValidation() {
 void testTargetLengthFieldQueries() {
   adaiso::TargetLengthField field;
   const adaiso::Mesh triangle = makeSingleTriangle();
-  field.build(triangle, {std::log(1.0), std::log(4.0), std::log(16.0)});
+  field.build(triangle, {1.0, 4.0, 16.0});
 
   assertNear(field.valueAt(triangle.vertices[0]), 1.0);
-  assertNear(field.valueAt(0.5 * (triangle.vertices[0] + triangle.vertices[1])), 2.0);
-  assertNear(field.valueAt({0.25, 0.25, 0.0}), std::sqrt(8.0));
-  assertNear(field.valueAt({0.25, 0.25, 2.0}), std::sqrt(8.0));
+  assertNear(field.valueAt(0.5 * (triangle.vertices[0] + triangle.vertices[1])), 2.5);
+  assertNear(field.valueAt({0.25, 0.25, 0.0}), 5.5);
+  assertNear(field.valueAt({0.25, 0.25, 2.0}), 5.5);
 
   adaiso::Mesh square;
   square.vertices = {
@@ -342,64 +345,47 @@ void testTargetLengthFieldQueries() {
       {1.0, 1.0, 0.0},
   };
   square.faces = {{0, 1, 2}, {1, 3, 2}};
-  field.build(square, {std::log(1.0), std::log(4.0), std::log(9.0), std::log(16.0)});
-  assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.0);
+  field.build(square, {1.0, 4.0, 9.0, 16.0});
+  assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.5);
 }
 
-void testContinuousTargetLengthMapping() {
-  const auto lengths = adaiso::detail::continuousTargetLogLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+void testLinearTargetLengthMapping() {
+  const auto lengths = adaiso::detail::linearTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8);
   assert(lengths.size() == 3);
-  assertNear(std::exp(lengths[0]), 3.6);
-  assertNear(std::exp(lengths[1]), std::sqrt(3.6 * 1.2));
-  assertNear(std::exp(lengths[2]), 1.2);
+  assertNear(lengths[0], 3.6);
+  assertNear(lengths[1], 2.4);
+  assertNear(lengths[2], 1.2);
 
-  const auto tied = adaiso::detail::continuousTargetLogLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+  const auto tied = adaiso::detail::linearTargetLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8);
   assert(tied.size() == 4);
   assertNear(tied[1], tied[2]);
   assert(tied[0] > tied[1]);
   assert(tied[1] > tied[3]);
 
-  const auto constant = adaiso::detail::continuousTargetLogLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 1.0);
+  const auto constant = adaiso::detail::linearTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8);
   assert(constant.size() == 3);
   for (double value : constant) {
-    assertNear(std::exp(value), 3.0);
+    assertNear(value, 3.0);
   }
 
-  const auto monotonic = adaiso::detail::continuousTargetLogLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
+  const auto monotonic = adaiso::detail::linearTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8);
   for (std::size_t i = 1; i < monotonic.size(); ++i) {
     assert(monotonic[i - 1] >= monotonic[i]);
   }
-}
 
-void testTargetLogGradationProjection() {
-  adaiso::Mesh mesh;
-  mesh.vertices = {
-      {0.0, 0.0, 0.0},
-      {1.0, 0.0, 0.0},
-      {0.0, 1.0, 0.0},
-      {1.0, 1.0, 0.0},
-  };
-  mesh.faces = {{0, 1, 2}, {1, 3, 2}};
-  std::vector<double> logs = {std::log(1.0), std::log(100.0), std::log(100.0), std::log(100.0)};
-  const double lo = std::log(1.0);
-  const double hi = std::log(100.0);
-  const double ratio = 2.0;
-  adaiso::detail::projectTargetLogGradation(mesh, logs, lo, hi, ratio, 8);
-
-  for (double value : logs) {
-    assert(value + 1e-12 >= lo);
-    assert(value <= hi + 1e-12);
+  bool threw = false;
+  try {
+    (void)adaiso::detail::linearTargetLengths({0.0, std::numeric_limits<double>::infinity()}, 1.0, 1.0, 0.6, 1.8);
+  } catch (const std::runtime_error&) {
+    threw = true;
   }
-  for (const auto& [a, b] : adaiso::uniqueEdges(mesh)) {
-    const double diff = std::abs(logs[static_cast<std::size_t>(a)] - logs[static_cast<std::size_t>(b)]);
-    assert(diff <= std::log(ratio) + 1e-12);
-  }
+  assert(threw);
 }
 
 void testEdgeRatioStats() {
   adaiso::Mesh mesh = makeSingleTriangle();
   adaiso::TargetLengthField field;
-  field.build(mesh, {std::log(1.0), std::log(1.0), std::log(1.0)});
+  field.build(mesh, {1.0, 1.0, 1.0});
 
   const auto stats = adaiso::computeEdgeRatioStats(
       mesh,
@@ -518,17 +504,13 @@ void testTargetFieldDiagnosticExport() {
       dir / "vertices.csv",
       dir / "edges.csv",
       dir / "faces.csv",
-      dir / "edge_ratio_histogram.csv",
       dir / "field_stats.json",
-      dir / "raw_curvature_heat.ply",
-      dir / "csf_curvature_heat.ply",
-      dir / "raw_target_h_heat.ply",
-      dir / "smoothed_target_h_heat.ply",
-      dir / "final_target_h_heat.ply",
-      dir / "target_delta_log_heat.ply",
-      dir / "edge_ratio_hotspot.ply",
-      dir / "violation_mask.ply",
-      dir / "face_log_gradient_heat.ply",
+      dir / "raw_curvature_heat_shared.ply",
+      dir / "csf_curvature_heat_shared.ply",
+      dir / "raw_curvature_heat_independent.ply",
+      dir / "csf_curvature_heat_independent.ply",
+      dir / "target_h_heat.ply",
+      dir / "color_scales.json",
   };
   for (const auto& path : expected) {
     assert(std::filesystem::exists(path));
@@ -539,16 +521,88 @@ void testTargetFieldDiagnosticExport() {
     std::ifstream vertices(dir / "vertices.csv");
     std::string header;
     std::getline(vertices, header);
-    assert(header == "vertex_id,x,y,z,raw_curvature,csf_curvature,x0_log,xsmooth_log,xfinal_log,h0,hsmooth,hfinal");
+    assert(header == "vertex_id,x,y,z,raw_curvature,csf_curvature,target_h");
 
     std::ifstream edges(dir / "edges.csv");
     std::getline(edges, header);
-    assert(header == "i,j,edge_length,abs_dx,ratio,log_slope,violated");
+    assert(header == "i,j,edge_length,abs_dh,target_ratio,h_slope");
 
     std::ifstream faces(dir / "faces.csv");
     std::getline(faces, header);
-    assert(header == "face_id,grad_log_h_norm,max_edge_ratio");
+    assert(header == "face_id,grad_h_norm,max_edge_target_ratio");
   }
+
+  {
+    std::ifstream color_scales(dir / "color_scales.json");
+    std::string color_scales_text;
+    std::string line;
+    while (std::getline(color_scales, line)) {
+      color_scales_text += line;
+      color_scales_text += '\n';
+    }
+    assert(color_scales_text.find("\"raw_curvature_shared\"") != std::string::npos);
+    assert(color_scales_text.find("\"csf_curvature_shared\"") != std::string::npos);
+    assert(color_scales_text.find("\"raw_curvature_independent\"") != std::string::npos);
+    assert(color_scales_text.find("\"csf_curvature_independent\"") != std::string::npos);
+    assert(color_scales_text.find("\"target_h\"") != std::string::npos);
+    assert(color_scales_text.find("\"raw_curvature_heat_shared.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"csf_curvature_heat_shared.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"raw_curvature_heat_independent.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"csf_curvature_heat_independent.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"target_h_heat.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"inverted\": true") != std::string::npos);
+  }
+
+  {
+    std::ifstream vertices(dir / "vertices.csv");
+    std::string line;
+    std::getline(vertices, line);
+    std::vector<double> target_h;
+    while (std::getline(vertices, line)) {
+      std::stringstream row(line);
+      std::string cell;
+      for (int column = 0; column < 6; ++column) {
+        std::getline(row, cell, ',');
+      }
+      std::getline(row, cell, ',');
+      target_h.push_back(std::stod(cell));
+    }
+    assert(!target_h.empty());
+    const auto min_it = std::min_element(target_h.begin(), target_h.end());
+    const auto max_it = std::max_element(target_h.begin(), target_h.end());
+    assert(*min_it < *max_it);
+    const std::size_t min_index = static_cast<std::size_t>(std::distance(target_h.begin(), min_it));
+    const std::size_t max_index = static_cast<std::size_t>(std::distance(target_h.begin(), max_it));
+
+    std::ifstream target_h_ply(dir / "target_h_heat.ply");
+    while (std::getline(target_h_ply, line) && line != "end_header") {
+    }
+
+    std::vector<int> red;
+    std::vector<int> blue;
+    red.reserve(target_h.size());
+    blue.reserve(target_h.size());
+    for (std::size_t i = 0; i < target_h.size(); ++i) {
+      double x = 0.0;
+      double y = 0.0;
+      double z = 0.0;
+      int r = 0;
+      int g = 0;
+      int b = 0;
+      target_h_ply >> x >> y >> z >> r >> g >> b;
+      red.push_back(r);
+      blue.push_back(b);
+    }
+    assert(red[min_index] > red[max_index]);
+    assert(blue[min_index] < blue[max_index]);
+  }
+
+  assert(!std::filesystem::exists(dir / "raw_curvature_heat.ply"));
+  assert(!std::filesystem::exists(dir / "csf_curvature_heat.ply"));
+  assert(!std::filesystem::exists(dir / "raw_target_h_heat.ply"));
+  assert(!std::filesystem::exists(dir / "smoothed_target_h_heat.ply"));
+  assert(!std::filesystem::exists(dir / "final_target_h_heat.ply"));
+  assert(!std::filesystem::exists(dir / "target_delta_log_heat.ply"));
 
   std::filesystem::remove_all(dir);
 }
@@ -618,32 +672,6 @@ void testTargetFieldConfigValidation() {
   bool threw = false;
   try {
     adaiso::AdaIsoConfig config;
-    config.target_smooth_alpha = -1.0;
-    config.project_to_surface = false;
-    config.verbose = false;
-    adaiso::AdaIsoRemesher remesher(config);
-    (void)remesher.remesh(makeSingleTriangle());
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
-
-  threw = false;
-  try {
-    adaiso::AdaIsoConfig config;
-    config.target_max_adjacent_ratio = 0.0;
-    config.project_to_surface = false;
-    config.verbose = false;
-    adaiso::AdaIsoRemesher remesher(config);
-    (void)remesher.remesh(makeSingleTriangle());
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
-
-  threw = false;
-  try {
-    adaiso::AdaIsoConfig config;
     config.csf_smoothing_alpha = 0.0;
     config.project_to_surface = false;
     config.verbose = false;
@@ -681,16 +709,6 @@ void testTargetFieldConfigValidation() {
     adaiso::AdaIsoConfig config;
     config.target_min_factor = 2.0;
     config.target_max_factor = 1.0;
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
-    config.target_gamma = 0.0;
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
-    config.target_gradation_iterations = -1;
     assert_invalid_target_config(config);
   }
 }
@@ -822,8 +840,7 @@ int main() {
   testCsfScreenedConstantField();
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
-  testContinuousTargetLengthMapping();
-  testTargetLogGradationProjection();
+  testLinearTargetLengthMapping();
   testEdgeRatioStats();
   testCurvatureModeParsing();
   testRobustMeanCurvatureRemeshInitialization();

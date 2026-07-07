@@ -41,7 +41,7 @@ class TargetLengthField {
   TargetLengthField(TargetLengthField&& other) noexcept;
   TargetLengthField& operator=(TargetLengthField&& other) noexcept;
 
-  void build(const Mesh& input, const std::vector<double>& log_lengths);
+  void build(const Mesh& input, const std::vector<double>& target_lengths);
   void clear();
   [[nodiscard]] bool empty() const;
   [[nodiscard]] double valueAt(const Eigen::Vector3d& point) const;
@@ -57,10 +57,6 @@ struct AdaIsoConfig {
   double csf_smoothing_alpha = 2.0;
   double target_min_factor = 0.6;
   double target_max_factor = 1.8;
-  double target_gamma = 1.0;
-  double target_smooth_alpha = 0.3;
-  double target_max_adjacent_ratio = 1.30;
-  int target_gradation_iterations = 20;
   std::string target_field_export_dir;
   std::string iteration_mesh_export_dir;
   std::string stage_mesh_export_dir;

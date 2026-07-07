@@ -27,10 +27,6 @@ void printUsage(std::ostream& out) {
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
       << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
-      << "  --target-gamma <v>         Continuous target response exponent. Default: 1.0\n"
-      << "  --target-smooth-alpha <v>  Screened log-size smoothing strength. Default: 0.3\n"
-      << "  --target-max-adjacent-ratio <v> Max adjacent target length ratio. Default: 1.30\n"
-      << "  --target-gradation-iters <n> Gradation projection iterations. Default: 20\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
@@ -196,10 +192,6 @@ std::string buildSummaryJson(
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_min_factor\": " << config.target_min_factor << ",\n";
   out << "    \"target_max_factor\": " << config.target_max_factor << ",\n";
-  out << "    \"target_gamma\": " << config.target_gamma << ",\n";
-  out << "    \"target_smooth_alpha\": " << config.target_smooth_alpha << ",\n";
-  out << "    \"target_max_adjacent_ratio\": " << config.target_max_adjacent_ratio << ",\n";
-  out << "    \"target_gradation_iterations\": " << config.target_gradation_iterations << ",\n";
   if (!config.target_field_export_dir.empty()) {
     out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
   }
@@ -289,14 +281,6 @@ int main(int argc, char** argv) {
         config.target_min_factor = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-max-factor") {
         config.target_max_factor = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-gamma") {
-        config.target_gamma = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-smooth-alpha") {
-        config.target_smooth_alpha = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-max-adjacent-ratio") {
-        config.target_max_adjacent_ratio = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-gradation-iters") {
-        config.target_gradation_iterations = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-iteration-meshes") {
@@ -349,18 +333,6 @@ int main(int argc, char** argv) {
     }
     if (config.target_min_factor > config.target_max_factor) {
       throw std::runtime_error("--target-min-factor must not exceed --target-max-factor");
-    }
-    if (config.target_gamma <= 0.0 || !std::isfinite(config.target_gamma)) {
-      throw std::runtime_error("--target-gamma must be positive");
-    }
-    if (config.target_smooth_alpha < 0.0 || !std::isfinite(config.target_smooth_alpha)) {
-      throw std::runtime_error("--target-smooth-alpha must be non-negative");
-    }
-    if (config.target_max_adjacent_ratio <= 0.0 || !std::isfinite(config.target_max_adjacent_ratio)) {
-      throw std::runtime_error("--target-max-adjacent-ratio must be positive");
-    }
-    if (config.target_gradation_iterations < 0) {
-      throw std::runtime_error("--target-gradation-iters must be non-negative");
     }
 
     const auto started = std::chrono::steady_clock::now();

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.7.0
+
+Breaking change:
+Target edge lengths now use direct linear mapping from the CSF curvature range
+to `[target_min_factor, target_max_factor] * mean_edge_length * mesh_scale`.
+
+- Removed empirical-quantile/log target mapping, target smoothing, and gradation
+  projection configuration.
+- `TargetLengthField` now stores real target lengths and interpolates `h`
+  directly on the input surface.
+- Target-field diagnostics now export one `target_h_heat.ply` and no longer
+  write v2.6 staged target fields.
+
 ## 2.4.0
 
 Breaking change:
