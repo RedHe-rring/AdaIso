@@ -57,6 +57,7 @@ struct AdaIsoConfig {
   double csf_smoothing_alpha = 2.0;
   double target_min_factor = 0.6;
   double target_max_factor = 1.8;
+  double target_size_gamma = 2.0;
   std::string target_field_export_dir;
   std::string iteration_mesh_export_dir;
   std::string stage_mesh_export_dir;

@@ -27,6 +27,7 @@ void printUsage(std::ostream& out) {
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
       << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
+      << "  --target-size-gamma <v>    Saturated target-size exponent. Default: 2.0\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
@@ -192,6 +193,7 @@ std::string buildSummaryJson(
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_min_factor\": " << config.target_min_factor << ",\n";
   out << "    \"target_max_factor\": " << config.target_max_factor << ",\n";
+  out << "    \"target_size_gamma\": " << config.target_size_gamma << ",\n";
   if (!config.target_field_export_dir.empty()) {
     out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
   }
@@ -281,6 +283,8 @@ int main(int argc, char** argv) {
         config.target_min_factor = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-max-factor") {
         config.target_max_factor = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-size-gamma") {
+        config.target_size_gamma = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-iteration-meshes") {
@@ -333,6 +337,9 @@ int main(int argc, char** argv) {
     }
     if (config.target_min_factor > config.target_max_factor) {
       throw std::runtime_error("--target-min-factor must not exceed --target-max-factor");
+    }
+    if (config.target_size_gamma <= 0.0 || !std::isfinite(config.target_size_gamma)) {
+      throw std::runtime_error("--target-size-gamma must be positive");
     }
 
     const auto started = std::chrono::steady_clock::now();

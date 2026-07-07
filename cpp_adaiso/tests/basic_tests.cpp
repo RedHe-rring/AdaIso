@@ -349,33 +349,67 @@ void testTargetLengthFieldQueries() {
   assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.5);
 }
 
-void testLinearTargetLengthMapping() {
-  const auto lengths = adaiso::detail::linearTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8);
+void testSaturatedTargetLengthMapping() {
+  const auto lengths = adaiso::detail::saturatedTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 2.0);
   assert(lengths.size() == 3);
   assertNear(lengths[0], 3.6);
-  assertNear(lengths[1], 2.4);
+  assertNear(lengths[1], 1.8);
   assertNear(lengths[2], 1.2);
 
-  const auto tied = adaiso::detail::linearTargetLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8);
+  const auto linear = adaiso::detail::saturatedTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
+  assert(linear.size() == 3);
+  assertNear(linear[0], 3.6);
+  assertNear(linear[1], 2.4);
+  assertNear(linear[2], 1.2);
+
+  const auto tied = adaiso::detail::saturatedTargetLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8, 2.0);
   assert(tied.size() == 4);
   assertNear(tied[1], tied[2]);
   assert(tied[0] > tied[1]);
   assert(tied[1] > tied[3]);
 
-  const auto constant = adaiso::detail::linearTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8);
+  const auto constant = adaiso::detail::saturatedTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 2.0);
   assert(constant.size() == 3);
   for (double value : constant) {
     assertNear(value, 3.0);
   }
 
-  const auto monotonic = adaiso::detail::linearTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8);
+  const auto monotonic = adaiso::detail::saturatedTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
   for (std::size_t i = 1; i < monotonic.size(); ++i) {
     assert(monotonic[i - 1] >= monotonic[i]);
   }
 
   bool threw = false;
   try {
-    (void)adaiso::detail::linearTargetLengths({0.0, std::numeric_limits<double>::infinity()}, 1.0, 1.0, 0.6, 1.8);
+    (void)adaiso::detail::saturatedTargetLengths(
+        {0.0, std::numeric_limits<double>::infinity()},
+        1.0,
+        1.0,
+        0.6,
+        1.8,
+        2.0);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    (void)adaiso::detail::saturatedTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.6, 1.8, 0.0);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    (void)adaiso::detail::saturatedTargetLengths(
+        {0.0, 1.0},
+        1.0,
+        1.0,
+        0.6,
+        1.8,
+        std::numeric_limits<double>::infinity());
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -711,6 +745,16 @@ void testTargetFieldConfigValidation() {
     config.target_max_factor = 1.0;
     assert_invalid_target_config(config);
   }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_size_gamma = 0.0;
+    assert_invalid_target_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_size_gamma = std::numeric_limits<double>::infinity();
+    assert_invalid_target_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -840,7 +884,7 @@ int main() {
   testCsfScreenedConstantField();
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
-  testLinearTargetLengthMapping();
+  testSaturatedTargetLengthMapping();
   testEdgeRatioStats();
   testCurvatureModeParsing();
   testRobustMeanCurvatureRemeshInitialization();

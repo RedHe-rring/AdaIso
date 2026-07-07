@@ -834,12 +834,13 @@ void writeTargetFieldDiagnostics(
 
 namespace detail {
 
-std::vector<double> linearTargetLengths(
+std::vector<double> saturatedTargetLengths(
     const std::vector<double>& curvature,
     double base_length,
     double mesh_scale,
     double target_min_factor,
-    double target_max_factor) {
+    double target_max_factor,
+    double target_size_gamma) {
   if (curvature.empty()) {
     return {};
   }
@@ -857,6 +858,9 @@ std::vector<double> linearTargetLengths(
   }
   if (target_min_factor > target_max_factor) {
     throw std::runtime_error("target min factor must not exceed target max factor");
+  }
+  if (target_size_gamma <= 0.0 || !std::isfinite(target_size_gamma)) {
+    throw std::runtime_error("target size gamma must be positive");
   }
 
   for (double value : curvature) {
@@ -884,8 +888,9 @@ std::vector<double> linearTargetLengths(
 
   const double denom = *max_it - *min_it;
   for (std::size_t i = 0; i < curvature.size(); ++i) {
-    const double t = (curvature[i] - *min_it) / denom;
-    const double h = std::clamp(h_max - t * (h_max - h_min), h_min, h_max);
+    const double t = std::clamp((curvature[i] - *min_it) / denom, 0.0, 1.0);
+    const double response = std::pow(1.0 - t, target_size_gamma);
+    const double h = std::clamp(h_min + (h_max - h_min) * response, h_min, h_max);
     if (!std::isfinite(h) || h <= 0.0) {
       throw std::runtime_error("computed target length must be positive");
     }
@@ -1098,6 +1103,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.target_min_factor > config_.target_max_factor) {
     throw std::runtime_error("target min factor must not exceed target max factor");
   }
+  if (config_.target_size_gamma <= 0.0 || !std::isfinite(config_.target_size_gamma)) {
+    throw std::runtime_error("target size gamma must be positive");
+  }
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
@@ -1221,12 +1229,13 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   const double base_len = meanEdgeLength(mesh);
   const auto raw_curvature = computeRawCurvatureField(mesh, config_.curvature_mode);
   const auto curvature = solveCsf(mesh, raw_curvature);
-  const auto target_lengths = detail::linearTargetLengths(
+  const auto target_lengths = detail::saturatedTargetLengths(
       curvature,
       base_len,
       config_.mesh_scale,
       config_.target_min_factor,
-      config_.target_max_factor);
+      config_.target_max_factor,
+      config_.target_size_gamma);
   const double scaled_base = base_len * config_.mesh_scale;
   const double min_length = scaled_base * config_.target_min_factor;
   const double max_length = scaled_base * config_.target_max_factor;

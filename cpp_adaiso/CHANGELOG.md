@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.8.0
+
+Breaking change:
+Target edge lengths now use a saturated curvature-to-size mapping with
+`target_size_gamma` instead of the direct linear helper.
+
+- Replaced `linearTargetLengths` with `saturatedTargetLengths`.
+- Added `--target-size-gamma` and `AdaIsoConfig::target_size_gamma`; default is
+  `2.0`.
+- `target_size_gamma = 1.0` reproduces the v2.7 linear response as a formula
+  special case, without keeping the old mapping API.
+
 ## 2.7.0
 
 Breaking change:
