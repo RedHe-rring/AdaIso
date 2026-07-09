@@ -349,71 +349,76 @@ void testTargetLengthFieldQueries() {
   assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.5);
 }
 
-void testSaturatedTargetLengthMapping() {
-  const auto lengths = adaiso::detail::saturatedTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 2.0);
-  assert(lengths.size() == 3);
+void testPercentileTargetLengthMapping() {
+  std::vector<double> curvature;
+  for (int i = 0; i <= 20; ++i) {
+    curvature.push_back(static_cast<double>(i));
+  }
+  const auto lengths = adaiso::detail::percentileTargetLengths(curvature, 2.0, 1.0, 0.6, 1.8, 2.0);
+  assert(lengths.size() == curvature.size());
   assertNear(lengths[0], 3.6);
-  assertNear(lengths[1], 1.8);
-  assertNear(lengths[2], 1.2);
+  assertNear(lengths[1], 3.6);
+  assertNear(lengths[10], 1.8);
+  assertNear(lengths[19], 1.2);
+  assertNear(lengths[20], 1.2);
 
-  const auto linear = adaiso::detail::saturatedTargetLengths({0.0, 1.0, 2.0}, 2.0, 1.0, 0.6, 1.8, 1.0);
-  assert(linear.size() == 3);
-  assertNear(linear[0], 3.6);
-  assertNear(linear[1], 2.4);
-  assertNear(linear[2], 1.2);
+  const double q05 = 1.0;
+  const double q95 = 19.0;
+  const double t = (10.0 - q05) / (q95 - q05);
+  const double expected_mid = 1.2 + (3.6 - 1.2) * std::pow(1.0 - t, 2.0);
+  assertNear(lengths[10], expected_mid);
 
-  const auto tied = adaiso::detail::saturatedTargetLengths({0.0, 1.0, 1.0, 3.0}, 2.0, 1.0, 0.6, 1.8, 2.0);
-  assert(tied.size() == 4);
-  assertNear(tied[1], tied[2]);
-  assert(tied[0] > tied[1]);
-  assert(tied[1] > tied[3]);
-
-  const auto constant = adaiso::detail::saturatedTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 2.0);
+  const auto constant = adaiso::detail::percentileTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 2.0);
   assert(constant.size() == 3);
   for (double value : constant) {
     assertNear(value, 3.0);
   }
 
-  const auto monotonic = adaiso::detail::saturatedTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
+  const auto monotonic = adaiso::detail::percentileTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
   for (std::size_t i = 1; i < monotonic.size(); ++i) {
     assert(monotonic[i - 1] >= monotonic[i]);
   }
 
-  bool threw = false;
-  try {
-    (void)adaiso::detail::saturatedTargetLengths(
+  auto expect_throw = [](auto&& fn) {
+    bool threw = false;
+    try {
+      fn();
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    assert(threw);
+  };
+
+  expect_throw([] {
+    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.0, 1.8, 2.0);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.6, 0.0, 2.0);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 2.0, 1.0, 2.0);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::percentileTargetLengths(
         {0.0, std::numeric_limits<double>::infinity()},
         1.0,
         1.0,
         0.6,
         1.8,
         2.0);
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
-
-  threw = false;
-  try {
-    (void)adaiso::detail::saturatedTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.6, 1.8, 0.0);
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
-
-  threw = false;
-  try {
-    (void)adaiso::detail::saturatedTargetLengths(
+  });
+  expect_throw([] {
+    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.6, 1.8, 0.0);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::percentileTargetLengths(
         {0.0, 1.0},
         1.0,
         1.0,
         0.6,
         1.8,
         std::numeric_limits<double>::infinity());
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
+  });
 }
 
 void testEdgeRatioStats() {
@@ -657,6 +662,7 @@ void testIterationMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
+      dir / "iter000.ply",
       dir / "iter001.ply",
       dir / "iter002.ply",
   };
@@ -699,6 +705,42 @@ void testStageMeshExport() {
     loaded.validate();
   }
 
+  std::filesystem::remove_all(dir);
+}
+
+void testAllStageMeshExport() {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "adaiso_all_stage_mesh_export";
+  std::filesystem::remove_all(dir);
+
+  adaiso::AdaIsoConfig config;
+  config.global_iterations = 2;
+  config.project_to_surface = false;
+  config.verbose = false;
+  config.all_stage_mesh_export_dir = dir.string();
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(makePyramid());
+  output.validate();
+
+  const std::vector<std::filesystem::path> expected = {
+      dir / "iter001_after_split.ply",
+      dir / "iter001_after_collapse.ply",
+      dir / "iter001_after_flip.ply",
+      dir / "iter001_after_smooth.ply",
+      dir / "iter002_after_split.ply",
+      dir / "iter002_after_collapse.ply",
+      dir / "iter002_after_flip.ply",
+      dir / "iter002_after_smooth.ply",
+  };
+  for (const auto& path : expected) {
+    assert(std::filesystem::exists(path));
+    assert(std::filesystem::file_size(path) > 0);
+    const adaiso::Mesh loaded = adaiso::loadMesh(path);
+    loaded.validate();
+  }
+
+  assert(!std::filesystem::exists(dir / "iter003_after_split.ply"));
   std::filesystem::remove_all(dir);
 }
 
@@ -884,7 +926,7 @@ int main() {
   testCsfScreenedConstantField();
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
-  testSaturatedTargetLengthMapping();
+  testPercentileTargetLengthMapping();
   testEdgeRatioStats();
   testCurvatureModeParsing();
   testRobustMeanCurvatureRemeshInitialization();
@@ -892,6 +934,7 @@ int main() {
   testTargetFieldDiagnosticExport();
   testIterationMeshExport();
   testStageMeshExport();
+  testAllStageMeshExport();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
   testRemeshEdgeCases();

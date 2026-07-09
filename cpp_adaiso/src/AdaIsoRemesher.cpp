@@ -78,60 +78,6 @@ bool faceContainsEdge(const Eigen::Vector3i& face, int a, int b) {
   return false;
 }
 
-std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m) {
-  for (int offset = 0; offset < 3; ++offset) {
-    const int x = face[offset];
-    const int y = face[(offset + 1) % 3];
-    const int z = face[(offset + 2) % 3];
-    if (x == a && y == b) {
-      return {Eigen::Vector3i(a, m, z), Eigen::Vector3i(m, b, z)};
-    }
-    if (x == b && y == a) {
-      return {Eigen::Vector3i(b, m, z), Eigen::Vector3i(m, a, z)};
-    }
-  }
-  throw std::runtime_error("internal error: face does not contain requested edge");
-}
-
-void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
-  if (edges.empty()) {
-    return;
-  }
-
-  std::unordered_map<Edge, int, EdgeHash> midpoint_indices;
-  midpoint_indices.reserve(edges.size());
-  for (const auto& edge : edges) {
-    const int a = edge.first;
-    const int b = edge.second;
-    const int m = static_cast<int>(mesh.vertices.size());
-    mesh.vertices.push_back(
-        0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]));
-    midpoint_indices.emplace(edge, m);
-  }
-
-  std::vector<Eigen::Vector3i> new_faces;
-  new_faces.reserve(mesh.faces.size() + edges.size());
-  for (const auto& face : mesh.faces) {
-    bool did_split = false;
-    for (int i = 0; i < 3; ++i) {
-      const int a = face[i];
-      const int b = face[(i + 1) % 3];
-      const Edge edge = makeEdge(a, b);
-      const auto it = midpoint_indices.find(edge);
-      if (it != midpoint_indices.end()) {
-        auto split = splitFaceOnEdge(face, a, b, it->second);
-        new_faces.insert(new_faces.end(), split.begin(), split.end());
-        did_split = true;
-        break;
-      }
-    }
-    if (!did_split) {
-      new_faces.push_back(face);
-    }
-  }
-  mesh.faces = std::move(new_faces);
-}
-
 Eigen::Vector3d safeFaceNormal(const std::vector<Eigen::Vector3d>& vertices, const Eigen::Vector3i& face) {
   return safeNormalize((vertices[face[1]] - vertices[face[0]]).cross(vertices[face[2]] - vertices[face[0]]));
 }
@@ -834,7 +780,7 @@ void writeTargetFieldDiagnostics(
 
 namespace detail {
 
-std::vector<double> saturatedTargetLengths(
+std::vector<double> percentileTargetLengths(
     const std::vector<double>& curvature,
     double base_length,
     double mesh_scale,
@@ -881,16 +827,19 @@ std::vector<double> saturatedTargetLengths(
   }
 
   std::vector<double> result(curvature.size(), std::clamp(scaled_base, h_min, h_max));
-  const auto [min_it, max_it] = std::minmax_element(curvature.begin(), curvature.end());
-  if (std::abs(*max_it - *min_it) <= 1e-14) {
+  std::vector<double> sorted_curvature = curvature;
+  std::sort(sorted_curvature.begin(), sorted_curvature.end());
+  const double q05 = quantileOfSorted(sorted_curvature, 0.05);
+  const double q95 = quantileOfSorted(sorted_curvature, 0.95);
+  const double denom = q95 - q05;
+  if (!(q95 > q05) || denom <= kEps || !std::isfinite(denom)) {
     return result;
   }
 
-  const double denom = *max_it - *min_it;
   for (std::size_t i = 0; i < curvature.size(); ++i) {
-    const double t = std::clamp((curvature[i] - *min_it) / denom, 0.0, 1.0);
+    const double t = std::clamp((curvature[i] - q05) / denom, 0.0, 1.0);
     const double response = std::pow(1.0 - t, target_size_gamma);
-    const double h = std::clamp(h_min + (h_max - h_min) * response, h_min, h_max);
+    const double h = h_min + (h_max - h_min) * response;
     if (!std::isfinite(h) || h <= 0.0) {
       throw std::runtime_error("computed target length must be positive");
     }
@@ -901,6 +850,9 @@ std::vector<double> saturatedTargetLengths(
 }
 
 }  // namespace detail
+
+std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m);
+void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges);
 
 struct TargetLengthFieldImpl {
   Mesh mesh;
@@ -1109,6 +1061,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
+  // TODO: 入口添加一个开关，用于输出mesh清理后的结果
+
+
   Mesh original_for_projection = mesh;
 
   if (config_.verbose) {
@@ -1125,6 +1080,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
 
   buildTargetLengths(mesh);
   stats_.iterations.reserve(static_cast<std::size_t>(std::max(0, config_.global_iterations)));
+  if (!config_.iteration_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / "iter000.ply", mesh);
+  }
 
   for (int it = 0; it < config_.global_iterations; ++it) {
     if (config_.verbose) {
@@ -1132,12 +1090,17 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     }
     const bool export_first_iteration_stages = it == 0 && !config_.stage_mesh_export_dir.empty();
     auto write_stage_mesh = [&](const std::string& stage) {
-      if (!export_first_iteration_stages) {
-        return;
+      if (export_first_iteration_stages) {
+        writeMesh(
+            std::filesystem::path(config_.stage_mesh_export_dir) / ("iter001_after_" + stage + ".ply"),
+            mesh);
       }
-      writeMesh(
-          std::filesystem::path(config_.stage_mesh_export_dir) / ("iter001_after_" + stage + ".ply"),
-          mesh);
+      if (!config_.all_stage_mesh_export_dir.empty()) {
+        std::ostringstream filename;
+        filename << "iter" << std::setw(3) << std::setfill('0') << (it + 1)
+                 << "_after_" << stage << ".ply";
+        writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / filename.str(), mesh);
+      }
     };
 
     const int split_count = splitLongEdges(mesh);
@@ -1229,7 +1192,7 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   const double base_len = meanEdgeLength(mesh);
   const auto raw_curvature = computeRawCurvatureField(mesh, config_.curvature_mode);
   const auto curvature = solveCsf(mesh, raw_curvature);
-  const auto target_lengths = detail::saturatedTargetLengths(
+  const auto target_lengths = detail::percentileTargetLengths(
       curvature,
       base_len,
       config_.mesh_scale,
@@ -1284,6 +1247,7 @@ double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {
   return target_field_.valueAt(point);
 }
 
+// Returns the target length for an edge defined by vertices a and b. If use_max is true, returns the maximum of the two vertex targets; otherwise, returns the minimum.
 double AdaIsoRemesher::edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const {
   const double ta = targetAt(mesh.vertices[static_cast<std::size_t>(a)]);
   const double tb = targetAt(mesh.vertices[static_cast<std::size_t>(b)]);
@@ -1301,6 +1265,7 @@ EdgeRatioStats AdaIsoRemesher::edgeRatioStats(const Mesh& mesh) const {
 int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
   int total = 0;
   for (int pass = 0; pass < config_.max_split_passes; ++pass) {
+    // Collect candidate edges that are longer than the split threshold
     std::vector<std::tuple<double, int, int>> candidates;
     for (const auto& item : edgeFaces(mesh)) {
       const int a = item.first.first;
@@ -1317,6 +1282,7 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
       return std::get<0>(lhs) > std::get<0>(rhs);
     });
+
 
     std::vector<Edge> selected;
     selected.reserve(candidates.size());
@@ -1342,6 +1308,60 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     total += static_cast<int>(selected.size());
   }
   return total;
+}
+
+std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m) {
+  for (int offset = 0; offset < 3; ++offset) {
+    const int x = face[offset];
+    const int y = face[(offset + 1) % 3];
+    const int z = face[(offset + 2) % 3];
+    if (x == a && y == b) {
+      return {Eigen::Vector3i(a, m, z), Eigen::Vector3i(m, b, z)};
+    }
+    if (x == b && y == a) {
+      return {Eigen::Vector3i(b, m, z), Eigen::Vector3i(m, a, z)};
+    }
+  }
+  throw std::runtime_error("internal error: face does not contain requested edge");
+}
+
+void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
+  if (edges.empty()) {
+    return;
+  }
+
+  std::unordered_map<Edge, int, EdgeHash> midpoint_indices;
+  midpoint_indices.reserve(edges.size());
+  for (const auto& edge : edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    const int m = static_cast<int>(mesh.vertices.size());
+    mesh.vertices.push_back(
+        0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]));
+    midpoint_indices.emplace(edge, m);
+  }
+
+  std::vector<Eigen::Vector3i> new_faces;
+  new_faces.reserve(mesh.faces.size() + edges.size());
+  for (const auto& face : mesh.faces) {
+    bool did_split = false;
+    for (int i = 0; i < 3; ++i) {
+      const int a = face[i];
+      const int b = face[(i + 1) % 3];
+      const Edge edge = makeEdge(a, b);
+      const auto it = midpoint_indices.find(edge);
+      if (it != midpoint_indices.end()) {
+        auto split = splitFaceOnEdge(face, a, b, it->second);
+        new_faces.insert(new_faces.end(), split.begin(), split.end());
+        did_split = true;
+        break;
+      }
+    }
+    if (!did_split) {
+      new_faces.push_back(face);
+    }
+  }
+  mesh.faces = std::move(new_faces);
 }
 
 void AdaIsoRemesher::splitOneEdge(Mesh& mesh, int a, int b) const {

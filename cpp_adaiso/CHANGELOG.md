@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.8.1
+
+Breaking change:
+Target edge lengths now use percentile-normalized power mapping from CSF
+curvature to target size.
+
+- Replaced `saturatedTargetLengths` with `percentileTargetLengths`.
+- The mapping uses fixed linearly interpolated `Q5` and `Q95` curvature
+  quantiles, then evaluates
+  `h = h_min + (h_max - h_min) * (1 - t)^target_size_gamma`.
+- Degenerate percentile ranges fall back to the neutral
+  `mean_edge_length * mesh_scale` target size clamped into `[h_min, h_max]`.
+- Added `--export-all-stage-meshes` for every-iteration split/collapse/flip/smooth
+  diagnostic snapshots. Iteration mesh export now also writes `iter000.ply`.
+
 ## 2.8.0
 
 Breaking change:

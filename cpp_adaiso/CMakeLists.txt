@@ -68,6 +68,9 @@ endif()
 add_executable(adaiso_cli src/main.cpp)
 target_link_libraries(adaiso_cli PRIVATE adaiso_core)
 
+add_executable(adaiso_eval src/eval.cpp)
+target_link_libraries(adaiso_eval PRIVATE adaiso_core)
+
 option(ADAISO_BUILD_TESTS "Build basic smoke tests" ON)
 if(ADAISO_BUILD_TESTS)
   enable_testing()

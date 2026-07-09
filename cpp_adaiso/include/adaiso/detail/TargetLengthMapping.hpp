@@ -4,7 +4,7 @@
 
 namespace adaiso::detail {
 
-[[nodiscard]] std::vector<double> saturatedTargetLengths(
+[[nodiscard]] std::vector<double> percentileTargetLengths(
     const std::vector<double>& curvature,
     double base_length,
     double mesh_scale,

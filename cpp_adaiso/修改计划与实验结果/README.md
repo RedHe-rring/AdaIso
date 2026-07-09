@@ -109,8 +109,9 @@ cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
 - `--target-min-factor`: minimum continuous target length factor. Default: `0.6`.
 - `--target-max-factor`: maximum continuous target length factor. Default: `1.8`.
 - `--export-target-field`: optional directory for target-field diagnostics. It writes vertex/edge/face CSV files, target-field statistics, and colored PLY heatmaps for raw curvature, CSF curvature, and final `target_h`.
-- `--export-iteration-meshes`: optional directory for pre-projection mesh snapshots after each global remesh iteration.
+- `--export-iteration-meshes`: optional directory for pre-projection mesh snapshots, including `iter000.ply` before global remesh iterations and one `iterNNN.ply` after each iteration.
 - `--export-stage-meshes`: optional directory for first-iteration stage snapshots after split, collapse, flip, and smoothing.
+- `--export-all-stage-meshes`: optional directory for every-iteration stage snapshots after split, collapse, flip, and smoothing.
 - `--preprocess 0|1`: enables long-edge pre-splitting.
 - `--iters`: global split/collapse/flip/smooth iterations.
 - `--project 0|1`: enables MLS projection back to the original mesh.

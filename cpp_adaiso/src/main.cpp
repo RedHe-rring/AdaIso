@@ -27,10 +27,11 @@ void printUsage(std::ostream& out) {
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-min-factor <v>    Minimum target length factor. Default: 0.6\n"
       << "  --target-max-factor <v>    Maximum target length factor. Default: 1.8\n"
-      << "  --target-size-gamma <v>    Saturated target-size exponent. Default: 2.0\n"
+      << "  --target-size-gamma <v>    Percentile target-size exponent. Default: 2.0\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
+      << "  --export-all-stage-meshes <dir> Export every iteration's remesh stage snapshots\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
@@ -190,6 +191,7 @@ std::string buildSummaryJson(
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
   out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
+  out << "    \"target_size_mapping\": \"percentile_normalized_power\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_min_factor\": " << config.target_min_factor << ",\n";
   out << "    \"target_max_factor\": " << config.target_max_factor << ",\n";
@@ -202,6 +204,9 @@ std::string buildSummaryJson(
   }
   if (!config.stage_mesh_export_dir.empty()) {
     out << "    \"stage_mesh_export_dir\": \"" << jsonEscape(config.stage_mesh_export_dir) << "\",\n";
+  }
+  if (!config.all_stage_mesh_export_dir.empty()) {
+    out << "    \"all_stage_mesh_export_dir\": \"" << jsonEscape(config.all_stage_mesh_export_dir) << "\",\n";
   }
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
@@ -291,6 +296,8 @@ int main(int argc, char** argv) {
         config.iteration_mesh_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-stage-meshes") {
         config.stage_mesh_export_dir = requireValue(i, argc, argv, arg);
+      } else if (arg == "--export-all-stage-meshes") {
+        config.all_stage_mesh_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
