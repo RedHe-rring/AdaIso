@@ -75,6 +75,7 @@ struct AdaIsoConfig {
   int mls_iterations = 5;
   double mls_tolerance = 1e-4;
   bool avoid_obtuse_flip = true;
+  double max_flip_dihedral_degrees = 45.0;
   double min_quality_after_collapse = 0.05;
   bool verbose = true;
 

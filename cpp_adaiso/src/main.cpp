@@ -35,6 +35,7 @@ void printUsage(std::ostream& out) {
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
       << "  --project <0|1>            Default: 1\n"
+      << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
       << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
       << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
       << "  --summary-json <path>      Write JSON summary to file\n"
@@ -214,6 +215,7 @@ std::string buildSummaryJson(
   out << "    \"split_factor\": " << config.splitFactor() << ",\n";
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
   out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
+  out << "    \"max_flip_dihedral_degrees\": " << config.max_flip_dihedral_degrees << ",\n";
   out << "    \"mls_k\": " << config.mls_k << ",\n";
   out << "    \"mls_iterations\": " << config.mls_iterations << "\n";
   out << "  },\n";
@@ -304,6 +306,8 @@ int main(int argc, char** argv) {
         config.global_iterations = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--project") {
         config.project_to_surface = parseBool(requireValue(i, argc, argv, arg));
+      } else if (arg == "--max-flip-dihedral-deg") {
+        config.max_flip_dihedral_degrees = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--gt") {
         gt_path = requireValue(i, argc, argv, arg);
       } else if (arg == "--cd-samples") {

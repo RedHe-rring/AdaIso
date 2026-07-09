@@ -82,6 +82,15 @@ Eigen::Vector3d safeFaceNormal(const std::vector<Eigen::Vector3d>& vertices, con
   return safeNormalize((vertices[face[1]] - vertices[face[0]]).cross(vertices[face[2]] - vertices[face[0]]));
 }
 
+double faceNormalAngle(const std::vector<Eigen::Vector3d>& vertices, const Eigen::Vector3i& a, const Eigen::Vector3i& b) {
+  const Eigen::Vector3d n0 = safeFaceNormal(vertices, a);
+  const Eigen::Vector3d n1 = safeFaceNormal(vertices, b);
+  if (n0.norm() <= kEps || n1.norm() <= kEps) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return std::acos(std::clamp(n0.dot(n1), -1.0, 1.0));
+}
+
 Eigen::Vector3i orientTriangle(
     Eigen::Vector3i tri,
     const std::vector<Eigen::Vector3d>& vertices,
@@ -987,7 +996,7 @@ EdgeRatioStats computeEdgeRatioStats(
 }
 
 double AdaIsoConfig::splitFactor() const {
-  return variant == Variant::Paper ? 5.0 / 3.0 : 1.33;
+  return variant == Variant::Paper ? 5.0 / 3.0 : 1.65;
 }
 
 double AdaIsoConfig::collapseFactor() const {
@@ -1057,6 +1066,10 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
   if (config_.target_size_gamma <= 0.0 || !std::isfinite(config_.target_size_gamma)) {
     throw std::runtime_error("target size gamma must be positive");
+  }
+  if (config_.max_flip_dihedral_degrees <= 0.0 || config_.max_flip_dihedral_degrees > 180.0 ||
+      !std::isfinite(config_.max_flip_dihedral_degrees)) {
+    throw std::runtime_error("max flip dihedral angle must be finite and in (0, 180]");
   }
 
   stats_ = {};
@@ -1627,6 +1640,11 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
         continue;
       }
 
+      const double max_flip_dihedral = config_.max_flip_dihedral_degrees * kPi / 180.0;
+      if (faceNormalAngle(mesh.vertices, tri1, tri2) > max_flip_dihedral) {
+        continue;
+      }
+
       int c = -1;
       int d = -1;
       for (int k = 0; k < 3; ++k) {
@@ -1653,6 +1671,9 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
       const Eigen::Vector3d ref_normal = safeFaceNormal(mesh.vertices, tri1) + safeFaceNormal(mesh.vertices, tri2);
       Eigen::Vector3i new1 = orientTriangle(Eigen::Vector3i(c, d, b), mesh.vertices, ref_normal);
       Eigen::Vector3i new2 = orientTriangle(Eigen::Vector3i(d, c, a), mesh.vertices, ref_normal);
+      if (faceNormalAngle(mesh.vertices, new1, new2) > max_flip_dihedral) {
+        continue;
+      }
       if (config_.avoid_obtuse_flip) {
         if (maxInnerAngle(mesh.vertices[new1[0]], mesh.vertices[new1[1]], mesh.vertices[new1[2]]) > 0.5 * kPi ||
             maxInnerAngle(mesh.vertices[new2[0]], mesh.vertices[new2[1]], mesh.vertices[new2[2]]) > 0.5 * kPi) {
