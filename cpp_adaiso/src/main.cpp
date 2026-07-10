@@ -34,10 +34,10 @@ void printUsage(std::ostream& out) {
       << "  --export-all-stage-meshes <dir> Export every iteration's remesh stage snapshots\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
-      << "  --project <0|1>            Default: 1\n"
       << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
       << "  --feature-aware-collapse <0|1> Feature-aware collapse placement. Default: 1\n"
       << "  --collapse-feature-omega <v> Feature similarity threshold for collapse. Default: 0.15\n"
+      << "  --relocation-mls <0|1>    Enable MLS projection inside relocation. Default: 0\n"
       << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
       << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
       << "  --summary-json <path>      Write JSON summary to file\n"
@@ -213,13 +213,13 @@ std::string buildSummaryJson(
   }
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
-  out << "    \"project_to_surface\": " << (config.project_to_surface ? "true" : "false") << ",\n";
   out << "    \"split_factor\": " << config.splitFactor() << ",\n";
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
   out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
   out << "    \"max_flip_dihedral_degrees\": " << config.max_flip_dihedral_degrees << ",\n";
   out << "    \"feature_aware_collapse\": " << (config.feature_aware_collapse ? "true" : "false") << ",\n";
   out << "    \"collapse_feature_omega\": " << config.collapse_feature_omega << ",\n";
+  out << "    \"relocation_mls\": " << (config.enable_relocation_mls ? "true" : "false") << ",\n";
   out << "    \"mls_k\": " << config.mls_k << ",\n";
   out << "    \"mls_iterations\": " << config.mls_iterations << "\n";
   out << "  },\n";
@@ -308,14 +308,14 @@ int main(int argc, char** argv) {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
         config.global_iterations = std::stoi(requireValue(i, argc, argv, arg));
-      } else if (arg == "--project") {
-        config.project_to_surface = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--max-flip-dihedral-deg") {
         config.max_flip_dihedral_degrees = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--feature-aware-collapse") {
         config.feature_aware_collapse = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--collapse-feature-omega") {
         config.collapse_feature_omega = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--relocation-mls") {
+        config.enable_relocation_mls = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--gt") {
         gt_path = requireValue(i, argc, argv, arg);
       } else if (arg == "--cd-samples") {

@@ -1,2 +1,0 @@
-﻿index,input_file,input_ext,used_obj_file,converted,status,return_code,duration_sec,log_file,error
-1,E:\adaiso\cpp_adaiso\examples\bunny.obj,.obj,E:\adaiso\cpp_adaiso\examples\bunny.obj,False,failed,3221225786,201.4366,E:\adaiso\batch_run\logs\bunny.log,exe 返回非零状态码: 3221225786

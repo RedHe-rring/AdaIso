@@ -164,7 +164,8 @@ adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, doubl
   config.max_collapse_passes = 1;
   config.max_flip_passes = 0;
   config.preprocess = false;
-  config.project_to_surface = false;
+  config.tangent_lambda = 0.0;
+  config.enable_relocation_mls = false;
   config.min_quality_after_collapse = 0.0;
   config.feature_aware_collapse = feature_aware;
   config.collapse_feature_omega = omega;
@@ -520,7 +521,6 @@ void testRobustMeanCurvatureRemeshInitialization() {
     adaiso::AdaIsoConfig config;
     config.curvature_mode = adaiso::CurvatureMode::RobustMean;
     config.global_iterations = 0;
-    config.project_to_surface = false;
     config.verbose = false;
 
     adaiso::AdaIsoRemesher remesher(config);
@@ -545,7 +545,6 @@ void testRemeshSmoke() {
   config.mesh_scale = 0.8;
   config.global_iterations = 2;
   config.preprocess = true;
-  config.project_to_surface = false;
   config.verbose = false;
 
   adaiso::AdaIsoRemesher remesher(config);
@@ -585,7 +584,6 @@ void testTargetFieldDiagnosticExport() {
 
   adaiso::AdaIsoConfig config;
   config.global_iterations = 0;
-  config.project_to_surface = false;
   config.verbose = false;
   config.target_field_export_dir = dir.string();
 
@@ -708,7 +706,6 @@ void testIterationMeshExport() {
 
   adaiso::AdaIsoConfig config;
   config.global_iterations = 2;
-  config.project_to_surface = false;
   config.verbose = false;
   config.iteration_mesh_export_dir = dir.string();
 
@@ -739,7 +736,6 @@ void testStageMeshExport() {
 
   adaiso::AdaIsoConfig config;
   config.global_iterations = 1;
-  config.project_to_surface = false;
   config.verbose = false;
   config.stage_mesh_export_dir = dir.string();
 
@@ -770,7 +766,6 @@ void testAllStageMeshExport() {
 
   adaiso::AdaIsoConfig config;
   config.global_iterations = 2;
-  config.project_to_surface = false;
   config.verbose = false;
   config.all_stage_mesh_export_dir = dir.string();
 
@@ -799,12 +794,32 @@ void testAllStageMeshExport() {
   std::filesystem::remove_all(dir);
 }
 
+void testRelocationKeepsBoundaryVerticesFixed() {
+  const adaiso::Mesh input = makeSingleTriangle();
+
+  adaiso::AdaIsoConfig config;
+  config.global_iterations = 1;
+  config.max_split_passes = 0;
+  config.max_collapse_passes = 0;
+  config.max_flip_passes = 0;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(input);
+  output.validate();
+
+  assert(output.vertexCount() == input.vertexCount());
+  assert(output.faceCount() == input.faceCount());
+  for (std::size_t i = 0; i < input.vertices.size(); ++i) {
+    assert((output.vertices[i] - input.vertices[i]).norm() <= 1e-12);
+  }
+}
+
 void testTargetFieldConfigValidation() {
   bool threw = false;
   try {
     adaiso::AdaIsoConfig config;
     config.csf_smoothing_alpha = 0.0;
-    config.project_to_surface = false;
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
     (void)remesher.remesh(makeSingleTriangle());
@@ -814,7 +829,6 @@ void testTargetFieldConfigValidation() {
   assert(threw);
 
   auto assert_invalid_target_config = [](adaiso::AdaIsoConfig config) {
-    config.project_to_surface = false;
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
     bool invalid_threw = false;
@@ -876,7 +890,8 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
   config.max_collapse_passes = 1;
   config.max_flip_passes = 0;
   config.preprocess = false;
-  config.project_to_surface = false;
+  config.tangent_lambda = 0.0;
+  config.enable_relocation_mls = false;
   config.min_quality_after_collapse = 0.0;
   config.verbose = false;
 
@@ -911,7 +926,6 @@ void testRemeshEdgeCases() {
   auto run_valid = [](const adaiso::Mesh& input) {
     adaiso::AdaIsoConfig config;
     config.global_iterations = 0;
-    config.project_to_surface = false;
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
     const adaiso::Mesh output = remesher.remesh(input);
@@ -928,7 +942,6 @@ void testRemeshEdgeCases() {
   auto assert_invalid = [](const adaiso::Mesh& input) {
     adaiso::AdaIsoConfig config;
     config.global_iterations = 0;
-    config.project_to_surface = false;
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
     bool threw = false;
@@ -1019,6 +1032,7 @@ int main() {
   testIterationMeshExport();
   testStageMeshExport();
   testAllStageMeshExport();
+  testRelocationKeepsBoundaryVerticesFixed();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
   testFeatureAwareCollapsePlacement();

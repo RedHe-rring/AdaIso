@@ -70,7 +70,7 @@ struct AdaIsoConfig {
   int max_collapse_passes = 5;
   int max_flip_passes = 5;
   double tangent_lambda = 0.6;
-  bool project_to_surface = true;
+  bool enable_relocation_mls = false;
   int mls_k = 8;
   int mls_iterations = 5;
   double mls_tolerance = 1e-4;
@@ -123,6 +123,12 @@ class AdaIsoRemesher {
   [[nodiscard]] const AdaIsoStats& stats() const { return stats_; }
 
  private:
+  enum class VertexRelocationClass {
+    Corner,
+    Crease,
+    Smooth
+  };
+
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
   void buildTargetLengths(const Mesh& mesh);
   [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
@@ -160,7 +166,9 @@ class AdaIsoRemesher {
       int b,
       int c,
       int d) const;
-  void tangentSmoothing(Mesh& mesh);
+  [[nodiscard]] std::vector<VertexRelocationClass> classifyVerticesForRelocation(const Mesh& mesh) const;
+  void relocateVertices(Mesh& mesh, const Mesh& original_for_projection);
+  void tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes);
   [[nodiscard]] std::vector<Eigen::Vector3d> mlsProject(
       const std::vector<Eigen::Vector3d>& points,
       const Mesh& original) const;

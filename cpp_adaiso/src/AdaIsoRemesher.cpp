@@ -60,6 +60,8 @@ constexpr double kEps = 1e-14;
 constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr double kRobustMeanCotMax = 10.0;
 constexpr double kRobustMeanAreaFloorFactor = 1e-8;
+constexpr double kRelocationFeatureEps = 1e-12;
+constexpr double kRelocationZeta = 0.5;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -1203,7 +1205,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     write_stage_mesh("collapse");
     const int flip_count = flipEdges(mesh);
     write_stage_mesh("flip");
-    tangentSmoothing(mesh);
+    relocateVertices(mesh, original_for_projection);
     mesh = removeDegenerateFaces(mesh);
     write_stage_mesh("smooth");
     const MeshSummary iteration_summary = summarizeMesh(mesh);
@@ -1231,20 +1233,6 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
       std::cerr << "  split=" << split_count << ", collapse=" << collapse_count << ", flip=" << flip_count
                 << ", violation=" << ratio_stats.violation_rate
                 << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
-    }
-  }
-
-  if (config_.project_to_surface) {
-    const Mesh before_projection = mesh;
-    const double before_qmin = minQuality(before_projection);
-    Mesh projected = mesh;
-    projected.vertices = mlsProject(mesh.vertices, original_for_projection);
-    projected = removeDegenerateFaces(projected);
-    const double after_qmin = minQuality(projected);
-    if (projected.faceCount() > 0 && (before_qmin <= 0.0 || after_qmin + 1e-12 >= before_qmin)) {
-      mesh = std::move(projected);
-    } else if (config_.verbose) {
-      std::cerr << "projection rejected: qmin would drop from " << before_qmin << " to " << after_qmin << "\n";
     }
   }
 
@@ -1825,15 +1813,86 @@ bool AdaIsoRemesher::flipImprovesValence(
   return after < before;
 }
 
-void AdaIsoRemesher::tangentSmoothing(Mesh& mesh) {
+std::vector<AdaIsoRemesher::VertexRelocationClass> AdaIsoRemesher::classifyVerticesForRelocation(
+    const Mesh& mesh) const {
   const auto boundary = boundaryVertices(mesh);
+  const auto neigh = vertexNeighbors(mesh);
+  const auto feature_strengths = computeVertexFeatureStrengths(mesh);
+  std::vector<VertexRelocationClass> classes(mesh.vertexCount(), VertexRelocationClass::Smooth);
+
+  for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
+    if (boundary.find(static_cast<int>(i)) != boundary.end()) {
+      classes[i] = VertexRelocationClass::Corner;
+      continue;
+    }
+
+    const double center_strength = feature_strengths[i];
+    if (!std::isfinite(center_strength) || center_strength <= kRelocationFeatureEps) {
+      classes[i] = VertexRelocationClass::Smooth;
+      continue;
+    }
+
+    const std::size_t n = neigh[i].size();
+    if (n == 0) {
+      classes[i] = VertexRelocationClass::Corner;
+      continue;
+    }
+
+    const double threshold = kRelocationZeta * center_strength;
+    std::size_t important_count = 0;
+    for (int neighbor : neigh[i]) {
+      if (neighbor < 0 || static_cast<std::size_t>(neighbor) >= feature_strengths.size()) {
+        continue;
+      }
+      const double neighbor_strength = feature_strengths[static_cast<std::size_t>(neighbor)];
+      if (std::isfinite(neighbor_strength) && neighbor_strength >= threshold) {
+        ++important_count;
+      }
+    }
+
+    const std::size_t d_corner = important_count;
+    const std::size_t d_crease = important_count > 2 ? important_count - 2 : 2 - important_count;
+    const std::size_t d_smooth = important_count > n ? important_count - n : n - important_count;
+    if (d_corner <= d_crease && d_corner <= d_smooth) {
+      classes[i] = VertexRelocationClass::Corner;
+    } else if (d_crease <= d_smooth) {
+      classes[i] = VertexRelocationClass::Crease;
+    } else {
+      classes[i] = VertexRelocationClass::Smooth;
+    }
+  }
+
+  return classes;
+}
+
+void AdaIsoRemesher::relocateVertices(Mesh& mesh, const Mesh& original_for_projection) {
+  const auto classes = classifyVerticesForRelocation(mesh);
+  tangentSmoothing(mesh, classes);
+
+  if (!config_.enable_relocation_mls) {
+    return;
+  }
+
+  const auto projected = mlsProject(mesh.vertices, original_for_projection);
+  if (projected.size() != mesh.vertices.size()) {
+    return;
+  }
+
+  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+    if (classes[i] == VertexRelocationClass::Smooth && finiteVector(projected[i])) {
+      mesh.vertices[i] = projected[i];
+    }
+  }
+}
+
+void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes) {
   const auto vf = vertexFaces(mesh);
   const auto normals = vertexNormals(mesh);
   const auto areas = faceAreas(mesh);
   auto new_vertices = mesh.vertices;
 
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    if (boundary.find(static_cast<int>(i)) != boundary.end() || vf[i].empty()) {
+    if (i >= classes.size() || classes[i] != VertexRelocationClass::Smooth || vf[i].empty()) {
       continue;
     }
     std::unordered_map<int, double> weights;
