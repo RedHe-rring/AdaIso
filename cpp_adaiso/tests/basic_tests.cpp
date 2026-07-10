@@ -596,6 +596,7 @@ void testTargetFieldDiagnosticExport() {
       dir / "raw_curvature_heat_independent.ply",
       dir / "csf_curvature_heat_independent.ply",
       dir / "target_h_heat.ply",
+      dir / "target_h_heat_observed.ply",
       dir / "color_scales.json",
   };
   for (const auto& path : expected) {
@@ -631,11 +632,13 @@ void testTargetFieldDiagnosticExport() {
     assert(color_scales_text.find("\"raw_curvature_independent\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_independent\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h\"") != std::string::npos);
+    assert(color_scales_text.find("\"target_h_observed\"") != std::string::npos);
     assert(color_scales_text.find("\"raw_curvature_heat_shared.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_heat_shared.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"raw_curvature_heat_independent.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_heat_independent.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h_heat.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"target_h_heat_observed.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"inverted\": true") != std::string::npos);
   }
 

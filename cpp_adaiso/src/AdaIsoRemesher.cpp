@@ -545,7 +545,7 @@ std::vector<double> computeRobustMeanCurvatureField(const Mesh& mesh) {
       throw std::runtime_error("robust mean curvature produced an invalid vertex area");
     }
     const double mean_curvature = 0.5 * laplacian[i].norm() / area;
-    const double signal = std::log1p(mean_curvature * mean_length);
+    const double signal = mean_curvature * mean_length;
     if (!std::isfinite(signal)) {
       throw std::runtime_error("robust mean curvature produced a non-finite value");
     }
@@ -746,7 +746,9 @@ std::string colorScalesJson(
     double csf_curvature_min,
     double csf_curvature_max,
     double target_h_min,
-    double target_h_max) {
+    double target_h_max,
+    double observed_target_h_min,
+    double observed_target_h_max) {
   std::ostringstream out;
   out << std::setprecision(17);
   out << "{\n";
@@ -782,6 +784,13 @@ std::string colorScalesJson(
   out << "      \"field\": \"target_h\",\n";
   out << "      \"min\": " << target_h_min << ",\n";
   out << "      \"max\": " << target_h_max << ",\n";
+  out << "      \"inverted\": true\n";
+  out << "    },\n";
+  out << "    \"target_h_observed\": {\n";
+  out << "      \"file\": \"target_h_heat_observed.ply\",\n";
+  out << "      \"field\": \"target_h\",\n";
+  out << "      \"min\": " << observed_target_h_min << ",\n";
+  out << "      \"max\": " << observed_target_h_max << ",\n";
   out << "      \"inverted\": true\n";
   out << "    }\n";
   out << "  }\n";
@@ -823,6 +832,7 @@ void writeTargetFieldDiagnostics(
 
   const auto [raw_min, raw_max] = scalarRange(data.raw_curvature);
   const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
+  const auto [target_h_observed_min, target_h_observed_max] = scalarRange(data.target_lengths);
   const double curvature_min = std::min(raw_min, csf_min);
   const double curvature_max = std::max(raw_max, csf_max);
   writeTextFile(
@@ -835,7 +845,9 @@ void writeTargetFieldDiagnostics(
           csf_min,
           csf_max,
           data.min_length,
-          data.max_length));
+          data.max_length,
+          target_h_observed_min,
+          target_h_observed_max));
   writeVertexHeatPly(
       out_dir / "raw_curvature_heat_shared.ply",
       mesh,
@@ -866,6 +878,13 @@ void writeTargetFieldDiagnostics(
       data.target_lengths,
       data.min_length,
       data.max_length,
+      true);
+  writeVertexHeatPly(
+      out_dir / "target_h_heat_observed.ply",
+      mesh,
+      data.target_lengths,
+      target_h_observed_min,
+      target_h_observed_max,
       true);
 }
 
