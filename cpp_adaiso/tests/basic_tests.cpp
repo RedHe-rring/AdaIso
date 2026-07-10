@@ -4,7 +4,7 @@
 #include "adaiso/Mesh.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
-#include "adaiso/detail/TargetLengthMapping.hpp"
+#include "adaiso/detail/TargetFaceSizing.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -158,7 +158,7 @@ bool containsPointNear(const adaiso::Mesh& mesh, const Eigen::Vector3d& point, d
 adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, double omega = 0.15) {
   adaiso::AdaIsoConfig config;
   config.variant = adaiso::Variant::Code;
-  config.mesh_scale = 10.0;
+  config.target_faces = 1;
   config.global_iterations = 1;
   config.max_split_passes = 0;
   config.max_collapse_passes = 1;
@@ -405,35 +405,32 @@ void testTargetLengthFieldQueries() {
   assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.5);
 }
 
-void testPercentileTargetLengthMapping() {
-  std::vector<double> curvature;
-  for (int i = 0; i <= 20; ++i) {
-    curvature.push_back(static_cast<double>(i));
-  }
-  const auto lengths = adaiso::detail::percentileTargetLengths(curvature, 2.0, 1.0, 0.6, 1.8, 2.0);
-  assert(lengths.size() == curvature.size());
-  assertNear(lengths[0], 3.6);
-  assertNear(lengths[1], 3.6);
-  assertNear(lengths[10], 1.8);
-  assertNear(lengths[19], 1.2);
-  assertNear(lengths[20], 1.2);
+void testTargetFaceCurvatureSizing() {
+  const adaiso::Mesh triangle = makeSingleTriangle();
+  const double mean_length = adaiso::meanEdgeLength(triangle);
+  const auto varying = adaiso::detail::targetFaceCurvatureLengths(
+      triangle,
+      {1.0, 4.0, 16.0},
+      1,
+      mean_length);
+  assert(varying.target_lengths.size() == triangle.vertexCount());
+  assert(varying.target_lengths[0] > varying.target_lengths[1]);
+  assert(varying.target_lengths[1] > varying.target_lengths[2]);
+  assertNear(varying.estimated_faces, 1.0, 1e-9);
+  assertNear(
+      adaiso::detail::estimateTargetFaceCount(triangle, varying.target_lengths),
+      varying.estimated_faces,
+      1e-12);
 
-  const double q05 = 1.0;
-  const double q95 = 19.0;
-  const double t = (10.0 - q05) / (q95 - q05);
-  const double expected_mid = 1.2 + (3.6 - 1.2) * std::pow(1.0 - t, 2.0);
-  assertNear(lengths[10], expected_mid);
-
-  const auto constant = adaiso::detail::percentileTargetLengths({5.0, 5.0, 5.0}, 2.0, 1.5, 0.6, 1.8, 2.0);
-  assert(constant.size() == 3);
-  for (double value : constant) {
-    assertNear(value, 3.0);
-  }
-
-  const auto monotonic = adaiso::detail::percentileTargetLengths({0.0, 2.0, 4.0, 8.0}, 1.0, 1.0, 0.6, 1.8, 2.0);
-  for (std::size_t i = 1; i < monotonic.size(); ++i) {
-    assert(monotonic[i - 1] >= monotonic[i]);
-  }
+  const auto constant = adaiso::detail::targetFaceCurvatureLengths(
+      triangle,
+      {5.0, 5.0, 5.0},
+      1,
+      mean_length);
+  assert(constant.target_lengths.size() == triangle.vertexCount());
+  assertNear(constant.target_lengths[0], constant.target_lengths[1], 1e-12);
+  assertNear(constant.target_lengths[1], constant.target_lengths[2], 1e-12);
+  assertNear(constant.estimated_faces, 1.0, 1e-9);
 
   auto expect_throw = [](auto&& fn) {
     bool threw = false;
@@ -446,34 +443,32 @@ void testPercentileTargetLengthMapping() {
   };
 
   expect_throw([] {
-    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.0, 1.8, 2.0);
+    (void)adaiso::detail::targetFaceCurvatureLengths(makeSingleTriangle(), {1.0, 2.0}, 1, 1.0);
   });
   expect_throw([] {
-    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.6, 0.0, 2.0);
+    (void)adaiso::detail::targetFaceCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, std::numeric_limits<double>::infinity(), 2.0},
+        1,
+        1.0);
   });
   expect_throw([] {
-    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 2.0, 1.0, 2.0);
+    (void)adaiso::detail::targetFaceCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        0,
+        1.0);
   });
   expect_throw([] {
-    (void)adaiso::detail::percentileTargetLengths(
-        {0.0, std::numeric_limits<double>::infinity()},
-        1.0,
-        1.0,
-        0.6,
-        1.8,
-        2.0);
+    (void)adaiso::detail::targetFaceCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        1,
+        0.0);
   });
   expect_throw([] {
-    (void)adaiso::detail::percentileTargetLengths({0.0, 1.0}, 1.0, 1.0, 0.6, 1.8, 0.0);
-  });
-  expect_throw([] {
-    (void)adaiso::detail::percentileTargetLengths(
-        {0.0, 1.0},
-        1.0,
-        1.0,
-        0.6,
-        1.8,
-        std::numeric_limits<double>::infinity());
+    adaiso::Mesh empty;
+    (void)adaiso::detail::targetFaceCurvatureLengths(empty, {}, 1, 1.0);
   });
 }
 
@@ -542,7 +537,6 @@ void testRemeshSmoke() {
   const auto input_summary = adaiso::summarizeMesh(input);
   adaiso::AdaIsoConfig config;
   config.variant = adaiso::Variant::Code;
-  config.mesh_scale = 0.8;
   config.global_iterations = 2;
   config.preprocess = true;
   config.verbose = false;
@@ -828,7 +822,7 @@ void testTargetFieldConfigValidation() {
   }
   assert(threw);
 
-  auto assert_invalid_target_config = [](adaiso::AdaIsoConfig config) {
+  auto assert_invalid_config = [](adaiso::AdaIsoConfig config) {
     config.verbose = false;
     adaiso::AdaIsoRemesher remesher(config);
     bool invalid_threw = false;
@@ -842,39 +836,13 @@ void testTargetFieldConfigValidation() {
 
   {
     adaiso::AdaIsoConfig config;
-    config.target_min_factor = 0.0;
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
-    config.target_max_factor = 0.0;
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
-    config.target_min_factor = 2.0;
-    config.target_max_factor = 1.0;
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
-    config.target_size_gamma = 0.0;
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
-    config.target_size_gamma = std::numeric_limits<double>::infinity();
-    assert_invalid_target_config(config);
-  }
-  {
-    adaiso::AdaIsoConfig config;
     config.collapse_feature_omega = -0.1;
-    assert_invalid_target_config(config);
+    assert_invalid_config(config);
   }
   {
     adaiso::AdaIsoConfig config;
     config.collapse_feature_omega = std::numeric_limits<double>::infinity();
-    assert_invalid_target_config(config);
+    assert_invalid_config(config);
   }
 }
 
@@ -884,7 +852,7 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
 
   adaiso::AdaIsoConfig config;
   config.variant = adaiso::Variant::Code;
-  config.mesh_scale = 10.0;
+  config.target_faces = 1;
   config.global_iterations = 1;
   config.max_split_passes = 0;
   config.max_collapse_passes = 1;
@@ -1023,7 +991,7 @@ int main() {
   testCsfScreenedConstantField();
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
-  testPercentileTargetLengthMapping();
+  testTargetFaceCurvatureSizing();
   testEdgeRatioStats();
   testCurvatureModeParsing();
   testRobustMeanCurvatureRemeshInitialization();

@@ -51,13 +51,10 @@ class TargetLengthField {
 };
 
 struct AdaIsoConfig {
-  double mesh_scale = 1.0;
   Variant variant = Variant::Code;
   CurvatureMode curvature_mode = CurvatureMode::RobustMean;
   double csf_smoothing_alpha = 2.0;
-  double target_min_factor = 0.6;
-  double target_max_factor = 1.8;
-  double target_size_gamma = 2.0;
+  std::size_t target_faces = 0;
   std::string target_field_export_dir;
   std::string iteration_mesh_export_dir;
   std::string stage_mesh_export_dir;
@@ -130,7 +127,7 @@ class AdaIsoRemesher {
   };
 
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
-  void buildTargetLengths(const Mesh& mesh);
+  void buildTargetLengths(const Mesh& mesh, std::size_t target_faces);
   [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
   [[nodiscard]] std::vector<double> solveCsf(
       const Mesh& mesh,

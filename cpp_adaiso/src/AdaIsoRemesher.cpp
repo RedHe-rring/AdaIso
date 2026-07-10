@@ -5,7 +5,7 @@
 #include "adaiso/KDTree.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
-#include "adaiso/detail/TargetLengthMapping.hpp"
+#include "adaiso/detail/TargetFaceSizing.hpp"
 
 #include <Eigen/Geometry>
 
@@ -62,6 +62,11 @@ constexpr double kRobustMeanCotMax = 10.0;
 constexpr double kRobustMeanAreaFloorFactor = 1e-8;
 constexpr double kRelocationFeatureEps = 1e-12;
 constexpr double kRelocationZeta = 0.5;
+constexpr double kTargetKappaMin = 1e-12;
+constexpr double kTargetMinEdgeFactor = 0.05;
+constexpr double kTargetMaxEdgeFactor = 5.0;
+constexpr int kTargetLambdaBisectionIterations = 64;
+constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -868,72 +873,123 @@ void writeTargetFieldDiagnostics(
 
 namespace detail {
 
-std::vector<double> percentileTargetLengths(
-    const std::vector<double>& curvature,
-    double base_length,
-    double mesh_scale,
-    double target_min_factor,
-    double target_max_factor,
-    double target_size_gamma) {
-  if (curvature.empty()) {
-    return {};
+double estimateTargetFaceCount(
+    const Mesh& mesh,
+    const std::vector<double>& target_lengths) {
+  mesh.validate();
+  if (mesh.vertices.empty() || mesh.faces.empty()) {
+    throw std::runtime_error("target face estimate requires a non-empty mesh");
   }
-  if (base_length <= 0.0 || !std::isfinite(base_length)) {
-    throw std::runtime_error("target base length must be positive");
-  }
-  if (mesh_scale <= 0.0 || !std::isfinite(mesh_scale)) {
-    throw std::runtime_error("mesh scale must be positive");
-  }
-  if (target_min_factor <= 0.0 || !std::isfinite(target_min_factor)) {
-    throw std::runtime_error("target min factor must be positive");
-  }
-  if (target_max_factor <= 0.0 || !std::isfinite(target_max_factor)) {
-    throw std::runtime_error("target max factor must be positive");
-  }
-  if (target_min_factor > target_max_factor) {
-    throw std::runtime_error("target min factor must not exceed target max factor");
-  }
-  if (target_size_gamma <= 0.0 || !std::isfinite(target_size_gamma)) {
-    throw std::runtime_error("target size gamma must be positive");
+  if (target_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target face estimate length size mismatch");
   }
 
-  for (double value : curvature) {
-    if (!std::isfinite(value)) {
-      throw std::runtime_error("curvature values must be finite");
+  double estimate = 0.0;
+  for (const auto& face : mesh.faces) {
+    const double area = triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
+    if (!std::isfinite(area) || area <= 0.0) {
+      throw std::runtime_error("target face estimate requires positive finite face areas");
     }
+    const double h =
+        (target_lengths[static_cast<std::size_t>(face[0])] +
+         target_lengths[static_cast<std::size_t>(face[1])] +
+         target_lengths[static_cast<std::size_t>(face[2])]) /
+        3.0;
+    if (!std::isfinite(h) || h <= 0.0) {
+      throw std::runtime_error("target face estimate requires positive finite lengths");
+    }
+    estimate += area / (kEquilateralAreaFactor * h * h);
+  }
+  if (!std::isfinite(estimate)) {
+    throw std::runtime_error("target face estimate produced a non-finite value");
+  }
+  return estimate;
+}
+
+TargetFaceSizingResult targetFaceCurvatureLengths(
+    const Mesh& mesh,
+    const std::vector<double>& diffused_curvature,
+    std::size_t target_faces,
+    double mean_edge_length) {
+  mesh.validate();
+  if (mesh.vertices.empty() || mesh.faces.empty()) {
+    throw std::runtime_error("target face sizing requires a non-empty mesh");
+  }
+  if (diffused_curvature.size() != mesh.vertices.size()) {
+    throw std::runtime_error("target face sizing curvature size mismatch");
+  }
+  if (target_faces == 0) {
+    throw std::runtime_error("target face count must be positive");
+  }
+  if (!std::isfinite(mean_edge_length) || mean_edge_length <= 0.0) {
+    throw std::runtime_error("target face sizing requires a positive mean edge length");
   }
 
-  const double scaled_base = base_length * mesh_scale;
-  if (scaled_base <= 0.0 || !std::isfinite(scaled_base)) {
-    throw std::runtime_error("scaled target base length must be positive");
+  std::vector<double> safe_kappa(diffused_curvature.size(), kTargetKappaMin);
+  double max_kappa = kTargetKappaMin;
+  for (std::size_t i = 0; i < diffused_curvature.size(); ++i) {
+    const double value = diffused_curvature[i];
+    if (!std::isfinite(value)) {
+      throw std::runtime_error("target face sizing curvature values must be finite");
+    }
+    safe_kappa[i] = std::max(value, kTargetKappaMin);
+    max_kappa = std::max(max_kappa, safe_kappa[i]);
   }
 
-  const double h_min = scaled_base * target_min_factor;
-  const double h_max = scaled_base * target_max_factor;
-  if (h_min <= 0.0 || h_max <= 0.0 || !std::isfinite(h_min) || !std::isfinite(h_max)) {
-    throw std::runtime_error("target length bounds must be positive");
+  TargetFaceSizingResult result;
+  result.h_min = kTargetMinEdgeFactor * mean_edge_length;
+  result.h_max = kTargetMaxEdgeFactor * mean_edge_length;
+  result.target_faces = target_faces;
+  if (!std::isfinite(result.h_min) || !std::isfinite(result.h_max) ||
+      result.h_min <= 0.0 || result.h_max <= result.h_min) {
+    throw std::runtime_error("target face sizing produced invalid length bounds");
   }
 
-  std::vector<double> result(curvature.size(), std::clamp(scaled_base, h_min, h_max));
-  std::vector<double> sorted_curvature = curvature;
-  std::sort(sorted_curvature.begin(), sorted_curvature.end());
-  const double q05 = quantileOfSorted(sorted_curvature, 0.05);
-  const double q95 = quantileOfSorted(sorted_curvature, 0.95);
-  const double denom = q95 - q05;
-  if (!(q95 > q05) || denom <= kEps || !std::isfinite(denom)) {
+  auto lengths_for_lambda = [&](double lambda) {
+    std::vector<double> lengths(safe_kappa.size(), result.h_min);
+    for (std::size_t i = 0; i < safe_kappa.size(); ++i) {
+      const double h = lambda / std::sqrt(safe_kappa[i]);
+      lengths[i] = std::clamp(h, result.h_min, result.h_max);
+    }
+    return lengths;
+  };
+
+  const auto min_lengths = lengths_for_lambda(0.0);
+  const double max_density_faces = estimateTargetFaceCount(mesh, min_lengths);
+  const double hi_lambda = result.h_max * std::sqrt(max_kappa);
+  const auto max_lengths = lengths_for_lambda(hi_lambda);
+  const double min_density_faces = estimateTargetFaceCount(mesh, max_lengths);
+  const double target = static_cast<double>(target_faces);
+
+  if (target >= max_density_faces) {
+    result.lambda = 0.0;
+    result.target_lengths = min_lengths;
+    result.estimated_faces = max_density_faces;
+    return result;
+  }
+  if (target <= min_density_faces) {
+    result.lambda = hi_lambda;
+    result.target_lengths = max_lengths;
+    result.estimated_faces = min_density_faces;
     return result;
   }
 
-  for (std::size_t i = 0; i < curvature.size(); ++i) {
-    const double t = std::clamp((curvature[i] - q05) / denom, 0.0, 1.0);
-    const double response = std::pow(1.0 - t, target_size_gamma);
-    const double h = h_min + (h_max - h_min) * response;
-    if (!std::isfinite(h) || h <= 0.0) {
-      throw std::runtime_error("computed target length must be positive");
+  double lo = 0.0;
+  double hi = hi_lambda;
+  for (int iter = 0; iter < kTargetLambdaBisectionIterations; ++iter) {
+    const double mid = 0.5 * (lo + hi);
+    const auto lengths = lengths_for_lambda(mid);
+    const double estimate = estimateTargetFaceCount(mesh, lengths);
+    if (estimate > target) {
+      lo = mid;
+    } else {
+      hi = mid;
     }
-    result[i] = h;
   }
 
+  result.lambda = 0.5 * (lo + hi);
+  result.target_lengths = lengths_for_lambda(result.lambda);
+  result.estimated_faces = estimateTargetFaceCount(mesh, result.target_lengths);
   return result;
 }
 
@@ -1134,18 +1190,6 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.csf_smoothing_alpha <= 0.0 || !std::isfinite(config_.csf_smoothing_alpha)) {
     throw std::runtime_error("CSF smoothing alpha must be positive");
   }
-  if (config_.target_min_factor <= 0.0 || !std::isfinite(config_.target_min_factor)) {
-    throw std::runtime_error("target min factor must be positive");
-  }
-  if (config_.target_max_factor <= 0.0 || !std::isfinite(config_.target_max_factor)) {
-    throw std::runtime_error("target max factor must be positive");
-  }
-  if (config_.target_min_factor > config_.target_max_factor) {
-    throw std::runtime_error("target min factor must not exceed target max factor");
-  }
-  if (config_.target_size_gamma <= 0.0 || !std::isfinite(config_.target_size_gamma)) {
-    throw std::runtime_error("target size gamma must be positive");
-  }
   if (config_.max_flip_dihedral_degrees <= 0.0 || config_.max_flip_dihedral_degrees > 180.0 ||
       !std::isfinite(config_.max_flip_dihedral_degrees)) {
     throw std::runtime_error("max flip dihedral angle must be finite and in (0, 180]");
@@ -1156,6 +1200,8 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
+  const std::size_t effective_target_faces =
+      config_.target_faces > 0 ? config_.target_faces : mesh.faceCount();
   // TODO: 入口添加一个开关，用于输出mesh清理后的结果
 
 
@@ -1173,7 +1219,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     }
   }
 
-  buildTargetLengths(mesh);
+  buildTargetLengths(mesh, effective_target_faces);
   stats_.iterations.reserve(static_cast<std::size_t>(std::max(0, config_.global_iterations)));
   if (!config_.iteration_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / "iter000.ply", mesh);
@@ -1269,20 +1315,15 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
   return mesh;
 }
 
-void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
+void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_faces) {
   const double base_len = meanEdgeLength(mesh);
   const auto raw_curvature = computeRawCurvatureField(mesh, config_.curvature_mode);
   const auto curvature = solveCsf(mesh, raw_curvature);
-  const auto target_lengths = detail::percentileTargetLengths(
+  const auto sizing = detail::targetFaceCurvatureLengths(
+      mesh,
       curvature,
-      base_len,
-      config_.mesh_scale,
-      config_.target_min_factor,
-      config_.target_max_factor,
-      config_.target_size_gamma);
-  const double scaled_base = base_len * config_.mesh_scale;
-  const double min_length = scaled_base * config_.target_min_factor;
-  const double max_length = scaled_base * config_.target_max_factor;
+      target_faces,
+      base_len);
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
@@ -1290,17 +1331,20 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
         mesh,
         {raw_curvature,
          curvature,
-         target_lengths,
+         sizing.target_lengths,
          base_len,
-         min_length,
-         max_length});
+         sizing.h_min,
+         sizing.h_max});
   }
 
-  target_field_.build(mesh, target_lengths);
+  target_field_.build(mesh, sizing.target_lengths);
 
-  if (config_.verbose && !target_lengths.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(target_lengths.begin(), target_lengths.end());
+  if (config_.verbose && !sizing.target_lengths.empty()) {
+    const auto [min_it, max_it] = std::minmax_element(sizing.target_lengths.begin(), sizing.target_lengths.end());
     std::cerr << "target length: base=" << base_len
+              << ", target_faces=" << target_faces
+              << ", estimated_faces=" << sizing.estimated_faces
+              << ", lambda=" << sizing.lambda
               << ", min=" << *min_it
               << ", max=" << *max_it << "\n";
   }
