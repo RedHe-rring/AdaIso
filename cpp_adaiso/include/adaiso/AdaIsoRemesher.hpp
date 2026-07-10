@@ -76,6 +76,8 @@ struct AdaIsoConfig {
   double mls_tolerance = 1e-4;
   bool avoid_obtuse_flip = true;
   double max_flip_dihedral_degrees = 45.0;
+  bool feature_aware_collapse = true;
+  double collapse_feature_omega = 0.15;
   double min_quality_after_collapse = 0.05;
   bool verbose = true;
 
@@ -139,8 +141,17 @@ class AdaIsoRemesher {
       int b,
       const std::vector<std::unordered_set<int>>& neigh,
       const EdgeFaceMap& e2f,
-      const std::vector<std::vector<int>>& vf) const;
-  [[nodiscard]] int collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& selected) const;
+      const std::vector<std::vector<int>>& vf,
+      const std::vector<double>& feature_strengths) const;
+  [[nodiscard]] Eigen::Vector3d collapsePoint(
+      const Mesh& mesh,
+      int a,
+      int b,
+      const std::vector<double>& feature_strengths) const;
+  [[nodiscard]] int collapseEdgesBatch(
+      Mesh& mesh,
+      const std::vector<Edge>& selected,
+      const std::vector<double>& feature_strengths) const;
   [[nodiscard]] int flipEdges(Mesh& mesh);
   [[nodiscard]] bool flipImprovesValence(
       const std::vector<int>& valence,

@@ -113,6 +113,29 @@ adaiso::Mesh makeTwoDisconnectedOctahedra() {
   return mesh;
 }
 
+adaiso::Mesh makeFeatureCollapseMesh() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {0.0, 0.0, 0.0},
+      {0.08, 0.0, 0.0},
+      {0.04, 1.0, 0.0},
+      {0.04, -1.0, 0.0},
+      {-1.0, 0.0, 0.0},
+      {0.08, 0.0, 2.5},
+  };
+  mesh.faces = {
+      {0, 1, 2},
+      {0, 3, 1},
+      {0, 2, 4},
+      {0, 4, 3},
+      {1, 5, 2},
+      {1, 3, 5},
+      {2, 5, 4},
+      {3, 4, 5},
+  };
+  return mesh;
+}
+
 void assertNear(double actual, double expected, double eps = 1e-10) {
   assert(std::abs(actual - expected) <= eps);
 }
@@ -121,6 +144,38 @@ void assertFiniteValues(const std::vector<double>& values) {
   for (double value : values) {
     assert(std::isfinite(value));
   }
+}
+
+bool containsPointNear(const adaiso::Mesh& mesh, const Eigen::Vector3d& point, double eps = 1e-9) {
+  for (const auto& vertex : mesh.vertices) {
+    if ((vertex - point).norm() <= eps) {
+      return true;
+    }
+  }
+  return false;
+}
+
+adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, double omega = 0.15) {
+  adaiso::AdaIsoConfig config;
+  config.variant = adaiso::Variant::Code;
+  config.mesh_scale = 10.0;
+  config.global_iterations = 1;
+  config.max_split_passes = 0;
+  config.max_collapse_passes = 1;
+  config.max_flip_passes = 0;
+  config.preprocess = false;
+  config.project_to_surface = false;
+  config.min_quality_after_collapse = 0.0;
+  config.feature_aware_collapse = feature_aware;
+  config.collapse_feature_omega = omega;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  adaiso::Mesh output = remesher.remesh(input);
+  output.validate();
+  assert(remesher.stats().iterations.size() == 1);
+  assert(remesher.stats().iterations.front().collapse_count == 1);
+  return output;
 }
 
 void assertSymmetricPositive(const adaiso::detail::CsfAdjacency& adjacency) {
@@ -797,6 +852,16 @@ void testTargetFieldConfigValidation() {
     config.target_size_gamma = std::numeric_limits<double>::infinity();
     assert_invalid_target_config(config);
   }
+  {
+    adaiso::AdaIsoConfig config;
+    config.collapse_feature_omega = -0.1;
+    assert_invalid_target_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.collapse_feature_omega = std::numeric_limits<double>::infinity();
+    assert_invalid_target_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -821,6 +886,25 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
   assert(output.vertexCount() + 2 <= input.vertexCount());
   assert(output.faceCount() > 0);
   assert(remesher.stats().csf_solver_success);
+}
+
+void testFeatureAwareCollapsePlacement() {
+  const adaiso::Mesh input = makeFeatureCollapseMesh();
+  input.validate();
+
+  const Eigen::Vector3d midpoint = 0.5 * (input.vertices[0] + input.vertices[1]);
+  const adaiso::Mesh midpoint_output = runOneCollapse(input, false);
+  assert(containsPointNear(midpoint_output, midpoint));
+  assert(!containsPointNear(midpoint_output, input.vertices[0]));
+  assert(!containsPointNear(midpoint_output, input.vertices[1]));
+
+  const adaiso::Mesh feature_output = runOneCollapse(input, true);
+  assert(!containsPointNear(feature_output, midpoint));
+  assert(containsPointNear(feature_output, input.vertices[0]) ||
+         containsPointNear(feature_output, input.vertices[1]));
+
+  const adaiso::Mesh high_omega_output = runOneCollapse(input, true, 1000.0);
+  assert(containsPointNear(high_omega_output, midpoint));
 }
 
 void testRemeshEdgeCases() {
@@ -937,6 +1021,7 @@ int main() {
   testAllStageMeshExport();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
+  testFeatureAwareCollapsePlacement();
   testRemeshEdgeCases();
   testAreaSampledChamferDistance();
   return 0;

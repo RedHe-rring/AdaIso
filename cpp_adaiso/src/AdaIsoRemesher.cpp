@@ -91,6 +91,83 @@ double faceNormalAngle(const std::vector<Eigen::Vector3d>& vertices, const Eigen
   return std::acos(std::clamp(n0.dot(n1), -1.0, 1.0));
 }
 
+double cornerAngle(
+    const std::vector<Eigen::Vector3d>& vertices,
+    const Eigen::Vector3i& face,
+    int corner) {
+  const Eigen::Vector3d& p = vertices[static_cast<std::size_t>(face[corner])];
+  const Eigen::Vector3d& q = vertices[static_cast<std::size_t>(face[(corner + 1) % 3])];
+  const Eigen::Vector3d& r = vertices[static_cast<std::size_t>(face[(corner + 2) % 3])];
+  const Eigen::Vector3d u = q - p;
+  const Eigen::Vector3d v = r - p;
+  const double denom = u.norm() * v.norm();
+  if (denom <= kEps || !std::isfinite(denom)) {
+    return 0.0;
+  }
+  return std::acos(std::clamp(u.dot(v) / denom, -1.0, 1.0));
+}
+
+std::vector<double> computeVertexFeatureStrengths(const Mesh& mesh) {
+  const std::size_t n = mesh.vertexCount();
+  std::vector<double> theta_sum(n, 0.0);
+  for (const auto& face : mesh.faces) {
+    for (int corner = 0; corner < 3; ++corner) {
+      theta_sum[static_cast<std::size_t>(face[corner])] += cornerAngle(mesh.vertices, face, corner);
+    }
+  }
+
+  const auto e2f = edgeFaces(mesh);
+  std::unordered_set<int> boundary;
+  std::vector<double> max_dihedral(n, 0.0);
+  for (const auto& item : e2f) {
+    const Edge& edge = item.first;
+    const auto& incident = item.second;
+    if (incident.size() == 1) {
+      boundary.insert(edge.first);
+      boundary.insert(edge.second);
+      continue;
+    }
+    if (incident.size() != 2) {
+      continue;
+    }
+    const int f0 = incident[0];
+    const int f1 = incident[1];
+    if (f0 < 0 || f1 < 0 || static_cast<std::size_t>(f0) >= mesh.faces.size() ||
+        static_cast<std::size_t>(f1) >= mesh.faces.size()) {
+      continue;
+    }
+    const double angle = faceNormalAngle(
+        mesh.vertices,
+        mesh.faces[static_cast<std::size_t>(f0)],
+        mesh.faces[static_cast<std::size_t>(f1)]);
+    if (!std::isfinite(angle)) {
+      continue;
+    }
+    max_dihedral[static_cast<std::size_t>(edge.first)] =
+        std::max(max_dihedral[static_cast<std::size_t>(edge.first)], angle);
+    max_dihedral[static_cast<std::size_t>(edge.second)] =
+        std::max(max_dihedral[static_cast<std::size_t>(edge.second)], angle);
+  }
+
+  auto tau = [](double value) {
+    if (!std::isfinite(value) || value <= 0.0) {
+      return 0.0;
+    }
+    return std::min(kPi, 2.0 * value);
+  };
+
+  std::vector<double> strengths(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double reference_angle =
+        boundary.find(static_cast<int>(i)) == boundary.end() ? 2.0 * kPi : kPi;
+    const double angle_defect = reference_angle - theta_sum[i];
+    const double k_feature = tau(std::abs(angle_defect));
+    const double e_feature = tau(max_dihedral[i]);
+    strengths[i] = (k_feature + 1.0) * (e_feature + 1.0) - 1.0;
+  }
+  return strengths;
+}
+
 Eigen::Vector3i orientTriangle(
     Eigen::Vector3i tri,
     const std::vector<Eigen::Vector3d>& vertices,
@@ -1071,6 +1148,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
       !std::isfinite(config_.max_flip_dihedral_degrees)) {
     throw std::runtime_error("max flip dihedral angle must be finite and in (0, 180]");
   }
+  if (config_.collapse_feature_omega < 0.0 || !std::isfinite(config_.collapse_feature_omega)) {
+    throw std::runtime_error("collapse feature omega must be finite and non-negative");
+  }
 
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
@@ -1401,6 +1481,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     const auto e2f = edgeFaces(mesh);
     const auto neigh = vertexNeighbors(mesh);
     const auto vf = vertexFaces(mesh);
+    const auto feature_strengths = computeVertexFeatureStrengths(mesh);
     std::vector<std::tuple<double, double, int, int>> candidates;
     for (const auto& item : e2f) {
       const int a = item.first.first;
@@ -1450,7 +1531,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
       if (conflicts) {
         continue;
       }
-      if (!collapseValid(mesh, a, b, neigh, e2f, vf)) {
+      if (!collapseValid(mesh, a, b, neigh, e2f, vf, feature_strengths)) {
         continue;
       }
       selected.push_back(makeEdge(a, b));
@@ -1459,7 +1540,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     if (selected.empty()) {
       break;
     }
-    total += collapseEdgesBatch(mesh, selected);
+    total += collapseEdgesBatch(mesh, selected, feature_strengths);
   }
   return total;
 }
@@ -1470,8 +1551,9 @@ bool AdaIsoRemesher::collapseValid(
     int b,
     const std::vector<std::unordered_set<int>>& neigh,
     const EdgeFaceMap& e2f,
-    const std::vector<std::vector<int>>& vf) const {
-  const Eigen::Vector3d midpoint = 0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]);
+    const std::vector<std::vector<int>>& vf,
+    const std::vector<double>& feature_strengths) const {
+  const Eigen::Vector3d candidate = collapsePoint(mesh, a, b, feature_strengths);
   const auto incident_it = e2f.find(makeEdge(a, b));
   if (incident_it == e2f.end()) {
     return false;
@@ -1506,8 +1588,8 @@ bool AdaIsoRemesher::collapseValid(
     return false;
   }
   for (int n : related) {
-    const double length = (midpoint - mesh.vertices[static_cast<std::size_t>(n)]).norm();
-    const double target = std::min(targetAt(midpoint), targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
+    const double length = (candidate - mesh.vertices[static_cast<std::size_t>(n)]).norm();
+    const double target = std::min(targetAt(candidate), targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
     if (length > config_.splitFactor() * target) {
       return false;
     }
@@ -1526,7 +1608,7 @@ bool AdaIsoRemesher::collapseValid(
     bool checked_any = false;
 
     auto pointAt = [&](int v) -> Eigen::Vector3d {
-      return v == keep ? midpoint : mesh.vertices[static_cast<std::size_t>(v)];
+      return v == keep ? candidate : mesh.vertices[static_cast<std::size_t>(v)];
     };
 
     for (int fi : affected) {
@@ -1560,11 +1642,39 @@ bool AdaIsoRemesher::collapseValid(
   return true;
 }
 
-int AdaIsoRemesher::collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& selected) const {
+Eigen::Vector3d AdaIsoRemesher::collapsePoint(
+    const Mesh& mesh,
+    int a,
+    int b,
+    const std::vector<double>& feature_strengths) const {
+  const Eigen::Vector3d midpoint =
+      0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]);
+  if (!config_.feature_aware_collapse || feature_strengths.size() != mesh.vertices.size()) {
+    return midpoint;
+  }
+
+  const double fa = feature_strengths[static_cast<std::size_t>(a)];
+  const double fb = feature_strengths[static_cast<std::size_t>(b)];
+  if (!std::isfinite(fa) || !std::isfinite(fb)) {
+    return midpoint;
+  }
+
+  const double fmax = std::max(fa, fb);
+  constexpr double kFeatureEps = 1e-12;
+  if (fmax <= kFeatureEps || std::abs(fa - fb) < config_.collapse_feature_omega * fmax) {
+    return midpoint;
+  }
+  return fa > fb ? mesh.vertices[static_cast<std::size_t>(a)] : mesh.vertices[static_cast<std::size_t>(b)];
+}
+
+int AdaIsoRemesher::collapseEdgesBatch(
+    Mesh& mesh,
+    const std::vector<Edge>& selected,
+    const std::vector<double>& feature_strengths) const {
   struct CollapseOp {
     int keep = 0;
     int remove = 0;
-    Eigen::Vector3d midpoint = Eigen::Vector3d::Zero();
+    Eigen::Vector3d point = Eigen::Vector3d::Zero();
   };
 
   std::vector<CollapseOp> ops;
@@ -1581,8 +1691,7 @@ int AdaIsoRemesher::collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& sele
       continue;
     }
     replacements.emplace(remove, keep);
-    ops.push_back({keep, remove,
-        0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)])});
+    ops.push_back({keep, remove, collapsePoint(mesh, a, b, feature_strengths)});
   }
 
   if (ops.empty()) {
@@ -1590,7 +1699,7 @@ int AdaIsoRemesher::collapseEdgesBatch(Mesh& mesh, const std::vector<Edge>& sele
   }
 
   for (const auto& op : ops) {
-    mesh.vertices[static_cast<std::size_t>(op.keep)] = op.midpoint;
+    mesh.vertices[static_cast<std::size_t>(op.keep)] = op.point;
   }
   for (auto& face : mesh.faces) {
     for (int k = 0; k < 3; ++k) {
