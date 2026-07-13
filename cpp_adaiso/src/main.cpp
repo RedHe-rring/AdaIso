@@ -1,6 +1,7 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 #include "adaiso/IO.hpp"
 #include "adaiso/Metrics.hpp"
+#include "adaiso/detail/TargetFaceSizing.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -25,6 +26,7 @@ void printUsage(std::ostream& out) {
       << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-faces <n>         Target face budget. Default: cleaned input face count\n"
+      << "  --target-lambda-bisection-iters <n> Lambda bisection iterations. Default: 64\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
@@ -190,10 +192,13 @@ std::string buildSummaryJson(
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
   out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
-  out << "    \"target_size_mapping\": \"target_faces_inverse_sqrt_diffused_curvature\",\n";
+  out << "    \"target_size_mapping\": \"target_faces_inverse_power_diffused_curvature\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_faces\": "
       << (config.target_faces > 0 ? config.target_faces : input_summary.faces) << ",\n";
+  out << "    \"target_curvature_exponent\": " << adaiso::detail::kTargetCurvatureExponent << ",\n";
+  out << "    \"target_lambda_bisection_iterations\": "
+      << config.target_lambda_bisection_iterations << ",\n";
   if (!config.target_field_export_dir.empty()) {
     out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
   }
@@ -285,6 +290,8 @@ int main(int argc, char** argv) {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-faces") {
         config.target_faces = parsePositiveSize(requireValue(i, argc, argv, arg), arg);
+      } else if (arg == "--target-lambda-bisection-iters") {
+        config.target_lambda_bisection_iterations = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-iteration-meshes") {
@@ -333,6 +340,9 @@ int main(int argc, char** argv) {
     }
     if (config.csf_smoothing_alpha <= 0.0 || !std::isfinite(config.csf_smoothing_alpha)) {
       throw std::runtime_error("--csf-alpha must be positive");
+    }
+    if (config.target_lambda_bisection_iterations < 0) {
+      throw std::runtime_error("--target-lambda-bisection-iters must be non-negative");
     }
     if (config.collapse_feature_omega < 0.0 || !std::isfinite(config.collapse_feature_omega)) {
       throw std::runtime_error("--collapse-feature-omega must be finite and non-negative");

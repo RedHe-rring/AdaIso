@@ -15,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -153,6 +154,49 @@ bool containsPointNear(const adaiso::Mesh& mesh, const Eigen::Vector3d& point, d
     }
   }
   return false;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  assert(in);
+  std::ostringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+
+double jsonNumberInScale(const std::string& text, const std::string& scale_name, const std::string& key) {
+  const std::string scale_token = "\"" + scale_name + "\"";
+  const std::size_t scale_pos = text.find(scale_token);
+  assert(scale_pos != std::string::npos);
+  const std::string key_token = "\"" + key + "\"";
+  const std::size_t key_pos = text.find(key_token, scale_pos);
+  assert(key_pos != std::string::npos);
+  const std::size_t colon_pos = text.find(':', key_pos);
+  assert(colon_pos != std::string::npos);
+  return std::stod(text.substr(colon_pos + 1));
+}
+
+std::vector<double> readVerticesCsvColumn(const std::filesystem::path& path, int column_index) {
+  std::ifstream in(path);
+  assert(in);
+  std::string line;
+  std::getline(in, line);
+  std::vector<double> values;
+  while (std::getline(in, line)) {
+    std::stringstream row(line);
+    std::string cell;
+    for (int column = 0; column <= column_index; ++column) {
+      std::getline(row, cell, ',');
+    }
+    values.push_back(std::stod(cell));
+  }
+  return values;
+}
+
+std::pair<double, double> rangeOf(const std::vector<double>& values) {
+  assert(!values.empty());
+  const auto bounds = std::minmax_element(values.begin(), values.end());
+  return {*bounds.first, *bounds.second};
 }
 
 adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, double omega = 0.15) {
@@ -421,6 +465,13 @@ void testTargetFaceCurvatureSizing() {
       adaiso::detail::estimateTargetFaceCount(triangle, varying.target_lengths),
       varying.estimated_faces,
       1e-12);
+  const auto zero_bisection = adaiso::detail::targetFaceCurvatureLengths(
+      triangle,
+      {1.0, 4.0, 16.0},
+      1,
+      mean_length,
+      0);
+  assert(std::abs(varying.estimated_faces - 1.0) < std::abs(zero_bisection.estimated_faces - 1.0));
 
   const auto constant = adaiso::detail::targetFaceCurvatureLengths(
       triangle,
@@ -465,6 +516,14 @@ void testTargetFaceCurvatureSizing() {
         {1.0, 2.0, 3.0},
         1,
         0.0);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::targetFaceCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        1,
+        1.0,
+        -1);
   });
   expect_throw([] {
     adaiso::Mesh empty;
@@ -620,13 +679,7 @@ void testTargetFieldDiagnosticExport() {
   }
 
   {
-    std::ifstream color_scales(dir / "color_scales.json");
-    std::string color_scales_text;
-    std::string line;
-    while (std::getline(color_scales, line)) {
-      color_scales_text += line;
-      color_scales_text += '\n';
-    }
+    const std::string color_scales_text = readTextFile(dir / "color_scales.json");
     assert(color_scales_text.find("\"raw_curvature_shared\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_shared\"") != std::string::npos);
     assert(color_scales_text.find("\"raw_curvature_independent\"") != std::string::npos);
@@ -640,22 +693,29 @@ void testTargetFieldDiagnosticExport() {
     assert(color_scales_text.find("\"target_h_heat.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h_heat_observed.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"inverted\": true") != std::string::npos);
+    assert(color_scales_text.find("\"normalization\": \"linear_clamp_percentile\"") != std::string::npos);
+    assert(color_scales_text.find("\"clip_low_percentile\": 2") != std::string::npos);
+    assert(color_scales_text.find("\"clip_high_percentile\": 98") != std::string::npos);
+
+    const std::vector<double> raw_curvature = readVerticesCsvColumn(dir / "vertices.csv", 4);
+    const auto raw_range = rangeOf(raw_curvature);
+    const double raw_heat_min = jsonNumberInScale(color_scales_text, "raw_curvature_independent", "min");
+    const double raw_heat_max = jsonNumberInScale(color_scales_text, "raw_curvature_independent", "max");
+    assert(raw_heat_min >= raw_range.first);
+    assert(raw_heat_max <= raw_range.second);
+    assert(raw_heat_min > raw_range.first || raw_heat_max < raw_range.second);
+
+    const double raw_shared_min = jsonNumberInScale(color_scales_text, "raw_curvature_shared", "min");
+    const double raw_shared_max = jsonNumberInScale(color_scales_text, "raw_curvature_shared", "max");
+    const double csf_shared_min = jsonNumberInScale(color_scales_text, "csf_curvature_shared", "min");
+    const double csf_shared_max = jsonNumberInScale(color_scales_text, "csf_curvature_shared", "max");
+    assertNear(raw_shared_min, csf_shared_min);
+    assertNear(raw_shared_max, csf_shared_max);
   }
 
   {
-    std::ifstream vertices(dir / "vertices.csv");
     std::string line;
-    std::getline(vertices, line);
-    std::vector<double> target_h;
-    while (std::getline(vertices, line)) {
-      std::stringstream row(line);
-      std::string cell;
-      for (int column = 0; column < 6; ++column) {
-        std::getline(row, cell, ',');
-      }
-      std::getline(row, cell, ',');
-      target_h.push_back(std::stod(cell));
-    }
+    const std::vector<double> target_h = readVerticesCsvColumn(dir / "vertices.csv", 6);
     assert(!target_h.empty());
     const auto min_it = std::min_element(target_h.begin(), target_h.end());
     const auto max_it = std::max_element(target_h.begin(), target_h.end());

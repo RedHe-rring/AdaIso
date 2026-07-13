@@ -7,6 +7,9 @@
 
 namespace adaiso::detail {
 
+inline constexpr double kTargetCurvatureExponent = 0.75;
+inline constexpr int kDefaultTargetLambdaBisectionIterations = 64;
+
 struct TargetFaceSizingResult {
   std::vector<double> target_lengths;
   double lambda = 0.0;
@@ -24,6 +27,7 @@ struct TargetFaceSizingResult {
     const Mesh& mesh,
     const std::vector<double>& diffused_curvature,
     std::size_t target_faces,
-    double mean_edge_length);
+    double mean_edge_length,
+    int lambda_bisection_iterations = kDefaultTargetLambdaBisectionIterations);
 
 }  // namespace adaiso::detail

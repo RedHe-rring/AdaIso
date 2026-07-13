@@ -65,8 +65,9 @@ constexpr double kRelocationZeta = 0.5;
 constexpr double kTargetKappaMin = 1e-12;
 constexpr double kTargetMinEdgeFactor = 0.05;
 constexpr double kTargetMaxEdgeFactor = 5.0;
-constexpr int kTargetLambdaBisectionIterations = 64;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
+constexpr double kCurvatureHeatClipLowPercentile = 2.0;
+constexpr double kCurvatureHeatClipHighPercentile = 98.0;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -299,6 +300,10 @@ struct TargetFieldStageData {
   double base_length = 0.0;
   double min_length = 0.0;
   double max_length = 0.0;
+  double lambda = 0.0;
+  double estimated_faces = 0.0;
+  std::size_t target_faces = 0;
+  int lambda_bisection_iterations = detail::kDefaultTargetLambdaBisectionIterations;
 };
 
 struct EdgeFieldRecord {
@@ -331,6 +336,29 @@ void writeTextFile(const std::filesystem::path& path, const std::string& text) {
   out << text;
 }
 
+std::pair<double, double> paddedScalarRange(double lo, double hi) {
+  if (!std::isfinite(lo) || !std::isfinite(hi)) {
+    return {0.0, 1.0};
+  }
+  if (hi <= lo) {
+    const double pad = std::max(1.0, std::abs(lo)) * 0.5;
+    return {lo - pad, hi + pad};
+  }
+  return {lo, hi};
+}
+
+std::vector<double> finiteSortedValues(const std::vector<double>& values) {
+  std::vector<double> finite;
+  finite.reserve(values.size());
+  for (double value : values) {
+    if (std::isfinite(value)) {
+      finite.push_back(value);
+    }
+  }
+  std::sort(finite.begin(), finite.end());
+  return finite;
+}
+
 std::pair<double, double> scalarRange(const std::vector<double>& values) {
   double lo = std::numeric_limits<double>::infinity();
   double hi = -std::numeric_limits<double>::infinity();
@@ -341,14 +369,20 @@ std::pair<double, double> scalarRange(const std::vector<double>& values) {
     lo = std::min(lo, value);
     hi = std::max(hi, value);
   }
-  if (!std::isfinite(lo) || !std::isfinite(hi)) {
+  return paddedScalarRange(lo, hi);
+}
+
+std::pair<double, double> percentileScalarRange(
+    const std::vector<double>& values,
+    double low_percentile,
+    double high_percentile) {
+  const std::vector<double> sorted = finiteSortedValues(values);
+  if (sorted.empty()) {
     return {0.0, 1.0};
   }
-  if (hi <= lo) {
-    const double pad = std::max(1.0, std::abs(lo)) * 0.5;
-    return {lo - pad, hi + pad};
-  }
-  return {lo, hi};
+  const double lo = quantileOfSorted(sorted, low_percentile / 100.0);
+  const double hi = quantileOfSorted(sorted, high_percentile / 100.0);
+  return paddedScalarRange(lo, hi);
 }
 
 double normalizedScalar(double value, double lo, double hi) {
@@ -723,6 +757,11 @@ std::string targetFieldStatsJson(
   out << "  \"base_length\": " << data.base_length << ",\n";
   out << "  \"h_min\": " << data.min_length << ",\n";
   out << "  \"h_max\": " << data.max_length << ",\n";
+  out << "  \"target_faces\": " << data.target_faces << ",\n";
+  out << "  \"target_lambda_bisection_iterations\": " << data.lambda_bisection_iterations << ",\n";
+  out << "  \"lambda\": " << data.lambda << ",\n";
+  out << "  \"estimated_faces\": " << data.estimated_faces << ",\n";
+  out << "  \"estimated_faces_error\": " << (data.estimated_faces - static_cast<double>(data.target_faces)) << ",\n";
   out << "  \"observed_h_min\": " << observed_min << ",\n";
   out << "  \"observed_h_max\": " << observed_max << ",\n";
   out << "  \"range_ok\": " << (range_ok ? "true" : "false") << ",\n";
@@ -748,12 +787,16 @@ std::string colorScalesJson(
     double target_h_min,
     double target_h_max,
     double observed_target_h_min,
-    double observed_target_h_max) {
+    double observed_target_h_max,
+    double clip_low_percentile,
+    double clip_high_percentile) {
   std::ostringstream out;
   out << std::setprecision(17);
   out << "{\n";
   out << "  \"palette\": \"heat\",\n";
-  out << "  \"normalization\": \"linear_clamp\",\n";
+  out << "  \"normalization\": \"linear_clamp_percentile\",\n";
+  out << "  \"clip_low_percentile\": " << clip_low_percentile << ",\n";
+  out << "  \"clip_high_percentile\": " << clip_high_percentile << ",\n";
   out << "  \"scales\": {\n";
   out << "    \"raw_curvature_shared\": {\n";
   out << "      \"file\": \"raw_curvature_heat_shared.ply\",\n";
@@ -830,11 +873,18 @@ void writeTargetFieldDiagnostics(
           edge_records,
           face_records));
 
-  const auto [raw_min, raw_max] = scalarRange(data.raw_curvature);
+  const auto [raw_min, raw_max] = percentileScalarRange(
+      data.raw_curvature,
+      kCurvatureHeatClipLowPercentile,
+      kCurvatureHeatClipHighPercentile);
+  const auto [csf_shared_min, csf_shared_max] = percentileScalarRange(
+      data.csf_curvature,
+      kCurvatureHeatClipLowPercentile,
+      kCurvatureHeatClipHighPercentile);
   const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
   const auto [target_h_observed_min, target_h_observed_max] = scalarRange(data.target_lengths);
-  const double curvature_min = std::min(raw_min, csf_min);
-  const double curvature_max = std::max(raw_max, csf_max);
+  const double curvature_min = std::min(raw_min, csf_shared_min);
+  const double curvature_max = std::max(raw_max, csf_shared_max);
   writeTextFile(
       out_dir / "color_scales.json",
       colorScalesJson(
@@ -847,7 +897,9 @@ void writeTargetFieldDiagnostics(
           data.min_length,
           data.max_length,
           target_h_observed_min,
-          target_h_observed_max));
+          target_h_observed_max,
+          kCurvatureHeatClipLowPercentile,
+          kCurvatureHeatClipHighPercentile));
   writeVertexHeatPly(
       out_dir / "raw_curvature_heat_shared.ply",
       mesh,
@@ -929,7 +981,8 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
     const Mesh& mesh,
     const std::vector<double>& diffused_curvature,
     std::size_t target_faces,
-    double mean_edge_length) {
+    double mean_edge_length,
+    int lambda_bisection_iterations) {
   mesh.validate();
   if (mesh.vertices.empty() || mesh.faces.empty()) {
     throw std::runtime_error("target face sizing requires a non-empty mesh");
@@ -942,6 +995,9 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
   }
   if (!std::isfinite(mean_edge_length) || mean_edge_length <= 0.0) {
     throw std::runtime_error("target face sizing requires a positive mean edge length");
+  }
+  if (lambda_bisection_iterations < 0) {
+    throw std::runtime_error("target lambda bisection iterations must be non-negative");
   }
 
   std::vector<double> safe_kappa(diffused_curvature.size(), kTargetKappaMin);
@@ -967,7 +1023,7 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
   auto lengths_for_lambda = [&](double lambda) {
     std::vector<double> lengths(safe_kappa.size(), result.h_min);
     for (std::size_t i = 0; i < safe_kappa.size(); ++i) {
-      const double h = lambda / std::sqrt(safe_kappa[i]);
+      const double h = lambda / std::pow(safe_kappa[i], kTargetCurvatureExponent);
       lengths[i] = std::clamp(h, result.h_min, result.h_max);
     }
     return lengths;
@@ -975,7 +1031,7 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
 
   const auto min_lengths = lengths_for_lambda(0.0);
   const double max_density_faces = estimateTargetFaceCount(mesh, min_lengths);
-  const double hi_lambda = result.h_max * std::sqrt(max_kappa);
+  const double hi_lambda = result.h_max * std::pow(max_kappa, kTargetCurvatureExponent);
   const auto max_lengths = lengths_for_lambda(hi_lambda);
   const double min_density_faces = estimateTargetFaceCount(mesh, max_lengths);
   const double target = static_cast<double>(target_faces);
@@ -995,7 +1051,7 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
 
   double lo = 0.0;
   double hi = hi_lambda;
-  for (int iter = 0; iter < kTargetLambdaBisectionIterations; ++iter) {
+  for (int iter = 0; iter < lambda_bisection_iterations; ++iter) {
     const double mid = 0.5 * (lo + hi);
     const auto lengths = lengths_for_lambda(mid);
     const double estimate = estimateTargetFaceCount(mesh, lengths);
@@ -1342,7 +1398,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
       mesh,
       curvature,
       target_faces,
-      base_len);
+      base_len,
+      config_.target_lambda_bisection_iterations);
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
@@ -1353,7 +1410,11 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
          sizing.target_lengths,
          base_len,
          sizing.h_min,
-         sizing.h_max});
+         sizing.h_max,
+         sizing.lambda,
+         sizing.estimated_faces,
+         sizing.target_faces,
+         config_.target_lambda_bisection_iterations});
   }
 
   target_field_.build(mesh, sizing.target_lengths);
@@ -1362,6 +1423,7 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
     const auto [min_it, max_it] = std::minmax_element(sizing.target_lengths.begin(), sizing.target_lengths.end());
     std::cerr << "target length: base=" << base_len
               << ", target_faces=" << target_faces
+              << ", lambda_bisection_iters=" << config_.target_lambda_bisection_iterations
               << ", estimated_faces=" << sizing.estimated_faces
               << ", lambda=" << sizing.lambda
               << ", min=" << *min_it

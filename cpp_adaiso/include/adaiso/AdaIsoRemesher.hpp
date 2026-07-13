@@ -55,6 +55,7 @@ struct AdaIsoConfig {
   CurvatureMode curvature_mode = CurvatureMode::RobustMean;
   double csf_smoothing_alpha = 2.0;
   std::size_t target_faces = 0;
+  int target_lambda_bisection_iterations = 64;
   std::string target_field_export_dir;
   std::string iteration_mesh_export_dir;
   std::string stage_mesh_export_dir;
