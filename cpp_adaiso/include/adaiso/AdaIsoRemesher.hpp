@@ -16,11 +16,6 @@ enum class Variant {
   Code,
 };
 
-enum class CurvatureMode {
-  NormalAngle,
-  RobustMean,
-};
-
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
   double std_ratio = 0.0;
@@ -52,10 +47,9 @@ class TargetLengthField {
 
 struct AdaIsoConfig {
   Variant variant = Variant::Code;
-  CurvatureMode curvature_mode = CurvatureMode::RobustMean;
-  double csf_smoothing_alpha = 2.0;
+  double target_smoothing_alpha = 2.0;
   std::size_t target_faces = 0;
-  int target_lambda_bisection_iterations = 64;
+  int target_bisection_iterations = 64;
   std::string target_field_export_dir;
   std::string iteration_mesh_export_dir;
   std::string stage_mesh_export_dir;
@@ -104,13 +98,19 @@ struct AdaIsoStats {
   std::size_t vertices = 0;
   std::size_t faces = 0;
   std::vector<IterationStats> iterations;
-  double csf_assembly_time_ms = 0.0;
-  double csf_factorization_time_ms = 0.0;
-  double csf_solve_time_ms = 0.0;
-  double csf_residual_abs = 0.0;
-  double csf_residual_scaled = 0.0;
-  std::size_t csf_matrix_nonzeros = 0;
-  bool csf_solver_success = false;
+  double target_smoothing_assembly_time_ms = 0.0;
+  double target_smoothing_factorization_time_ms = 0.0;
+  double target_smoothing_solve_time_ms = 0.0;
+  double target_smoothing_residual_abs = 0.0;
+  double target_smoothing_residual_scaled = 0.0;
+  std::size_t target_smoothing_matrix_nonzeros = 0;
+  bool target_smoothing_solver_success = false;
+  std::size_t principal_curvature_fallback_vertices = 0;
+  double principal_curvature_fallback_rate = 0.0;
+  double initial_estimated_faces = 0.0;
+  double final_estimated_faces = 0.0;
+  double target_scale = 1.0;
+  bool target_faces_reachable = true;
 };
 
 class AdaIsoRemesher {
@@ -129,10 +129,6 @@ class AdaIsoRemesher {
 
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
   void buildTargetLengths(const Mesh& mesh, std::size_t target_faces);
-  [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
-  [[nodiscard]] std::vector<double> solveCsf(
-      const Mesh& mesh,
-      const std::vector<double>& raw_curvature);
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] double edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
@@ -178,8 +174,6 @@ class AdaIsoRemesher {
 
 [[nodiscard]] Variant parseVariant(const std::string& value);
 [[nodiscard]] std::string toString(Variant variant);
-[[nodiscard]] CurvatureMode parseCurvatureMode(const std::string& value);
-[[nodiscard]] std::string toString(CurvatureMode mode);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

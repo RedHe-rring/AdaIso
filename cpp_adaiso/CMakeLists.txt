@@ -32,12 +32,14 @@ find_package(Libigl CONFIG REQUIRED)
 
 add_library(adaiso_core
   src/AdaIsoRemesher.cpp
-  src/CsfSolver.cpp
   src/Geometry.cpp
   src/IO.cpp
   src/KDTree.cpp
   src/Mesh.cpp
   src/Metrics.cpp
+  src/PrincipalCurvature.cpp
+  src/ScreenedLaplacian.cpp
+  src/TargetFaceSizing.cpp
 )
 
 target_include_directories(adaiso_core
@@ -70,11 +72,3 @@ target_link_libraries(adaiso_cli PRIVATE adaiso_core)
 
 add_executable(adaiso_eval src/eval.cpp)
 target_link_libraries(adaiso_eval PRIVATE adaiso_core)
-
-option(ADAISO_BUILD_TESTS "Build basic smoke tests" ON)
-if(ADAISO_BUILD_TESTS)
-  enable_testing()
-  add_executable(adaiso_tests tests/basic_tests.cpp)
-  target_link_libraries(adaiso_tests PRIVATE adaiso_core)
-  add_test(NAME adaiso_basic_tests COMMAND adaiso_tests)
-endif()

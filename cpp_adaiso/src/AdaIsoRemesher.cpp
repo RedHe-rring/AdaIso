@@ -4,7 +4,8 @@
 #include "adaiso/IO.hpp"
 #include "adaiso/KDTree.hpp"
 #include "adaiso/Metrics.hpp"
-#include "adaiso/detail/CsfSolver.hpp"
+#include "adaiso/detail/PrincipalCurvature.hpp"
+#include "adaiso/detail/ScreenedLaplacian.hpp"
 #include "adaiso/detail/TargetFaceSizing.hpp"
 
 #include <Eigen/Geometry>
@@ -58,16 +59,10 @@ namespace {
 
 constexpr double kEps = 1e-14;
 constexpr double kPi = 3.141592653589793238462643383279502884;
-constexpr double kRobustMeanCotMax = 10.0;
-constexpr double kRobustMeanAreaFloorFactor = 1e-8;
 constexpr double kRelocationFeatureEps = 1e-12;
 constexpr double kRelocationZeta = 0.5;
-constexpr double kTargetKappaMin = 1e-12;
-constexpr double kTargetMinEdgeFactor = 0.05;
-constexpr double kTargetMaxEdgeFactor = 5.0;
-constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
-constexpr double kCurvatureHeatClipLowPercentile = 2.0;
-constexpr double kCurvatureHeatClipHighPercentile = 98.0;
+constexpr double kScalarHeatClipLowPercentile = 2.0;
+constexpr double kScalarHeatClipHighPercentile = 98.0;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -294,16 +289,23 @@ struct Rgb {
 };
 
 struct TargetFieldStageData {
-  std::vector<double> raw_curvature;
-  std::vector<double> csf_curvature;
+  std::vector<double> k1;
+  std::vector<double> k2;
+  std::vector<double> kappa;
+  std::vector<double> initial_lengths;
+  std::vector<double> smoothed_lengths;
   std::vector<double> target_lengths;
   double base_length = 0.0;
   double min_length = 0.0;
   double max_length = 0.0;
   double lambda = 0.0;
+  double initial_estimated_faces = 0.0;
+  double scale = 1.0;
   double estimated_faces = 0.0;
   std::size_t target_faces = 0;
-  int lambda_bisection_iterations = detail::kDefaultTargetLambdaBisectionIterations;
+  int bisection_iterations = detail::kDefaultTargetBisectionIterations;
+  std::size_t fallback_vertices = 0;
+  bool target_faces_reachable = true;
 };
 
 struct EdgeFieldRecord {
@@ -476,128 +478,6 @@ void writeVertexHeatPly(
   writeVertexColorPly(path, mesh, colors);
 }
 
-double clampedPositiveCotangent(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c) {
-  const Eigen::Vector3d u = b - a;
-  const Eigen::Vector3d v = c - a;
-  const double denom = u.cross(v).norm();
-  if (denom <= kEps || !std::isfinite(denom)) {
-    return 0.0;
-  }
-  const double cot = u.dot(v) / denom;
-  if (!std::isfinite(cot) || cot <= 0.0) {
-    return 0.0;
-  }
-  return std::min(cot, kRobustMeanCotMax);
-}
-
-std::vector<double> barycentricVertexAreas(const Mesh& mesh) {
-  std::vector<double> areas(mesh.vertexCount(), 0.0);
-  for (const auto& face : mesh.faces) {
-    const double area = triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
-    if (!std::isfinite(area) || area <= 0.0) {
-      throw std::runtime_error("robust mean curvature requires positive finite face areas");
-    }
-    const double share = area / 3.0;
-    areas[static_cast<std::size_t>(face[0])] += share;
-    areas[static_cast<std::size_t>(face[1])] += share;
-    areas[static_cast<std::size_t>(face[2])] += share;
-  }
-  return areas;
-}
-
-std::unordered_map<Edge, double, EdgeHash> robustMeanCotangentWeights(const Mesh& mesh) {
-  std::unordered_map<Edge, double, EdgeHash> weights;
-  for (const auto& f : mesh.faces) {
-    weights[makeEdge(f[1], f[2])] +=
-        0.5 * clampedPositiveCotangent(mesh.vertices[f[0]], mesh.vertices[f[1]], mesh.vertices[f[2]]);
-    weights[makeEdge(f[2], f[0])] +=
-        0.5 * clampedPositiveCotangent(mesh.vertices[f[1]], mesh.vertices[f[2]], mesh.vertices[f[0]]);
-    weights[makeEdge(f[0], f[1])] +=
-        0.5 * clampedPositiveCotangent(mesh.vertices[f[2]], mesh.vertices[f[0]], mesh.vertices[f[1]]);
-  }
-  return weights;
-}
-
-std::vector<double> computeNormalAngleCurvatureField(const Mesh& mesh) {
-  const auto normals = vertexNormals(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
-
-  for (std::size_t i = 0; i < neigh.size(); ++i) {
-    if (neigh[i].empty()) {
-      continue;
-    }
-    double accum = 0.0;
-    int count = 0;
-    for (int j : neigh[i]) {
-      const double dot = std::clamp(normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
-      accum += std::acos(dot);
-      ++count;
-    }
-    curvature[i] = accum / static_cast<double>(count);
-  }
-  return curvature;
-}
-
-std::vector<double> computeRobustMeanCurvatureField(const Mesh& mesh) {
-  mesh.validate();
-  if (mesh.vertices.empty()) {
-    throw std::runtime_error("robust mean curvature requires a non-empty mesh");
-  }
-
-  const double mean_length = meanEdgeLength(mesh);
-  if (!std::isfinite(mean_length) || mean_length <= 0.0) {
-    throw std::runtime_error("robust mean curvature requires a positive mean edge length");
-  }
-
-  const double area_floor = kRobustMeanAreaFloorFactor * mean_length * mean_length;
-  if (!std::isfinite(area_floor) || area_floor <= 0.0) {
-    throw std::runtime_error("robust mean curvature produced an invalid area floor");
-  }
-
-  const std::vector<double> areas = barycentricVertexAreas(mesh);
-  const auto weights = robustMeanCotangentWeights(mesh);
-  std::vector<Eigen::Vector3d> laplacian(mesh.vertexCount(), Eigen::Vector3d::Zero());
-
-  for (const auto& item : weights) {
-    const int a = item.first.first;
-    const int b = item.first.second;
-    const double weight = item.second;
-    if (!std::isfinite(weight) || weight <= 0.0) {
-      continue;
-    }
-    const auto& pa = mesh.vertices[static_cast<std::size_t>(a)];
-    const auto& pb = mesh.vertices[static_cast<std::size_t>(b)];
-    laplacian[static_cast<std::size_t>(a)] += weight * (pb - pa);
-    laplacian[static_cast<std::size_t>(b)] += weight * (pa - pb);
-  }
-
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
-  for (std::size_t i = 0; i < curvature.size(); ++i) {
-    const double area = std::max(areas[i], area_floor);
-    if (!std::isfinite(area) || area <= 0.0) {
-      throw std::runtime_error("robust mean curvature produced an invalid vertex area");
-    }
-    const double mean_curvature = 0.5 * laplacian[i].norm() / area;
-    const double signal = mean_curvature * mean_length;
-    if (!std::isfinite(signal)) {
-      throw std::runtime_error("robust mean curvature produced a non-finite value");
-    }
-    curvature[i] = signal;
-  }
-  return curvature;
-}
-
-std::vector<double> computeRawCurvatureField(const Mesh& mesh, CurvatureMode mode) {
-  switch (mode) {
-    case CurvatureMode::NormalAngle:
-      return computeNormalAngleCurvatureField(mesh);
-    case CurvatureMode::RobustMean:
-      return computeRobustMeanCurvatureField(mesh);
-  }
-  throw std::runtime_error("unknown curvature mode");
-}
-
 std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
     const Mesh& mesh,
     const std::vector<double>& target_lengths) {
@@ -684,13 +564,16 @@ void writeVerticesCsv(
     const Mesh& mesh,
     const TargetFieldStageData& data) {
   auto out = openOutputFile(path);
-  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,target_h\n";
+  out << "vertex_id,x,y,z,k1,k2,kappa,initial_h,smoothed_h,target_h\n";
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     const auto& p = mesh.vertices[i];
     out << i << ','
         << p[0] << ',' << p[1] << ',' << p[2] << ','
-        << data.raw_curvature[i] << ','
-        << data.csf_curvature[i] << ','
+        << data.k1[i] << ','
+        << data.k2[i] << ','
+        << data.kappa[i] << ','
+        << data.initial_lengths[i] << ','
+        << data.smoothed_lengths[i] << ','
         << data.target_lengths[i] << '\n';
   }
 }
@@ -758,10 +641,16 @@ std::string targetFieldStatsJson(
   out << "  \"h_min\": " << data.min_length << ",\n";
   out << "  \"h_max\": " << data.max_length << ",\n";
   out << "  \"target_faces\": " << data.target_faces << ",\n";
-  out << "  \"target_lambda_bisection_iterations\": " << data.lambda_bisection_iterations << ",\n";
+  out << "  \"target_bisection_iterations\": " << data.bisection_iterations << ",\n";
   out << "  \"lambda\": " << data.lambda << ",\n";
+  out << "  \"initial_estimated_faces\": " << data.initial_estimated_faces << ",\n";
+  out << "  \"scale\": " << data.scale << ",\n";
   out << "  \"estimated_faces\": " << data.estimated_faces << ",\n";
   out << "  \"estimated_faces_error\": " << (data.estimated_faces - static_cast<double>(data.target_faces)) << ",\n";
+  out << "  \"target_faces_reachable\": " << (data.target_faces_reachable ? "true" : "false") << ",\n";
+  out << "  \"principal_curvature_fallback_vertices\": " << data.fallback_vertices << ",\n";
+  out << "  \"principal_curvature_fallback_rate\": "
+      << static_cast<double>(data.fallback_vertices) / static_cast<double>(data.target_lengths.size()) << ",\n";
   out << "  \"observed_h_min\": " << observed_min << ",\n";
   out << "  \"observed_h_max\": " << observed_max << ",\n";
   out << "  \"range_ok\": " << (range_ok ? "true" : "false") << ",\n";
@@ -778,16 +667,11 @@ std::string targetFieldStatsJson(
 }
 
 std::string colorScalesJson(
-    double shared_curvature_min,
-    double shared_curvature_max,
-    double raw_curvature_min,
-    double raw_curvature_max,
-    double csf_curvature_min,
-    double csf_curvature_max,
+    const std::pair<double, double>& k1_range,
+    const std::pair<double, double>& k2_range,
+    const std::pair<double, double>& kappa_range,
     double target_h_min,
     double target_h_max,
-    double observed_target_h_min,
-    double observed_target_h_max,
     double clip_low_percentile,
     double clip_high_percentile) {
   std::ostringstream out;
@@ -798,42 +682,43 @@ std::string colorScalesJson(
   out << "  \"clip_low_percentile\": " << clip_low_percentile << ",\n";
   out << "  \"clip_high_percentile\": " << clip_high_percentile << ",\n";
   out << "  \"scales\": {\n";
-  out << "    \"raw_curvature_shared\": {\n";
-  out << "      \"file\": \"raw_curvature_heat_shared.ply\",\n";
-  out << "      \"field\": \"raw_curvature\",\n";
-  out << "      \"min\": " << shared_curvature_min << ",\n";
-  out << "      \"max\": " << shared_curvature_max << "\n";
+  out << "    \"k1_abs\": {\n";
+  out << "      \"file\": \"k1_abs_heat.ply\",\n";
+  out << "      \"field\": \"abs(k1)\",\n";
+  out << "      \"min\": " << k1_range.first << ",\n";
+  out << "      \"max\": " << k1_range.second << "\n";
   out << "    },\n";
-  out << "    \"csf_curvature_shared\": {\n";
-  out << "      \"file\": \"csf_curvature_heat_shared.ply\",\n";
-  out << "      \"field\": \"csf_curvature\",\n";
-  out << "      \"min\": " << shared_curvature_min << ",\n";
-  out << "      \"max\": " << shared_curvature_max << "\n";
+  out << "    \"k2_abs\": {\n";
+  out << "      \"file\": \"k2_abs_heat.ply\",\n";
+  out << "      \"field\": \"abs(k2)\",\n";
+  out << "      \"min\": " << k2_range.first << ",\n";
+  out << "      \"max\": " << k2_range.second << "\n";
   out << "    },\n";
-  out << "    \"raw_curvature_independent\": {\n";
-  out << "      \"file\": \"raw_curvature_heat_independent.ply\",\n";
-  out << "      \"field\": \"raw_curvature\",\n";
-  out << "      \"min\": " << raw_curvature_min << ",\n";
-  out << "      \"max\": " << raw_curvature_max << "\n";
+  out << "    \"kappa\": {\n";
+  out << "      \"file\": \"kappa_heat.ply\",\n";
+  out << "      \"field\": \"dimensionless_kappa\",\n";
+  out << "      \"min\": " << kappa_range.first << ",\n";
+  out << "      \"max\": " << kappa_range.second << "\n";
   out << "    },\n";
-  out << "    \"csf_curvature_independent\": {\n";
-  out << "      \"file\": \"csf_curvature_heat_independent.ply\",\n";
-  out << "      \"field\": \"csf_curvature\",\n";
-  out << "      \"min\": " << csf_curvature_min << ",\n";
-  out << "      \"max\": " << csf_curvature_max << "\n";
+  out << "    \"initial_h\": {\n";
+  out << "      \"file\": \"initial_h_heat.ply\",\n";
+  out << "      \"field\": \"initial_h\",\n";
+  out << "      \"min\": " << target_h_min << ",\n";
+  out << "      \"max\": " << target_h_max << ",\n";
+  out << "      \"inverted\": true\n";
+  out << "    },\n";
+  out << "    \"smoothed_h\": {\n";
+  out << "      \"file\": \"smoothed_h_heat.ply\",\n";
+  out << "      \"field\": \"smoothed_h\",\n";
+  out << "      \"min\": " << target_h_min << ",\n";
+  out << "      \"max\": " << target_h_max << ",\n";
+  out << "      \"inverted\": true\n";
   out << "    },\n";
   out << "    \"target_h\": {\n";
   out << "      \"file\": \"target_h_heat.ply\",\n";
   out << "      \"field\": \"target_h\",\n";
   out << "      \"min\": " << target_h_min << ",\n";
   out << "      \"max\": " << target_h_max << ",\n";
-  out << "      \"inverted\": true\n";
-  out << "    },\n";
-  out << "    \"target_h_observed\": {\n";
-  out << "      \"file\": \"target_h_heat_observed.ply\",\n";
-  out << "      \"field\": \"target_h\",\n";
-  out << "      \"min\": " << observed_target_h_min << ",\n";
-  out << "      \"max\": " << observed_target_h_max << ",\n";
   out << "      \"inverted\": true\n";
   out << "    }\n";
   out << "  }\n";
@@ -849,7 +734,8 @@ void writeTargetFieldDiagnostics(
     return;
   }
   const std::size_t n = mesh.vertices.size();
-  if (data.raw_curvature.size() != n || data.csf_curvature.size() != n ||
+  if (data.k1.size() != n || data.k2.size() != n || data.kappa.size() != n ||
+      data.initial_lengths.size() != n || data.smoothed_lengths.size() != n ||
       data.target_lengths.size() != n) {
     throw std::runtime_error("target diagnostic field size mismatch");
   }
@@ -873,57 +759,58 @@ void writeTargetFieldDiagnostics(
           edge_records,
           face_records));
 
-  const auto [raw_min, raw_max] = percentileScalarRange(
-      data.raw_curvature,
-      kCurvatureHeatClipLowPercentile,
-      kCurvatureHeatClipHighPercentile);
-  const auto [csf_shared_min, csf_shared_max] = percentileScalarRange(
-      data.csf_curvature,
-      kCurvatureHeatClipLowPercentile,
-      kCurvatureHeatClipHighPercentile);
-  const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
-  const auto [target_h_observed_min, target_h_observed_max] = scalarRange(data.target_lengths);
-  const double curvature_min = std::min(raw_min, csf_shared_min);
-  const double curvature_max = std::max(raw_max, csf_shared_max);
+  std::vector<double> k1_abs(data.k1.size(), 0.0);
+  std::vector<double> k2_abs(data.k2.size(), 0.0);
+  std::transform(data.k1.begin(), data.k1.end(), k1_abs.begin(), [](double value) { return std::abs(value); });
+  std::transform(data.k2.begin(), data.k2.end(), k2_abs.begin(), [](double value) { return std::abs(value); });
+  const auto k1_range = percentileScalarRange(
+      k1_abs, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
+  const auto k2_range = percentileScalarRange(
+      k2_abs, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
+  const auto kappa_range = percentileScalarRange(
+      data.kappa, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
   writeTextFile(
       out_dir / "color_scales.json",
       colorScalesJson(
-          curvature_min,
-          curvature_max,
-          raw_min,
-          raw_max,
-          csf_min,
-          csf_max,
+          k1_range,
+          k2_range,
+          kappa_range,
           data.min_length,
           data.max_length,
-          target_h_observed_min,
-          target_h_observed_max,
-          kCurvatureHeatClipLowPercentile,
-          kCurvatureHeatClipHighPercentile));
+          kScalarHeatClipLowPercentile,
+          kScalarHeatClipHighPercentile));
   writeVertexHeatPly(
-      out_dir / "raw_curvature_heat_shared.ply",
+      out_dir / "k1_abs_heat.ply",
       mesh,
-      data.raw_curvature,
-      curvature_min,
-      curvature_max);
+      k1_abs,
+      k1_range.first,
+      k1_range.second);
   writeVertexHeatPly(
-      out_dir / "csf_curvature_heat_shared.ply",
+      out_dir / "k2_abs_heat.ply",
       mesh,
-      data.csf_curvature,
-      curvature_min,
-      curvature_max);
+      k2_abs,
+      k2_range.first,
+      k2_range.second);
   writeVertexHeatPly(
-      out_dir / "raw_curvature_heat_independent.ply",
+      out_dir / "kappa_heat.ply",
       mesh,
-      data.raw_curvature,
-      raw_min,
-      raw_max);
+      data.kappa,
+      kappa_range.first,
+      kappa_range.second);
   writeVertexHeatPly(
-      out_dir / "csf_curvature_heat_independent.ply",
+      out_dir / "initial_h_heat.ply",
       mesh,
-      data.csf_curvature,
-      csf_min,
-      csf_max);
+      data.initial_lengths,
+      data.min_length,
+      data.max_length,
+      true);
+  writeVertexHeatPly(
+      out_dir / "smoothed_h_heat.ply",
+      mesh,
+      data.smoothed_lengths,
+      data.min_length,
+      data.max_length,
+      true);
   writeVertexHeatPly(
       out_dir / "target_h_heat.ply",
       mesh,
@@ -931,144 +818,9 @@ void writeTargetFieldDiagnostics(
       data.min_length,
       data.max_length,
       true);
-  writeVertexHeatPly(
-      out_dir / "target_h_heat_observed.ply",
-      mesh,
-      data.target_lengths,
-      target_h_observed_min,
-      target_h_observed_max,
-      true);
 }
 
 }  // namespace
-
-namespace detail {
-
-double estimateTargetFaceCount(
-    const Mesh& mesh,
-    const std::vector<double>& target_lengths) {
-  mesh.validate();
-  if (mesh.vertices.empty() || mesh.faces.empty()) {
-    throw std::runtime_error("target face estimate requires a non-empty mesh");
-  }
-  if (target_lengths.size() != mesh.vertices.size()) {
-    throw std::runtime_error("target face estimate length size mismatch");
-  }
-
-  double estimate = 0.0;
-  for (const auto& face : mesh.faces) {
-    const double area = triangleArea(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
-    if (!std::isfinite(area) || area <= 0.0) {
-      throw std::runtime_error("target face estimate requires positive finite face areas");
-    }
-    const double h =
-        (target_lengths[static_cast<std::size_t>(face[0])] +
-         target_lengths[static_cast<std::size_t>(face[1])] +
-         target_lengths[static_cast<std::size_t>(face[2])]) /
-        3.0;
-    if (!std::isfinite(h) || h <= 0.0) {
-      throw std::runtime_error("target face estimate requires positive finite lengths");
-    }
-    estimate += area / (kEquilateralAreaFactor * h * h);
-  }
-  if (!std::isfinite(estimate)) {
-    throw std::runtime_error("target face estimate produced a non-finite value");
-  }
-  return estimate;
-}
-
-TargetFaceSizingResult targetFaceCurvatureLengths(
-    const Mesh& mesh,
-    const std::vector<double>& diffused_curvature,
-    std::size_t target_faces,
-    double mean_edge_length,
-    int lambda_bisection_iterations) {
-  mesh.validate();
-  if (mesh.vertices.empty() || mesh.faces.empty()) {
-    throw std::runtime_error("target face sizing requires a non-empty mesh");
-  }
-  if (diffused_curvature.size() != mesh.vertices.size()) {
-    throw std::runtime_error("target face sizing curvature size mismatch");
-  }
-  if (target_faces == 0) {
-    throw std::runtime_error("target face count must be positive");
-  }
-  if (!std::isfinite(mean_edge_length) || mean_edge_length <= 0.0) {
-    throw std::runtime_error("target face sizing requires a positive mean edge length");
-  }
-  if (lambda_bisection_iterations < 0) {
-    throw std::runtime_error("target lambda bisection iterations must be non-negative");
-  }
-
-  std::vector<double> safe_kappa(diffused_curvature.size(), kTargetKappaMin);
-  double max_kappa = kTargetKappaMin;
-  for (std::size_t i = 0; i < diffused_curvature.size(); ++i) {
-    const double value = diffused_curvature[i];
-    if (!std::isfinite(value)) {
-      throw std::runtime_error("target face sizing curvature values must be finite");
-    }
-    safe_kappa[i] = std::max(value, kTargetKappaMin);
-    max_kappa = std::max(max_kappa, safe_kappa[i]);
-  }
-
-  TargetFaceSizingResult result;
-  result.h_min = kTargetMinEdgeFactor * mean_edge_length;
-  result.h_max = kTargetMaxEdgeFactor * mean_edge_length;
-  result.target_faces = target_faces;
-  if (!std::isfinite(result.h_min) || !std::isfinite(result.h_max) ||
-      result.h_min <= 0.0 || result.h_max <= result.h_min) {
-    throw std::runtime_error("target face sizing produced invalid length bounds");
-  }
-
-  auto lengths_for_lambda = [&](double lambda) {
-    std::vector<double> lengths(safe_kappa.size(), result.h_min);
-    for (std::size_t i = 0; i < safe_kappa.size(); ++i) {
-      const double h = lambda / std::pow(safe_kappa[i], kTargetCurvatureExponent);
-      lengths[i] = std::clamp(h, result.h_min, result.h_max);
-    }
-    return lengths;
-  };
-
-  const auto min_lengths = lengths_for_lambda(0.0);
-  const double max_density_faces = estimateTargetFaceCount(mesh, min_lengths);
-  const double hi_lambda = result.h_max * std::pow(max_kappa, kTargetCurvatureExponent);
-  const auto max_lengths = lengths_for_lambda(hi_lambda);
-  const double min_density_faces = estimateTargetFaceCount(mesh, max_lengths);
-  const double target = static_cast<double>(target_faces);
-
-  if (target >= max_density_faces) {
-    result.lambda = 0.0;
-    result.target_lengths = min_lengths;
-    result.estimated_faces = max_density_faces;
-    return result;
-  }
-  if (target <= min_density_faces) {
-    result.lambda = hi_lambda;
-    result.target_lengths = max_lengths;
-    result.estimated_faces = min_density_faces;
-    return result;
-  }
-
-  double lo = 0.0;
-  double hi = hi_lambda;
-  for (int iter = 0; iter < lambda_bisection_iterations; ++iter) {
-    const double mid = 0.5 * (lo + hi);
-    const auto lengths = lengths_for_lambda(mid);
-    const double estimate = estimateTargetFaceCount(mesh, lengths);
-    if (estimate > target) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-  }
-
-  result.lambda = 0.5 * (lo + hi);
-  result.target_lengths = lengths_for_lambda(result.lambda);
-  result.estimated_faces = estimateTargetFaceCount(mesh, result.target_lengths);
-  return result;
-}
-
-}  // namespace detail
 
 std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m);
 void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges);
@@ -1235,35 +987,14 @@ std::string toString(Variant variant) {
   return variant == Variant::Paper ? "paper" : "code";
 }
 
-CurvatureMode parseCurvatureMode(const std::string& value) {
-  std::string lower = value;
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (lower == "normal-angle") {
-    return CurvatureMode::NormalAngle;
-  }
-  if (lower == "robust-mean") {
-    return CurvatureMode::RobustMean;
-  }
-  throw std::runtime_error("unknown curvature mode: " + value);
-}
-
-std::string toString(CurvatureMode mode) {
-  switch (mode) {
-    case CurvatureMode::NormalAngle:
-      return "normal-angle";
-    case CurvatureMode::RobustMean:
-      return "robust-mean";
-  }
-  return "unknown";
-}
-
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
-  if (config_.csf_smoothing_alpha <= 0.0 || !std::isfinite(config_.csf_smoothing_alpha)) {
-    throw std::runtime_error("CSF smoothing alpha must be positive");
+  if (config_.target_smoothing_alpha <= 0.0 || !std::isfinite(config_.target_smoothing_alpha)) {
+    throw std::runtime_error("target smoothing alpha must be positive");
+  }
+  if (config_.target_bisection_iterations < 0) {
+    throw std::runtime_error("target bisection iterations must be non-negative");
   }
   if (config_.max_flip_dihedral_degrees <= 0.0 || config_.max_flip_dihedral_degrees > 180.0 ||
       !std::isfinite(config_.max_flip_dihedral_degrees)) {
@@ -1392,61 +1123,86 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_faces) {
   const double base_len = meanEdgeLength(mesh);
-  const auto raw_curvature = computeRawCurvatureField(mesh, config_.curvature_mode);
-  const auto curvature = solveCsf(mesh, raw_curvature);
-  const auto sizing = detail::targetFaceCurvatureLengths(
+  const auto principal = detail::computePrincipalCurvatures(mesh, base_len);
+  const auto initial = detail::buildInitialPrincipalCurvatureLengths(
       mesh,
-      curvature,
+      principal.kappa,
       target_faces,
       base_len,
-      config_.target_lambda_bisection_iterations);
+      config_.target_bisection_iterations);
+
+  const auto smoothed = detail::solveScreenedScalarField(
+      mesh,
+      initial.initial_lengths,
+      config_.target_smoothing_alpha);
+  std::vector<double> smoothed_lengths = smoothed.values;
+  for (double& value : smoothed_lengths) {
+    if (!std::isfinite(value)) {
+      throw std::runtime_error("target smoothing produced a non-finite length");
+    }
+    value = std::clamp(value, initial.h_min, initial.h_max);
+  }
+  const auto final = detail::calibrateTargetLengthsToFaceCount(
+      mesh,
+      smoothed_lengths,
+      target_faces,
+      initial.h_min,
+      initial.h_max,
+      config_.target_bisection_iterations);
+
+  stats_.target_smoothing_assembly_time_ms = smoothed.stats.assembly_time_ms;
+  stats_.target_smoothing_factorization_time_ms = smoothed.stats.factorization_time_ms;
+  stats_.target_smoothing_solve_time_ms = smoothed.stats.solve_time_ms;
+  stats_.target_smoothing_residual_abs = smoothed.stats.residual_abs;
+  stats_.target_smoothing_residual_scaled = smoothed.stats.residual_scaled;
+  stats_.target_smoothing_matrix_nonzeros = smoothed.stats.matrix_nonzeros;
+  stats_.target_smoothing_solver_success = smoothed.stats.solver_success;
+  stats_.principal_curvature_fallback_vertices = principal.fallback_vertices;
+  stats_.principal_curvature_fallback_rate =
+      static_cast<double>(principal.fallback_vertices) / static_cast<double>(mesh.vertexCount());
+  stats_.initial_estimated_faces = initial.estimated_faces;
+  stats_.final_estimated_faces = final.estimated_faces;
+  stats_.target_scale = final.scale;
+  stats_.target_faces_reachable = final.target_faces_reachable;
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
         std::filesystem::path(config_.target_field_export_dir),
         mesh,
-        {raw_curvature,
-         curvature,
-         sizing.target_lengths,
+        {principal.k1,
+         principal.k2,
+         principal.kappa,
+         initial.initial_lengths,
+         smoothed_lengths,
+         final.target_lengths,
          base_len,
-         sizing.h_min,
-         sizing.h_max,
-         sizing.lambda,
-         sizing.estimated_faces,
-         sizing.target_faces,
-         config_.target_lambda_bisection_iterations});
+         initial.h_min,
+         initial.h_max,
+         initial.lambda,
+         initial.estimated_faces,
+         final.scale,
+         final.estimated_faces,
+         final.target_faces,
+         config_.target_bisection_iterations,
+         principal.fallback_vertices,
+         final.target_faces_reachable});
   }
 
-  target_field_.build(mesh, sizing.target_lengths);
+  target_field_.build(mesh, final.target_lengths);
 
-  if (config_.verbose && !sizing.target_lengths.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(sizing.target_lengths.begin(), sizing.target_lengths.end());
+  if (config_.verbose && !final.target_lengths.empty()) {
+    const auto [min_it, max_it] = std::minmax_element(final.target_lengths.begin(), final.target_lengths.end());
     std::cerr << "target length: base=" << base_len
               << ", target_faces=" << target_faces
-              << ", lambda_bisection_iters=" << config_.target_lambda_bisection_iterations
-              << ", estimated_faces=" << sizing.estimated_faces
-              << ", lambda=" << sizing.lambda
+              << ", bisection_iters=" << config_.target_bisection_iterations
+              << ", initial_estimated_faces=" << initial.estimated_faces
+              << ", final_estimated_faces=" << final.estimated_faces
+              << ", lambda=" << initial.lambda
+              << ", scale=" << final.scale
+              << ", curvature_fallback=" << principal.fallback_vertices << "/" << mesh.vertexCount()
               << ", min=" << *min_it
               << ", max=" << *max_it << "\n";
   }
-}
-
-std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
-  return solveCsf(mesh, computeRawCurvatureField(mesh, config_.curvature_mode));
-}
-
-std::vector<double> AdaIsoRemesher::solveCsf(
-    const Mesh& mesh,
-    const std::vector<double>& raw_curvature) {
-  const auto solved = detail::solveScreenedCsf(mesh, raw_curvature, config_.csf_smoothing_alpha);
-  stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
-  stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
-  stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
-  stats_.csf_residual_abs = solved.stats.residual_abs;
-  stats_.csf_residual_scaled = solved.stats.residual_scaled;
-  stats_.csf_matrix_nonzeros = solved.stats.matrix_nonzeros;
-  stats_.csf_solver_success = solved.stats.solver_success;
-  return solved.values;
 }
 
 double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {
