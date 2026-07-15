@@ -5,8 +5,10 @@
 #include "adaiso/KDTree.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/PrincipalCurvature.hpp"
+#include "adaiso/detail/CurvatureFilter.hpp"
 #include "adaiso/detail/ScreenedLaplacian.hpp"
 #include "adaiso/detail/TargetFaceSizing.hpp"
+#include "adaiso/detail/TargetGradation.hpp"
 
 #include <Eigen/Geometry>
 
@@ -291,21 +293,37 @@ struct Rgb {
 struct TargetFieldStageData {
   std::vector<double> k1;
   std::vector<double> k2;
-  std::vector<double> kappa;
+  std::vector<double> raw_kappa;
+  std::vector<double> filtered_kappa;
+  std::vector<double> curvature_caps;
+  std::vector<double> smoothed_kappa;
   std::vector<double> initial_lengths;
-  std::vector<double> smoothed_lengths;
+  std::vector<double> limited_lengths;
   std::vector<double> target_lengths;
+  std::vector<detail::PrincipalCurvatureFitDiagnostics> fit_diagnostics;
+  std::vector<int> gradation_source_vertices;
+  std::vector<double> gradation_source_distances;
   double base_length = 0.0;
   double min_length = 0.0;
   double max_length = 0.0;
-  double lambda = 0.0;
-  double initial_estimated_faces = 0.0;
+  double pre_limiter_estimated_faces = 0.0;
+  double post_limiter_estimated_faces = 0.0;
   double scale = 1.0;
   double estimated_faces = 0.0;
+  double estimated_faces_mean = 0.0;
+  double estimated_faces_min = 0.0;
+  double estimated_faces_relative_error = 0.0;
   std::size_t target_faces = 0;
   int bisection_iterations = detail::kDefaultTargetBisectionIterations;
   std::size_t fallback_vertices = 0;
+  std::size_t curvature_filter_changed_vertices = 0;
+  CurvatureOutlierMode curvature_outlier_mode = CurvatureOutlierMode::None;
+  TargetFaceRepresentative target_face_representative = TargetFaceRepresentative::Mean;
   bool target_faces_reachable = true;
+  bool gradation_enabled = true;
+  double gradation_ratio = 1.0;
+  detail::TargetGradationStats gradation;
+  detail::TargetGradationMetrics final_gradation;
 };
 
 struct EdgeFieldRecord {
@@ -313,13 +331,127 @@ struct EdgeFieldRecord {
   double edge_length = 0.0;
   double abs_dh = 0.0;
   double target_ratio = 1.0;
+  double edge_length_to_min_target = 0.0;
   double h_slope = 0.0;
+  double normalized_log_slope = 0.0;
 };
 
 struct FaceFieldRecord {
+  Eigen::Vector3i face = Eigen::Vector3i::Zero();
+  double area = 0.0;
+  double mean_h = 0.0;
+  double min_h = 0.0;
+  double mean_estimate_contribution = 0.0;
+  double min_estimate_contribution = 0.0;
   double grad_h_norm = 0.0;
   double max_edge_target_ratio = 1.0;
 };
+
+const char* curvatureOutlierModeName(CurvatureOutlierMode mode) {
+  switch (mode) {
+    case CurvatureOutlierMode::None:
+      return "none";
+    case CurvatureOutlierMode::TopKMedian:
+      return "topk_median";
+    case CurvatureOutlierMode::SamplingCap:
+      return "sampling_cap";
+  }
+  return "unknown";
+}
+
+const char* targetFaceRepresentativeName(TargetFaceRepresentative value) {
+  return value == TargetFaceRepresentative::Minimum ? "min" : "mean";
+}
+
+struct TargetFieldHealth {
+  double estimated_faces_mean = 0.0;
+  double estimated_faces_min = 0.0;
+  double h_min_saturation_rate = 0.0;
+  double h_max_saturation_rate = 0.0;
+  double smallest_five_percent_face_budget_rate = 0.0;
+  double input_edge_target_violation_rate = 0.0;
+};
+
+TargetFieldHealth measureTargetFieldHealth(
+    const Mesh& mesh,
+    const std::vector<double>& lengths,
+    double h_min,
+    double h_max,
+    double collapse_factor,
+    double split_factor) {
+  TargetFieldHealth health;
+  health.estimated_faces_mean = detail::estimateTargetFaceCount(
+      mesh, lengths, TargetFaceRepresentative::Mean);
+  health.estimated_faces_min = detail::estimateTargetFaceCount(
+      mesh, lengths, TargetFaceRepresentative::Minimum);
+  std::size_t min_saturated = 0;
+  std::size_t max_saturated = 0;
+  for (double value : lengths) {
+    min_saturated += static_cast<std::size_t>(
+        std::abs(value - h_min) <= 1e-12 * std::max(1.0, h_min));
+    max_saturated += static_cast<std::size_t>(
+        std::abs(value - h_max) <= 1e-12 * std::max(1.0, h_max));
+  }
+  health.h_min_saturation_rate =
+      static_cast<double>(min_saturated) / static_cast<double>(lengths.size());
+  health.h_max_saturation_rate =
+      static_cast<double>(max_saturated) / static_cast<double>(lengths.size());
+
+  struct FaceBudget {
+    double h = 0.0;
+    double contribution = 0.0;
+  };
+  std::vector<FaceBudget> budgets;
+  budgets.reserve(mesh.faceCount());
+  double total_budget = 0.0;
+  for (const auto& face : mesh.faces) {
+    const double face_h =
+        (lengths[static_cast<std::size_t>(face[0])] +
+         lengths[static_cast<std::size_t>(face[1])] +
+         lengths[static_cast<std::size_t>(face[2])]) /
+        3.0;
+    const double area = triangleArea(
+        mesh.vertices[static_cast<std::size_t>(face[0])],
+        mesh.vertices[static_cast<std::size_t>(face[1])],
+        mesh.vertices[static_cast<std::size_t>(face[2])]);
+    const double contribution =
+        area / (detail::kEquilateralAreaFactor * face_h * face_h);
+    budgets.push_back({face_h, contribution});
+    total_budget += contribution;
+  }
+  std::sort(budgets.begin(), budgets.end(), [](const FaceBudget& lhs, const FaceBudget& rhs) {
+    return lhs.h < rhs.h;
+  });
+  const std::size_t count = static_cast<std::size_t>(
+      std::ceil(0.05 * static_cast<double>(budgets.size())));
+  double small_budget = 0.0;
+  for (std::size_t i = 0; i < count; ++i) {
+    small_budget += budgets[i].contribution;
+  }
+  health.smallest_five_percent_face_budget_rate =
+      total_budget > 0.0 ? small_budget / total_budget : 0.0;
+
+  std::size_t violations = 0;
+  const auto edges = uniqueEdges(mesh);
+  for (const auto& edge : edges) {
+    const double edge_length =
+        (mesh.vertices[static_cast<std::size_t>(edge.first)] -
+         mesh.vertices[static_cast<std::size_t>(edge.second)])
+            .norm();
+    const double target = std::min(
+        lengths[static_cast<std::size_t>(edge.first)],
+        lengths[static_cast<std::size_t>(edge.second)]);
+    const double ratio = edge_length / target;
+    if (ratio < collapse_factor || ratio > split_factor) {
+      ++violations;
+    }
+  }
+  health.input_edge_target_violation_rate =
+      edges.empty() ? 0.0
+                    : static_cast<double>(violations) /
+                          static_cast<double>(edges.size());
+  return health;
+}
 
 std::ofstream openOutputFile(const std::filesystem::path& path) {
   if (path.has_parent_path()) {
@@ -359,19 +491,6 @@ std::vector<double> finiteSortedValues(const std::vector<double>& values) {
   }
   std::sort(finite.begin(), finite.end());
   return finite;
-}
-
-std::pair<double, double> scalarRange(const std::vector<double>& values) {
-  double lo = std::numeric_limits<double>::infinity();
-  double hi = -std::numeric_limits<double>::infinity();
-  for (double value : values) {
-    if (!std::isfinite(value)) {
-      continue;
-    }
-    lo = std::min(lo, value);
-    hi = std::max(hi, value);
-  }
-  return paddedScalarRange(lo, hi);
 }
 
 std::pair<double, double> percentileScalarRange(
@@ -480,7 +599,8 @@ void writeVertexHeatPly(
 
 std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
     const Mesh& mesh,
-    const std::vector<double>& target_lengths) {
+    const std::vector<double>& target_lengths,
+    double mean_edge_length) {
   if (target_lengths.size() != mesh.vertices.size()) {
     throw std::runtime_error("target diagnostic length size mismatch");
   }
@@ -505,7 +625,10 @@ std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
     record.edge_length = length;
     record.abs_dh = abs_dh;
     record.target_ratio = ratio;
+    record.edge_length_to_min_target = length / std::min(ha, hb);
     record.h_slope = length > kEps ? abs_dh / length : 0.0;
+    record.normalized_log_slope =
+        length > kEps ? std::abs(std::log(ha) - std::log(hb)) * mean_edge_length / length : 0.0;
     records.push_back(record);
   }
   return records;
@@ -554,7 +677,27 @@ std::vector<FaceFieldRecord> computeFaceFieldRecords(
         max_ratio = std::max(max_ratio, found->second);
       }
     }
-    records.push_back({faceTargetGradientNorm(mesh, face, target_lengths), max_ratio});
+    const double area = triangleArea(
+        mesh.vertices[static_cast<std::size_t>(face[0])],
+        mesh.vertices[static_cast<std::size_t>(face[1])],
+        mesh.vertices[static_cast<std::size_t>(face[2])]);
+    const double h0 = target_lengths[static_cast<std::size_t>(face[0])];
+    const double h1 = target_lengths[static_cast<std::size_t>(face[1])];
+    const double h2 = target_lengths[static_cast<std::size_t>(face[2])];
+    const double mean_h = (h0 + h1 + h2) / 3.0;
+    const double min_h = std::min({h0, h1, h2});
+    FaceFieldRecord record;
+    record.face = face;
+    record.area = area;
+    record.mean_h = mean_h;
+    record.min_h = min_h;
+    record.mean_estimate_contribution =
+        area / (detail::kEquilateralAreaFactor * mean_h * mean_h);
+    record.min_estimate_contribution =
+        area / (detail::kEquilateralAreaFactor * min_h * min_h);
+    record.grad_h_norm = faceTargetGradientNorm(mesh, face, target_lengths);
+    record.max_edge_target_ratio = max_ratio;
+    records.push_back(record);
   }
   return records;
 }
@@ -564,17 +707,43 @@ void writeVerticesCsv(
     const Mesh& mesh,
     const TargetFieldStageData& data) {
   auto out = openOutputFile(path);
-  out << "vertex_id,x,y,z,k1,k2,kappa,initial_h,smoothed_h,target_h\n";
+  out << "vertex_id,x,y,z,k1,k2,raw_kappa,filtered_kappa,curvature_cap,"
+         "smoothed_kappa,fit_sample_ring,fit_sample_count,fit_local_scale,"
+         "fit_singular_ratio,fit_residual_rms,fit_fallback,initial_h,limited_h,"
+         "target_h,limiter_source_vertex,limiter_normalized_distance,"
+         "limiter_log_reduction,hit_h_min,hit_h_max\n";
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     const auto& p = mesh.vertices[i];
     out << i << ','
         << p[0] << ',' << p[1] << ',' << p[2] << ','
         << data.k1[i] << ','
         << data.k2[i] << ','
-        << data.kappa[i] << ','
+        << data.raw_kappa[i] << ','
+        << data.filtered_kappa[i] << ','
+        << data.curvature_caps[i] << ','
+        << data.smoothed_kappa[i] << ','
+        << data.fit_diagnostics[i].sample_ring << ','
+        << data.fit_diagnostics[i].sample_count << ','
+        << data.fit_diagnostics[i].local_scale << ','
+        << data.fit_diagnostics[i].singular_ratio << ','
+        << data.fit_diagnostics[i].residual_rms << ','
+        << (data.fit_diagnostics[i].fallback ? 1 : 0) << ','
         << data.initial_lengths[i] << ','
-        << data.smoothed_lengths[i] << ','
-        << data.target_lengths[i] << '\n';
+        << data.limited_lengths[i] << ','
+        << data.target_lengths[i] << ','
+        << data.gradation_source_vertices[i] << ','
+        << data.gradation_source_distances[i] << ','
+        << std::log(data.initial_lengths[i] / data.limited_lengths[i]) << ','
+        << (std::abs(data.target_lengths[i] - data.min_length) <=
+                    1e-12 * std::max(1.0, data.min_length)
+                ? 1
+                : 0)
+        << ','
+        << (std::abs(data.target_lengths[i] - data.max_length) <=
+                    1e-12 * std::max(1.0, data.max_length)
+                ? 1
+                : 0)
+        << '\n';
   }
 }
 
@@ -582,14 +751,17 @@ void writeEdgesCsv(
     const std::filesystem::path& path,
     const std::vector<EdgeFieldRecord>& records) {
   auto out = openOutputFile(path);
-  out << "i,j,edge_length,abs_dh,target_ratio,h_slope\n";
+  out << "i,j,edge_length,abs_dh,target_ratio,edge_length_to_min_target,"
+         "h_slope,normalized_log_slope\n";
   for (const auto& record : records) {
     out << record.edge.first << ','
         << record.edge.second << ','
         << record.edge_length << ','
         << record.abs_dh << ','
         << record.target_ratio << ','
-        << record.h_slope << '\n';
+        << record.edge_length_to_min_target << ','
+        << record.h_slope << ','
+        << record.normalized_log_slope << '\n';
   }
 }
 
@@ -597,11 +769,68 @@ void writeFacesCsv(
     const std::filesystem::path& path,
     const std::vector<FaceFieldRecord>& records) {
   auto out = openOutputFile(path);
-  out << "face_id,grad_h_norm,max_edge_target_ratio\n";
+  out << "face_id,v0,v1,v2,area,mean_h,min_h,mean_estimate_contribution,"
+         "min_estimate_contribution,grad_h_norm,max_edge_target_ratio\n";
   for (std::size_t i = 0; i < records.size(); ++i) {
     out << i << ','
+        << records[i].face[0] << ','
+        << records[i].face[1] << ','
+        << records[i].face[2] << ','
+        << records[i].area << ','
+        << records[i].mean_h << ','
+        << records[i].min_h << ','
+        << records[i].mean_estimate_contribution << ','
+        << records[i].min_estimate_contribution << ','
         << records[i].grad_h_norm << ','
         << records[i].max_edge_target_ratio << '\n';
+  }
+}
+
+void writeLimiterSourcesCsv(
+    const std::filesystem::path& path,
+    const TargetFieldStageData& data,
+    const std::vector<FaceFieldRecord>& faces) {
+  struct SourceAggregate {
+    std::size_t influenced_vertices = 0;
+    double assigned_area = 0.0;
+    double assigned_mean_estimated_faces = 0.0;
+  };
+  std::unordered_map<int, SourceAggregate> aggregates;
+  for (int source : data.gradation_source_vertices) {
+    ++aggregates[source].influenced_vertices;
+  }
+  for (const auto& record : faces) {
+    int min_vertex = record.face[0];
+    for (int k = 1; k < 3; ++k) {
+      const int candidate = record.face[k];
+      if (data.limited_lengths[static_cast<std::size_t>(candidate)] <
+          data.limited_lengths[static_cast<std::size_t>(min_vertex)]) {
+        min_vertex = candidate;
+      }
+    }
+    const int source =
+        data.gradation_source_vertices[static_cast<std::size_t>(min_vertex)];
+    aggregates[source].assigned_area += record.area;
+    aggregates[source].assigned_mean_estimated_faces +=
+        record.mean_estimate_contribution;
+  }
+  std::vector<int> sources;
+  sources.reserve(aggregates.size());
+  for (const auto& item : aggregates) {
+    sources.push_back(item.first);
+  }
+  std::sort(sources.begin(), sources.end());
+  auto out = openOutputFile(path);
+  out << "source_vertex,source_initial_h,influenced_vertices,assigned_area,"
+         "assigned_mean_estimated_faces\n";
+  for (int source : sources) {
+    const auto& aggregate = aggregates.at(source);
+    const double initial_h = source >= 0
+                                 ? data.initial_lengths[static_cast<std::size_t>(source)]
+                                 : 0.0;
+    out << source << ',' << initial_h << ',' << aggregate.influenced_vertices
+        << ',' << aggregate.assigned_area << ','
+        << aggregate.assigned_mean_estimated_faces << '\n';
   }
 }
 
@@ -610,11 +839,15 @@ std::string targetFieldStatsJson(
     const std::vector<EdgeFieldRecord>& edge_records,
     const std::vector<FaceFieldRecord>& face_records) {
   std::vector<double> ratios;
+  std::vector<double> normalized_log_slopes;
   ratios.reserve(edge_records.size());
+  normalized_log_slopes.reserve(edge_records.size());
   for (const auto& record : edge_records) {
     ratios.push_back(record.target_ratio);
+    normalized_log_slopes.push_back(record.normalized_log_slope);
   }
   std::sort(ratios.begin(), ratios.end());
+  std::sort(normalized_log_slopes.begin(), normalized_log_slopes.end());
 
   std::vector<double> gradients;
   gradients.reserve(face_records.size());
@@ -634,6 +867,77 @@ std::string targetFieldStatsJson(
       observed_max <= data.max_length + 1e-12;
   const double max_ratio = ratios.empty() ? 0.0 : ratios.back();
 
+  const double raw_kappa_max = data.raw_kappa.empty()
+                                   ? 0.0
+                                   : *std::max_element(data.raw_kappa.begin(), data.raw_kappa.end());
+  const double filtered_kappa_max = data.filtered_kappa.empty()
+                                        ? 0.0
+                                        : *std::max_element(
+                                              data.filtered_kappa.begin(),
+                                              data.filtered_kappa.end());
+  const double smoothed_kappa_max = data.smoothed_kappa.empty()
+                                        ? 0.0
+                                        : *std::max_element(
+                                              data.smoothed_kappa.begin(),
+                                              data.smoothed_kappa.end());
+  double min_singular_ratio = std::numeric_limits<double>::infinity();
+  double max_residual_rms = 0.0;
+  double max_curvature_times_local_scale = 0.0;
+  for (std::size_t i = 0; i < data.fit_diagnostics.size(); ++i) {
+    const auto& diagnostics = data.fit_diagnostics[i];
+    if (!diagnostics.fallback && diagnostics.singular_ratio > 0.0) {
+      min_singular_ratio = std::min(min_singular_ratio, diagnostics.singular_ratio);
+    }
+    max_residual_rms = std::max(max_residual_rms, diagnostics.residual_rms);
+    if (data.base_length > 0.0) {
+      max_curvature_times_local_scale = std::max(
+          max_curvature_times_local_scale,
+          data.raw_kappa[i] * diagnostics.local_scale / data.base_length);
+    }
+  }
+  if (!std::isfinite(min_singular_ratio)) {
+    min_singular_ratio = 0.0;
+  }
+
+  std::size_t min_saturated = 0;
+  std::size_t max_saturated = 0;
+  for (double value : data.target_lengths) {
+    if (std::abs(value - data.min_length) <=
+        1e-12 * std::max(1.0, data.min_length)) {
+      ++min_saturated;
+    }
+    if (std::abs(value - data.max_length) <=
+        1e-12 * std::max(1.0, data.max_length)) {
+      ++max_saturated;
+    }
+  }
+  std::vector<std::size_t> face_order(face_records.size(), 0);
+  for (std::size_t i = 0; i < face_order.size(); ++i) {
+    face_order[i] = i;
+  }
+  std::sort(face_order.begin(), face_order.end(), [&](std::size_t lhs, std::size_t rhs) {
+    return face_records[lhs].mean_h < face_records[rhs].mean_h;
+  });
+  const std::size_t small_face_count =
+      static_cast<std::size_t>(std::ceil(0.05 * static_cast<double>(face_order.size())));
+  double small_face_budget = 0.0;
+  double total_mean_face_budget = 0.0;
+  for (const auto& record : face_records) {
+    total_mean_face_budget += record.mean_estimate_contribution;
+  }
+  for (std::size_t i = 0; i < small_face_count; ++i) {
+    small_face_budget += face_records[face_order[i]].mean_estimate_contribution;
+  }
+  std::size_t input_edge_violations = 0;
+  for (const auto& record : edge_records) {
+    if (record.edge_length_to_min_target < 0.8 ||
+        record.edge_length_to_min_target > 1.65) {
+      ++input_edge_violations;
+    }
+  }
+  std::unordered_set<int> limiter_sources(
+      data.gradation_source_vertices.begin(), data.gradation_source_vertices.end());
+
   std::ostringstream out;
   out << std::setprecision(17);
   out << "{\n";
@@ -642,22 +946,85 @@ std::string targetFieldStatsJson(
   out << "  \"h_max\": " << data.max_length << ",\n";
   out << "  \"target_faces\": " << data.target_faces << ",\n";
   out << "  \"target_bisection_iterations\": " << data.bisection_iterations << ",\n";
-  out << "  \"lambda\": " << data.lambda << ",\n";
-  out << "  \"initial_estimated_faces\": " << data.initial_estimated_faces << ",\n";
+  out << "  \"curvature_outlier_mode\": \""
+      << curvatureOutlierModeName(data.curvature_outlier_mode) << "\",\n";
+  out << "  \"curvature_filter_changed_vertices\": "
+      << data.curvature_filter_changed_vertices << ",\n";
+  out << "  \"raw_kappa_max\": " << raw_kappa_max << ",\n";
+  out << "  \"filtered_kappa_max\": " << filtered_kappa_max << ",\n";
+  out << "  \"smoothed_kappa_max\": " << smoothed_kappa_max << ",\n";
+  out << "  \"principal_fit_min_singular_ratio\": " << min_singular_ratio << ",\n";
+  out << "  \"principal_fit_max_residual_rms\": " << max_residual_rms << ",\n";
+  out << "  \"principal_fit_max_curvature_times_local_scale\": "
+      << max_curvature_times_local_scale << ",\n";
+  out << "  \"pre_limiter_estimated_faces\": " << data.pre_limiter_estimated_faces << ",\n";
+  out << "  \"post_limiter_estimated_faces\": " << data.post_limiter_estimated_faces << ",\n";
   out << "  \"scale\": " << data.scale << ",\n";
   out << "  \"estimated_faces\": " << data.estimated_faces << ",\n";
+  out << "  \"target_face_representative\": \""
+      << targetFaceRepresentativeName(data.target_face_representative) << "\",\n";
+  out << "  \"estimated_faces_mean\": " << data.estimated_faces_mean << ",\n";
+  out << "  \"estimated_faces_min\": " << data.estimated_faces_min << ",\n";
+  out << "  \"min_mean_estimate_ratio\": "
+      << (data.estimated_faces_mean > 0.0
+              ? data.estimated_faces_min / data.estimated_faces_mean
+              : 0.0)
+      << ",\n";
   out << "  \"estimated_faces_error\": " << (data.estimated_faces - static_cast<double>(data.target_faces)) << ",\n";
+  out << "  \"estimated_faces_relative_error\": " << data.estimated_faces_relative_error << ",\n";
   out << "  \"target_faces_reachable\": " << (data.target_faces_reachable ? "true" : "false") << ",\n";
+  out << "  \"target_gradation_enabled\": " << (data.gradation_enabled ? "true" : "false") << ",\n";
+  out << "  \"target_gradation_ratio\": " << data.gradation_ratio << ",\n";
+  out << "  \"gradation_runtime_ms\": " << data.gradation.runtime_ms << ",\n";
+  out << "  \"gradation_queue_pops\": " << data.gradation.queue_pops << ",\n";
+  out << "  \"gradation_relaxations\": " << data.gradation.relaxations << ",\n";
+  out << "  \"gradation_changed_vertices\": " << data.gradation.changed_vertices << ",\n";
+  out << "  \"gradation_changed_vertex_rate\": " << data.gradation.changed_vertex_rate << ",\n";
+  out << "  \"gradation_source_count\": " << limiter_sources.size() << ",\n";
+  out << "  \"gradation_min_log_reduction\": " << data.gradation.min_log_reduction << ",\n";
+  out << "  \"gradation_mean_log_reduction\": " << data.gradation.mean_log_reduction << ",\n";
+  out << "  \"gradation_max_log_reduction\": " << data.gradation.max_log_reduction << ",\n";
+  out << "  \"gradation_max_normalized_log_slope_before\": "
+      << data.gradation.before.max_normalized_log_slope << ",\n";
+  out << "  \"gradation_max_normalized_log_slope_after\": "
+      << data.gradation.after.max_normalized_log_slope << ",\n";
+  out << "  \"final_gradation_max_normalized_log_slope\": "
+      << data.final_gradation.max_normalized_log_slope << ",\n";
+  out << "  \"final_gradation_p95_normalized_log_slope\": "
+      << data.final_gradation.p95_normalized_log_slope << ",\n";
+  out << "  \"final_gradation_p99_normalized_log_slope\": "
+      << data.final_gradation.p99_normalized_log_slope << ",\n";
   out << "  \"principal_curvature_fallback_vertices\": " << data.fallback_vertices << ",\n";
   out << "  \"principal_curvature_fallback_rate\": "
       << static_cast<double>(data.fallback_vertices) / static_cast<double>(data.target_lengths.size()) << ",\n";
   out << "  \"observed_h_min\": " << observed_min << ",\n";
   out << "  \"observed_h_max\": " << observed_max << ",\n";
+  out << "  \"h_min_saturation_rate\": "
+      << static_cast<double>(min_saturated) / static_cast<double>(data.target_lengths.size())
+      << ",\n";
+  out << "  \"h_max_saturation_rate\": "
+      << static_cast<double>(max_saturated) / static_cast<double>(data.target_lengths.size())
+      << ",\n";
+  out << "  \"smallest_five_percent_face_budget_rate\": "
+      << (total_mean_face_budget > 0.0 ? small_face_budget / total_mean_face_budget : 0.0)
+      << ",\n";
+  out << "  \"input_edge_target_violation_rate\": "
+      << (edge_records.empty()
+              ? 0.0
+              : static_cast<double>(input_edge_violations) /
+                    static_cast<double>(edge_records.size()))
+      << ",\n";
   out << "  \"range_ok\": " << (range_ok ? "true" : "false") << ",\n";
   out << "  \"edge_count\": " << edge_records.size() << ",\n";
   out << "  \"max_edge_target_ratio\": " << max_ratio << ",\n";
   out << "  \"p95_edge_target_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
   out << "  \"p99_edge_target_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
+  out << "  \"max_normalized_log_slope\": "
+      << (normalized_log_slopes.empty() ? 0.0 : normalized_log_slopes.back()) << ",\n";
+  out << "  \"p95_normalized_log_slope\": "
+      << quantileOfSorted(normalized_log_slopes, 0.95) << ",\n";
+  out << "  \"p99_normalized_log_slope\": "
+      << quantileOfSorted(normalized_log_slopes, 0.99) << ",\n";
   out << "  \"face_count\": " << face_records.size() << ",\n";
   out << "  \"max_grad_h_norm\": " << (gradients.empty() ? 0.0 : gradients.back()) << ",\n";
   out << "  \"p95_grad_h_norm\": " << quantileOfSorted(gradients, 0.95) << ",\n";
@@ -694,9 +1061,21 @@ std::string colorScalesJson(
   out << "      \"min\": " << k2_range.first << ",\n";
   out << "      \"max\": " << k2_range.second << "\n";
   out << "    },\n";
-  out << "    \"kappa\": {\n";
-  out << "      \"file\": \"kappa_heat.ply\",\n";
-  out << "      \"field\": \"dimensionless_kappa\",\n";
+  out << "    \"raw_kappa\": {\n";
+  out << "      \"file\": \"raw_kappa_heat.ply\",\n";
+  out << "      \"field\": \"raw_dimensionless_kappa\",\n";
+  out << "      \"min\": " << kappa_range.first << ",\n";
+  out << "      \"max\": " << kappa_range.second << "\n";
+  out << "    },\n";
+  out << "    \"filtered_kappa\": {\n";
+  out << "      \"file\": \"filtered_kappa_heat.ply\",\n";
+  out << "      \"field\": \"filtered_dimensionless_kappa\",\n";
+  out << "      \"min\": " << kappa_range.first << ",\n";
+  out << "      \"max\": " << kappa_range.second << "\n";
+  out << "    },\n";
+  out << "    \"smoothed_kappa\": {\n";
+  out << "      \"file\": \"smoothed_kappa_heat.ply\",\n";
+  out << "      \"field\": \"smoothed_dimensionless_kappa\",\n";
   out << "      \"min\": " << kappa_range.first << ",\n";
   out << "      \"max\": " << kappa_range.second << "\n";
   out << "    },\n";
@@ -707,9 +1086,9 @@ std::string colorScalesJson(
   out << "      \"max\": " << target_h_max << ",\n";
   out << "      \"inverted\": true\n";
   out << "    },\n";
-  out << "    \"smoothed_h\": {\n";
-  out << "      \"file\": \"smoothed_h_heat.ply\",\n";
-  out << "      \"field\": \"smoothed_h\",\n";
+  out << "    \"limited_h\": {\n";
+  out << "      \"file\": \"limited_h_heat.ply\",\n";
+  out << "      \"field\": \"limited_h\",\n";
   out << "      \"min\": " << target_h_min << ",\n";
   out << "      \"max\": " << target_h_max << ",\n";
   out << "      \"inverted\": true\n";
@@ -734,14 +1113,19 @@ void writeTargetFieldDiagnostics(
     return;
   }
   const std::size_t n = mesh.vertices.size();
-  if (data.k1.size() != n || data.k2.size() != n || data.kappa.size() != n ||
-      data.initial_lengths.size() != n || data.smoothed_lengths.size() != n ||
+  if (data.k1.size() != n || data.k2.size() != n || data.raw_kappa.size() != n ||
+      data.filtered_kappa.size() != n || data.curvature_caps.size() != n ||
+      data.smoothed_kappa.size() != n || data.fit_diagnostics.size() != n ||
+      data.gradation_source_vertices.size() != n ||
+      data.gradation_source_distances.size() != n ||
+      data.initial_lengths.size() != n ||
+      data.limited_lengths.size() != n ||
       data.target_lengths.size() != n) {
     throw std::runtime_error("target diagnostic field size mismatch");
   }
   std::filesystem::create_directories(out_dir);
 
-  const auto edge_records = computeEdgeFieldRecords(mesh, data.target_lengths);
+  const auto edge_records = computeEdgeFieldRecords(mesh, data.target_lengths, data.base_length);
   std::unordered_map<Edge, double, EdgeHash> edge_ratios;
   edge_ratios.reserve(edge_records.size());
   for (const auto& record : edge_records) {
@@ -752,6 +1136,7 @@ void writeTargetFieldDiagnostics(
   writeVerticesCsv(out_dir / "vertices.csv", mesh, data);
   writeEdgesCsv(out_dir / "edges.csv", edge_records);
   writeFacesCsv(out_dir / "faces.csv", face_records);
+  writeLimiterSourcesCsv(out_dir / "limiter_sources.csv", data, face_records);
   writeTextFile(
       out_dir / "field_stats.json",
       targetFieldStatsJson(
@@ -767,8 +1152,13 @@ void writeTargetFieldDiagnostics(
       k1_abs, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
   const auto k2_range = percentileScalarRange(
       k2_abs, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
+  std::vector<double> combined_kappa = data.raw_kappa;
+  combined_kappa.insert(
+      combined_kappa.end(), data.filtered_kappa.begin(), data.filtered_kappa.end());
+  combined_kappa.insert(
+      combined_kappa.end(), data.smoothed_kappa.begin(), data.smoothed_kappa.end());
   const auto kappa_range = percentileScalarRange(
-      data.kappa, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
+      combined_kappa, kScalarHeatClipLowPercentile, kScalarHeatClipHighPercentile);
   writeTextFile(
       out_dir / "color_scales.json",
       colorScalesJson(
@@ -792,9 +1182,21 @@ void writeTargetFieldDiagnostics(
       k2_range.first,
       k2_range.second);
   writeVertexHeatPly(
-      out_dir / "kappa_heat.ply",
+      out_dir / "raw_kappa_heat.ply",
       mesh,
-      data.kappa,
+      data.raw_kappa,
+      kappa_range.first,
+      kappa_range.second);
+  writeVertexHeatPly(
+      out_dir / "filtered_kappa_heat.ply",
+      mesh,
+      data.filtered_kappa,
+      kappa_range.first,
+      kappa_range.second);
+  writeVertexHeatPly(
+      out_dir / "smoothed_kappa_heat.ply",
+      mesh,
+      data.smoothed_kappa,
       kappa_range.first,
       kappa_range.second);
   writeVertexHeatPly(
@@ -805,9 +1207,9 @@ void writeTargetFieldDiagnostics(
       data.max_length,
       true);
   writeVertexHeatPly(
-      out_dir / "smoothed_h_heat.ply",
+      out_dir / "limited_h_heat.ply",
       mesh,
-      data.smoothed_lengths,
+      data.limited_lengths,
       data.min_length,
       data.max_length,
       true);
@@ -990,11 +1392,24 @@ std::string toString(Variant variant) {
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
-  if (config_.target_smoothing_alpha <= 0.0 || !std::isfinite(config_.target_smoothing_alpha)) {
-    throw std::runtime_error("target smoothing alpha must be positive");
+  if (config_.curvature_outlier_mode == CurvatureOutlierMode::SamplingCap &&
+      (!std::isfinite(config_.curvature_cap_beta) ||
+       config_.curvature_cap_beta <= 0.0)) {
+    throw std::runtime_error("curvature cap beta must be positive and finite");
+  }
+  if (config_.curvature_smoothing_alpha < 0.0 ||
+      !std::isfinite(config_.curvature_smoothing_alpha)) {
+    throw std::runtime_error("curvature smoothing alpha must be finite and non-negative");
+  }
+  if (!std::isfinite(config_.target_gradation_ratio) || config_.target_gradation_ratio <= 1.0) {
+    throw std::runtime_error("target gradation ratio must be finite and greater than one");
   }
   if (config_.target_bisection_iterations < 0) {
     throw std::runtime_error("target bisection iterations must be non-negative");
+  }
+  if (!std::isfinite(config_.target_max_factor) ||
+      config_.target_max_factor <= detail::kTargetMinEdgeFactor) {
+    throw std::runtime_error("target max factor must exceed the target minimum factor");
   }
   if (config_.max_flip_dihedral_degrees <= 0.0 || config_.max_flip_dihedral_degrees > 180.0 ||
       !std::isfinite(config_.max_flip_dihedral_degrees)) {
@@ -1124,68 +1539,205 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_faces) {
   const double base_len = meanEdgeLength(mesh);
   const auto principal = detail::computePrincipalCurvatures(mesh, base_len);
+  const auto filtered = detail::filterCurvatureOutliers(
+      mesh,
+      principal,
+      base_len,
+      config_.curvature_outlier_mode,
+      config_.curvature_outlier_top_k,
+      config_.curvature_cap_beta);
+
+  std::vector<double> smoothed_kappa = filtered.filtered_kappa;
+  detail::ScreenedLaplacianResult curvature_smoothing;
+  if (config_.curvature_smoothing_alpha > 0.0) {
+    curvature_smoothing = detail::solveScreenedScalarField(
+        mesh,
+        filtered.filtered_kappa,
+        config_.curvature_smoothing_alpha);
+    smoothed_kappa = curvature_smoothing.values;
+    for (double& value : smoothed_kappa) {
+      if (!std::isfinite(value)) {
+        throw std::runtime_error("curvature smoothing produced a non-finite value");
+      }
+      value = std::max(value, 0.0);
+    }
+  }
+
   const auto initial = detail::buildInitialPrincipalCurvatureLengths(
       mesh,
-      principal.kappa,
-      target_faces,
+      smoothed_kappa,
       base_len,
-      config_.target_bisection_iterations);
+      config_.target_max_factor);
 
-  const auto smoothed = detail::solveScreenedScalarField(
-      mesh,
-      initial.initial_lengths,
-      config_.target_smoothing_alpha);
-  std::vector<double> smoothed_lengths = smoothed.values;
-  for (double& value : smoothed_lengths) {
-    if (!std::isfinite(value)) {
-      throw std::runtime_error("target smoothing produced a non-finite length");
+  detail::TargetGradationResult gradation;
+  if (config_.enable_target_gradation) {
+    gradation = detail::applyDownwardLogGradationLimiter(
+        mesh,
+        initial.initial_lengths,
+        base_len,
+        config_.target_gradation_ratio);
+  } else {
+    gradation.limited_lengths = initial.initial_lengths;
+    gradation.source_vertices.resize(mesh.vertexCount(), -1);
+    gradation.normalized_source_distances.assign(mesh.vertexCount(), 0.0);
+    for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
+      gradation.source_vertices[i] = static_cast<int>(i);
     }
-    value = std::clamp(value, initial.h_min, initial.h_max);
+    gradation.stats.before =
+        detail::measureTargetGradation(mesh, initial.initial_lengths, base_len);
+    gradation.stats.after = gradation.stats.before;
   }
+
+  const double pre_limiter_estimated_faces =
+      detail::estimateTargetFaceCount(mesh, initial.initial_lengths);
+  const double post_limiter_estimated_faces =
+      detail::estimateTargetFaceCount(mesh, gradation.limited_lengths);
   const auto final = detail::calibrateTargetLengthsToFaceCount(
       mesh,
-      smoothed_lengths,
+      gradation.limited_lengths,
       target_faces,
       initial.h_min,
       initial.h_max,
-      config_.target_bisection_iterations);
+      config_.target_bisection_iterations,
+      config_.target_face_representative);
+  const TargetFieldHealth field_health = measureTargetFieldHealth(
+      mesh,
+      final.target_lengths,
+      initial.h_min,
+      initial.h_max,
+      config_.collapseFactor(),
+      config_.splitFactor());
 
-  stats_.target_smoothing_assembly_time_ms = smoothed.stats.assembly_time_ms;
-  stats_.target_smoothing_factorization_time_ms = smoothed.stats.factorization_time_ms;
-  stats_.target_smoothing_solve_time_ms = smoothed.stats.solve_time_ms;
-  stats_.target_smoothing_residual_abs = smoothed.stats.residual_abs;
-  stats_.target_smoothing_residual_scaled = smoothed.stats.residual_scaled;
-  stats_.target_smoothing_matrix_nonzeros = smoothed.stats.matrix_nonzeros;
-  stats_.target_smoothing_solver_success = smoothed.stats.solver_success;
+  const detail::TargetGradationMetrics final_gradation =
+      detail::measureTargetGradation(mesh, final.target_lengths, base_len);
+  if (config_.enable_target_gradation) {
+    const double allowed_slope = std::log(config_.target_gradation_ratio);
+    const double tolerance = 1e-10 * std::max(1.0, std::abs(allowed_slope));
+    if (final_gradation.max_normalized_log_slope > allowed_slope + tolerance) {
+      throw std::runtime_error("final target field violates the configured gradation ratio");
+    }
+  }
+
+  stats_.curvature_smoothing_applied = config_.curvature_smoothing_alpha > 0.0;
+  stats_.curvature_smoothing_assembly_time_ms = curvature_smoothing.stats.assembly_time_ms;
+  stats_.curvature_smoothing_factorization_time_ms = curvature_smoothing.stats.factorization_time_ms;
+  stats_.curvature_smoothing_solve_time_ms = curvature_smoothing.stats.solve_time_ms;
+  stats_.curvature_smoothing_residual_abs = curvature_smoothing.stats.residual_abs;
+  stats_.curvature_smoothing_residual_scaled = curvature_smoothing.stats.residual_scaled;
+  stats_.curvature_smoothing_matrix_nonzeros = curvature_smoothing.stats.matrix_nonzeros;
+  stats_.curvature_smoothing_solver_success = curvature_smoothing.stats.solver_success;
   stats_.principal_curvature_fallback_vertices = principal.fallback_vertices;
   stats_.principal_curvature_fallback_rate =
       static_cast<double>(principal.fallback_vertices) / static_cast<double>(mesh.vertexCount());
-  stats_.initial_estimated_faces = initial.estimated_faces;
+  stats_.principal_fit_min_singular_ratio = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < principal.fit_diagnostics.size(); ++i) {
+    const auto& diagnostics = principal.fit_diagnostics[i];
+    if (!diagnostics.fallback && diagnostics.singular_ratio > 0.0) {
+      stats_.principal_fit_min_singular_ratio = std::min(
+          stats_.principal_fit_min_singular_ratio, diagnostics.singular_ratio);
+    }
+    stats_.principal_fit_max_residual_rms = std::max(
+        stats_.principal_fit_max_residual_rms, diagnostics.residual_rms);
+    stats_.principal_fit_max_curvature_times_local_scale = std::max(
+        stats_.principal_fit_max_curvature_times_local_scale,
+        principal.kappa[i] * diagnostics.local_scale / base_len);
+  }
+  if (!std::isfinite(stats_.principal_fit_min_singular_ratio)) {
+    stats_.principal_fit_min_singular_ratio = 0.0;
+  }
+  stats_.curvature_filter_changed_vertices = filtered.changed_vertices;
+  stats_.curvature_filter_changed_vertex_rate =
+      static_cast<double>(filtered.changed_vertices) /
+      static_cast<double>(mesh.vertexCount());
+  stats_.raw_kappa_max = filtered.raw_max;
+  stats_.filtered_kappa_max = filtered.filtered_max;
+  stats_.smoothed_kappa_max = smoothed_kappa.empty()
+                                  ? 0.0
+                                  : *std::max_element(
+                                        smoothed_kappa.begin(), smoothed_kappa.end());
+  stats_.pre_limiter_estimated_faces = pre_limiter_estimated_faces;
+  stats_.post_limiter_estimated_faces = post_limiter_estimated_faces;
+  stats_.gradation_runtime_ms = gradation.stats.runtime_ms;
+  stats_.gradation_queue_pops = gradation.stats.queue_pops;
+  stats_.gradation_relaxations = gradation.stats.relaxations;
+  stats_.gradation_changed_vertices = gradation.stats.changed_vertices;
+  stats_.gradation_changed_vertex_rate = gradation.stats.changed_vertex_rate;
+  stats_.gradation_min_log_reduction = gradation.stats.min_log_reduction;
+  stats_.gradation_mean_log_reduction = gradation.stats.mean_log_reduction;
+  stats_.gradation_max_log_reduction = gradation.stats.max_log_reduction;
+  stats_.gradation_max_normalized_log_slope_before =
+      gradation.stats.before.max_normalized_log_slope;
+  stats_.gradation_max_normalized_log_slope_after =
+      gradation.stats.after.max_normalized_log_slope;
+  stats_.gradation_p95_normalized_log_slope_after =
+      gradation.stats.after.p95_normalized_log_slope;
+  stats_.gradation_p99_normalized_log_slope_after =
+      gradation.stats.after.p99_normalized_log_slope;
+  stats_.gradation_max_adjacent_ratio_before = gradation.stats.before.max_adjacent_ratio;
+  stats_.gradation_max_adjacent_ratio_after = gradation.stats.after.max_adjacent_ratio;
+  stats_.final_gradation_max_normalized_log_slope =
+      final_gradation.max_normalized_log_slope;
+  stats_.final_gradation_p95_normalized_log_slope =
+      final_gradation.p95_normalized_log_slope;
+  stats_.final_gradation_p99_normalized_log_slope =
+      final_gradation.p99_normalized_log_slope;
+  stats_.final_gradation_max_adjacent_ratio = final_gradation.max_adjacent_ratio;
   stats_.final_estimated_faces = final.estimated_faces;
+  stats_.final_estimated_faces_mean = field_health.estimated_faces_mean;
+  stats_.final_estimated_faces_min = field_health.estimated_faces_min;
+  stats_.final_min_mean_estimate_ratio =
+      field_health.estimated_faces_mean > 0.0
+          ? field_health.estimated_faces_min / field_health.estimated_faces_mean
+          : 0.0;
+  stats_.final_face_estimate_relative_error = final.relative_error;
+  stats_.target_h_min_saturation_rate = field_health.h_min_saturation_rate;
+  stats_.target_h_max_saturation_rate = field_health.h_max_saturation_rate;
+  stats_.smallest_five_percent_face_budget_rate =
+      field_health.smallest_five_percent_face_budget_rate;
+  stats_.input_edge_target_violation_rate =
+      field_health.input_edge_target_violation_rate;
   stats_.target_scale = final.scale;
   stats_.target_faces_reachable = final.target_faces_reachable;
 
   if (!config_.target_field_export_dir.empty()) {
+    TargetFieldStageData diagnostic;
+    diagnostic.k1 = principal.k1;
+    diagnostic.k2 = principal.k2;
+    diagnostic.raw_kappa = principal.kappa;
+    diagnostic.filtered_kappa = filtered.filtered_kappa;
+    diagnostic.curvature_caps = filtered.applied_caps;
+    diagnostic.smoothed_kappa = smoothed_kappa;
+    diagnostic.fit_diagnostics = principal.fit_diagnostics;
+    diagnostic.initial_lengths = initial.initial_lengths;
+    diagnostic.limited_lengths = gradation.limited_lengths;
+    diagnostic.target_lengths = final.target_lengths;
+    diagnostic.gradation_source_vertices = gradation.source_vertices;
+    diagnostic.gradation_source_distances = gradation.normalized_source_distances;
+    diagnostic.base_length = base_len;
+    diagnostic.min_length = initial.h_min;
+    diagnostic.max_length = initial.h_max;
+    diagnostic.pre_limiter_estimated_faces = pre_limiter_estimated_faces;
+    diagnostic.post_limiter_estimated_faces = post_limiter_estimated_faces;
+    diagnostic.scale = final.scale;
+    diagnostic.estimated_faces = final.estimated_faces;
+    diagnostic.estimated_faces_mean = field_health.estimated_faces_mean;
+    diagnostic.estimated_faces_min = field_health.estimated_faces_min;
+    diagnostic.estimated_faces_relative_error = final.relative_error;
+    diagnostic.target_faces = final.target_faces;
+    diagnostic.bisection_iterations = config_.target_bisection_iterations;
+    diagnostic.fallback_vertices = principal.fallback_vertices;
+    diagnostic.curvature_filter_changed_vertices = filtered.changed_vertices;
+    diagnostic.curvature_outlier_mode = config_.curvature_outlier_mode;
+    diagnostic.target_face_representative = config_.target_face_representative;
+    diagnostic.target_faces_reachable = final.target_faces_reachable;
+    diagnostic.gradation_enabled = config_.enable_target_gradation;
+    diagnostic.gradation_ratio = config_.target_gradation_ratio;
+    diagnostic.gradation = gradation.stats;
+    diagnostic.final_gradation = final_gradation;
     writeTargetFieldDiagnostics(
         std::filesystem::path(config_.target_field_export_dir),
         mesh,
-        {principal.k1,
-         principal.k2,
-         principal.kappa,
-         initial.initial_lengths,
-         smoothed_lengths,
-         final.target_lengths,
-         base_len,
-         initial.h_min,
-         initial.h_max,
-         initial.lambda,
-         initial.estimated_faces,
-         final.scale,
-         final.estimated_faces,
-         final.target_faces,
-         config_.target_bisection_iterations,
-         principal.fallback_vertices,
-         final.target_faces_reachable});
+        diagnostic);
   }
 
   target_field_.build(mesh, final.target_lengths);
@@ -1195,10 +1747,11 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
     std::cerr << "target length: base=" << base_len
               << ", target_faces=" << target_faces
               << ", bisection_iters=" << config_.target_bisection_iterations
-              << ", initial_estimated_faces=" << initial.estimated_faces
+              << ", pre_limiter_estimated_faces=" << pre_limiter_estimated_faces
+              << ", post_limiter_estimated_faces=" << post_limiter_estimated_faces
               << ", final_estimated_faces=" << final.estimated_faces
-              << ", lambda=" << initial.lambda
               << ", scale=" << final.scale
+              << ", max_log_slope=" << final_gradation.max_normalized_log_slope
               << ", curvature_fallback=" << principal.fallback_vertices << "/" << mesh.vertexCount()
               << ", min=" << *min_it
               << ", max=" << *max_it << "\n";

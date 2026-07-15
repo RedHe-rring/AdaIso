@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.11.2
+
+- Added per-vertex quadratic-fit reliability diagnostics and full limiter
+  source/distance provenance to target-field exports.
+- Added opt-in `topk_median` and sampling-aware curvature outlier filters;
+  defaults preserve the v2.11.1 target field exactly.
+- Added selectable mean/minimum face-size calibration and configurable maximum
+  target-length factor for controlled experiments.
+- Added mean/min face-count estimates, clamp saturation, low-h budget
+  concentration, and input edge/target violation diagnostics.
+- Added the reproducible T21 causal, repair-screening, and full T-series
+  experiment driver and report.
+
+## 2.11.1
+
+Breaking change:
+Curvature denoising and target-size gradation are now separate stages.
+
+- Screened-Laplacian smoothing now operates on the dimensionless principal-
+  curvature magnitude instead of the target-length field.
+- Added a downward-only multi-source Dijkstra limiter on `log(h)` with a hard
+  normalized edge-gradation bound.
+- Removed the redundant pre-smoothing target-face calibration; target lengths
+  are calibrated once, after gradation limiting.
+- Replaced `--target-smoothing-alpha` with
+  `--curvature-smoothing-alpha`, `--target-gradation`, and
+  `--target-gradation-ratio`.
+- Replaced the former target-length smoothing diagnostics with
+  `smoothed_kappa` and `limited_h`, and added gradation and face-budget
+  verification statistics.
+
 ## 2.8.1
 
 Breaking change:

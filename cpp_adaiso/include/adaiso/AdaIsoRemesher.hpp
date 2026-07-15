@@ -2,6 +2,7 @@
 
 #include "adaiso/Geometry.hpp"
 #include "adaiso/Mesh.hpp"
+#include "adaiso/TargetSizingOptions.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -47,7 +48,14 @@ class TargetLengthField {
 
 struct AdaIsoConfig {
   Variant variant = Variant::Code;
-  double target_smoothing_alpha = 2.0;
+  CurvatureOutlierMode curvature_outlier_mode = CurvatureOutlierMode::None;
+  std::size_t curvature_outlier_top_k = 1;
+  double curvature_cap_beta = 5.0;
+  double curvature_smoothing_alpha = 0.75;
+  bool enable_target_gradation = true;
+  double target_gradation_ratio = 1.30;
+  TargetFaceRepresentative target_face_representative = TargetFaceRepresentative::Mean;
+  double target_max_factor = 5.0;
   std::size_t target_faces = 0;
   int target_bisection_iterations = 64;
   std::string target_field_export_dir;
@@ -98,17 +106,53 @@ struct AdaIsoStats {
   std::size_t vertices = 0;
   std::size_t faces = 0;
   std::vector<IterationStats> iterations;
-  double target_smoothing_assembly_time_ms = 0.0;
-  double target_smoothing_factorization_time_ms = 0.0;
-  double target_smoothing_solve_time_ms = 0.0;
-  double target_smoothing_residual_abs = 0.0;
-  double target_smoothing_residual_scaled = 0.0;
-  std::size_t target_smoothing_matrix_nonzeros = 0;
-  bool target_smoothing_solver_success = false;
+  bool curvature_smoothing_applied = false;
+  double curvature_smoothing_assembly_time_ms = 0.0;
+  double curvature_smoothing_factorization_time_ms = 0.0;
+  double curvature_smoothing_solve_time_ms = 0.0;
+  double curvature_smoothing_residual_abs = 0.0;
+  double curvature_smoothing_residual_scaled = 0.0;
+  std::size_t curvature_smoothing_matrix_nonzeros = 0;
+  bool curvature_smoothing_solver_success = false;
   std::size_t principal_curvature_fallback_vertices = 0;
   double principal_curvature_fallback_rate = 0.0;
-  double initial_estimated_faces = 0.0;
+  double principal_fit_min_singular_ratio = 0.0;
+  double principal_fit_max_residual_rms = 0.0;
+  double principal_fit_max_curvature_times_local_scale = 0.0;
+  std::size_t curvature_filter_changed_vertices = 0;
+  double curvature_filter_changed_vertex_rate = 0.0;
+  double raw_kappa_max = 0.0;
+  double filtered_kappa_max = 0.0;
+  double smoothed_kappa_max = 0.0;
+  double pre_limiter_estimated_faces = 0.0;
+  double post_limiter_estimated_faces = 0.0;
+  double gradation_runtime_ms = 0.0;
+  std::size_t gradation_queue_pops = 0;
+  std::size_t gradation_relaxations = 0;
+  std::size_t gradation_changed_vertices = 0;
+  double gradation_changed_vertex_rate = 0.0;
+  double gradation_min_log_reduction = 0.0;
+  double gradation_mean_log_reduction = 0.0;
+  double gradation_max_log_reduction = 0.0;
+  double gradation_max_normalized_log_slope_before = 0.0;
+  double gradation_max_normalized_log_slope_after = 0.0;
+  double gradation_p95_normalized_log_slope_after = 0.0;
+  double gradation_p99_normalized_log_slope_after = 0.0;
+  double gradation_max_adjacent_ratio_before = 1.0;
+  double gradation_max_adjacent_ratio_after = 1.0;
+  double final_gradation_max_normalized_log_slope = 0.0;
+  double final_gradation_p95_normalized_log_slope = 0.0;
+  double final_gradation_p99_normalized_log_slope = 0.0;
+  double final_gradation_max_adjacent_ratio = 1.0;
   double final_estimated_faces = 0.0;
+  double final_estimated_faces_mean = 0.0;
+  double final_estimated_faces_min = 0.0;
+  double final_min_mean_estimate_ratio = 1.0;
+  double final_face_estimate_relative_error = 0.0;
+  double target_h_min_saturation_rate = 0.0;
+  double target_h_max_saturation_rate = 0.0;
+  double smallest_five_percent_face_budget_rate = 0.0;
+  double input_edge_target_violation_rate = 0.0;
   double target_scale = 1.0;
   bool target_faces_reachable = true;
 };

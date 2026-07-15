@@ -104,7 +104,9 @@ bool fitQuadraticPatch(
     const Eigen::Vector3d& tangent2,
     double local_scale,
     double& k1,
-    double& k2) {
+    double& k2,
+    PrincipalCurvatureFitDiagnostics& diagnostics) {
+  diagnostics.local_scale = local_scale;
   if (samples.size() < 3 || !std::isfinite(local_scale) || local_scale <= 0.0) {
     return false;
   }
@@ -136,6 +138,7 @@ bool fitQuadraticPatch(
   if (rows.size() < 3) {
     return false;
   }
+  diagnostics.sample_count = rows.size();
 
   Eigen::MatrixXd matrix(static_cast<Eigen::Index>(rows.size()), 3);
   Eigen::VectorXd rhs(static_cast<Eigen::Index>(rows.size()));
@@ -146,12 +149,21 @@ bool fitQuadraticPatch(
 
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(matrix, Eigen::ComputeThinU | Eigen::ComputeThinV);
   const Eigen::VectorXd singular = svd.singularValues();
+  if (singular.size() == 3 && singular.allFinite() && singular[0] > 0.0) {
+    diagnostics.singular_ratio = singular[2] / singular[0];
+  }
   if (singular.size() != 3 || !singular.allFinite() || singular[0] <= 0.0 ||
       singular[2] / singular[0] < kPrincipalFitMinSingularRatio) {
     return false;
   }
   const Eigen::Vector3d coefficients = svd.solve(rhs);
   if (!finiteVector(coefficients)) {
+    return false;
+  }
+  const Eigen::VectorXd residual = matrix * coefficients - rhs;
+  diagnostics.residual_rms =
+      std::sqrt(residual.squaredNorm() / static_cast<double>(rows.size()));
+  if (!std::isfinite(diagnostics.residual_rms)) {
     return false;
   }
 
@@ -190,6 +202,7 @@ PrincipalCurvatureResult computePrincipalCurvatures(
   result.k1.assign(mesh.vertexCount(), 0.0);
   result.k2.assign(mesh.vertexCount(), 0.0);
   result.kappa.assign(mesh.vertexCount(), 0.0);
+  result.fit_diagnostics.resize(mesh.vertexCount());
 
   for (std::size_t vertex = 0; vertex < mesh.vertexCount(); ++vertex) {
     Eigen::Vector3d normal;
@@ -197,8 +210,11 @@ PrincipalCurvatureResult computePrincipalCurvatures(
     Eigen::Vector3d tangent2;
     const std::vector<int> one_ring = sortedOneRing(vertex, neighbors);
     const double local_scale = localScale(mesh, vertex, one_ring);
+    auto& diagnostics = result.fit_diagnostics[vertex];
+    diagnostics.local_scale = local_scale;
     double k1 = 0.0;
     double k2 = 0.0;
+    diagnostics.sample_ring = 1;
     bool fitted = tangentBasis(normals[vertex], normal, tangent1, tangent2) &&
         std::isfinite(local_scale) &&
         local_scale > kNormalEpsilon * mean_edge_length &&
@@ -211,9 +227,13 @@ PrincipalCurvatureResult computePrincipalCurvatures(
             tangent2,
             local_scale,
             k1,
-            k2);
+            k2,
+            diagnostics);
     if (!fitted && tangentBasis(normals[vertex], normal, tangent1, tangent2) &&
         std::isfinite(local_scale) && local_scale > kNormalEpsilon * mean_edge_length) {
+      diagnostics = {};
+      diagnostics.sample_ring = 2;
+      diagnostics.local_scale = local_scale;
       fitted = fitQuadraticPatch(
           mesh,
           vertex,
@@ -223,12 +243,15 @@ PrincipalCurvatureResult computePrincipalCurvatures(
           tangent2,
           local_scale,
           k1,
-          k2);
+          k2,
+          diagnostics);
     }
     if (!fitted) {
+      diagnostics.fallback = true;
       ++result.fallback_vertices;
       continue;
     }
+    diagnostics.fallback = false;
     result.k1[vertex] = k1;
     result.k2[vertex] = k2;
     result.kappa[vertex] = mean_edge_length * std::max(std::abs(k1), std::abs(k2));
