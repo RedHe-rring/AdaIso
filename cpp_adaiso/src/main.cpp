@@ -1,7 +1,6 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 #include "adaiso/IO.hpp"
 #include "adaiso/Metrics.hpp"
-#include "adaiso/detail/TargetFaceSizing.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,16 +22,9 @@ void printUsage(std::ostream& out) {
       << "  adaiso_cli <input.obj|input.ply|input.off> -o <output.obj|output.ply> [options]\n\n"
       << "Options:\n"
       << "  --variant <code|paper>     Default: code\n"
-      << "  --curvature-outlier-mode <none|topk-median|sampling-cap> Default: none\n"
-      << "  --curvature-outlier-top-k <n> Top-k diagnostic replacements. Default: 1\n"
-      << "  --curvature-cap-beta <v>  Sampling-aware curvature cap. Default: 5\n"
-      << "  --curvature-smoothing-alpha <value> Screened curvature smoothing strength. Default: 0.75; 0 disables\n"
-      << "  --target-gradation <0|1>   Enable downward log-size gradation. Default: 1\n"
-      << "  --target-gradation-ratio <value> Maximum size ratio per mean-edge distance. Default: 1.30\n"
-      << "  --target-face-representative <mean|min> Face h used for calibration. Default: mean\n"
-      << "  --target-max-factor <value> Maximum target h / mean edge length. Default: 5\n"
+      << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
+      << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-faces <n>         Target face budget. Default: cleaned input face count\n"
-      << "  --target-bisection-iters <n> Target sizing/calibration bisection iterations. Default: 64\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
@@ -66,48 +58,6 @@ bool parseBool(const std::string& value) {
     return false;
   }
   throw std::runtime_error("expected boolean value 0/1, got: " + value);
-}
-
-adaiso::CurvatureOutlierMode parseCurvatureOutlierMode(const std::string& value) {
-  const std::string lower = lowerString(value);
-  if (lower == "none") {
-    return adaiso::CurvatureOutlierMode::None;
-  }
-  if (lower == "topk-median" || lower == "topk_median") {
-    return adaiso::CurvatureOutlierMode::TopKMedian;
-  }
-  if (lower == "sampling-cap" || lower == "sampling_cap") {
-    return adaiso::CurvatureOutlierMode::SamplingCap;
-  }
-  throw std::runtime_error("unknown curvature outlier mode: " + value);
-}
-
-const char* curvatureOutlierModeName(adaiso::CurvatureOutlierMode mode) {
-  switch (mode) {
-    case adaiso::CurvatureOutlierMode::None:
-      return "none";
-    case adaiso::CurvatureOutlierMode::TopKMedian:
-      return "topk_median";
-    case adaiso::CurvatureOutlierMode::SamplingCap:
-      return "sampling_cap";
-  }
-  return "unknown";
-}
-
-adaiso::TargetFaceRepresentative parseTargetFaceRepresentative(
-    const std::string& value) {
-  const std::string lower = lowerString(value);
-  if (lower == "mean") {
-    return adaiso::TargetFaceRepresentative::Mean;
-  }
-  if (lower == "min" || lower == "minimum") {
-    return adaiso::TargetFaceRepresentative::Minimum;
-  }
-  throw std::runtime_error("unknown target face representative: " + value);
-}
-
-const char* targetFaceRepresentativeName(adaiso::TargetFaceRepresentative value) {
-  return value == adaiso::TargetFaceRepresentative::Minimum ? "min" : "mean";
 }
 
 std::string requireValue(int& i, int argc, char** argv, const std::string& option) {
@@ -238,26 +188,12 @@ std::string buildSummaryJson(
   out << "  \"runtime_sec\": " << runtime_sec << ",\n";
   out << "  \"parameters\": {\n";
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
-  out << "    \"principal_curvature_estimator\": \"weighted_quadratic_patch\",\n";
-  out << "    \"principal_curvature_scalar\": \"mean_edge_length_times_max_abs_k1_k2\",\n";
+  out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
-  out << "    \"target_size_mapping\": \"principal_curvature_screened_kappa_inverse_power_log_downward_gradation\",\n";
-  out << "    \"curvature_outlier_mode\": \""
-      << curvatureOutlierModeName(config.curvature_outlier_mode) << "\",\n";
-  out << "    \"curvature_outlier_top_k\": " << config.curvature_outlier_top_k << ",\n";
-  out << "    \"curvature_cap_beta\": " << config.curvature_cap_beta << ",\n";
-  out << "    \"curvature_smoothing_alpha\": " << config.curvature_smoothing_alpha << ",\n";
-  out << "    \"target_gradation_enabled\": "
-      << (config.enable_target_gradation ? "true" : "false") << ",\n";
-  out << "    \"target_gradation_ratio\": " << config.target_gradation_ratio << ",\n";
-  out << "    \"target_face_representative\": \""
-      << targetFaceRepresentativeName(config.target_face_representative) << "\",\n";
-  out << "    \"target_max_factor\": " << config.target_max_factor << ",\n";
+  out << "    \"target_size_mapping\": \"target_faces_inverse_sqrt_diffused_curvature\",\n";
+  out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_faces\": "
       << (config.target_faces > 0 ? config.target_faces : input_summary.faces) << ",\n";
-  out << "    \"target_curvature_exponent\": " << adaiso::detail::kTargetCurvatureExponent << ",\n";
-  out << "    \"target_bisection_iterations\": "
-      << config.target_bisection_iterations << ",\n";
   if (!config.target_field_export_dir.empty()) {
     out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
   }
@@ -292,88 +228,13 @@ std::string buildSummaryJson(
   out << "  \"stats\": {\n";
   out << "    \"vertices\": " << stats.vertices << ",\n";
   out << "    \"faces\": " << stats.faces << ",\n";
-  out << "    \"curvature_smoothing_applied\": "
-      << (stats.curvature_smoothing_applied ? "true" : "false") << ",\n";
-  out << "    \"curvature_smoothing_assembly_time_ms\": "
-      << stats.curvature_smoothing_assembly_time_ms << ",\n";
-  out << "    \"curvature_smoothing_factorization_time_ms\": "
-      << stats.curvature_smoothing_factorization_time_ms << ",\n";
-  out << "    \"curvature_smoothing_solve_time_ms\": "
-      << stats.curvature_smoothing_solve_time_ms << ",\n";
-  out << "    \"curvature_smoothing_residual_abs\": "
-      << stats.curvature_smoothing_residual_abs << ",\n";
-  out << "    \"curvature_smoothing_residual_scaled\": "
-      << stats.curvature_smoothing_residual_scaled << ",\n";
-  out << "    \"curvature_smoothing_matrix_nonzeros\": "
-      << stats.curvature_smoothing_matrix_nonzeros << ",\n";
-  out << "    \"curvature_smoothing_solver_success\": "
-      << (stats.curvature_smoothing_solver_success ? "true" : "false") << ",\n";
-  out << "    \"principal_curvature_fallback_vertices\": "
-      << stats.principal_curvature_fallback_vertices << ",\n";
-  out << "    \"principal_curvature_fallback_rate\": "
-      << stats.principal_curvature_fallback_rate << ",\n";
-  out << "    \"principal_fit_min_singular_ratio\": "
-      << stats.principal_fit_min_singular_ratio << ",\n";
-  out << "    \"principal_fit_max_residual_rms\": "
-      << stats.principal_fit_max_residual_rms << ",\n";
-  out << "    \"principal_fit_max_curvature_times_local_scale\": "
-      << stats.principal_fit_max_curvature_times_local_scale << ",\n";
-  out << "    \"curvature_filter_changed_vertices\": "
-      << stats.curvature_filter_changed_vertices << ",\n";
-  out << "    \"curvature_filter_changed_vertex_rate\": "
-      << stats.curvature_filter_changed_vertex_rate << ",\n";
-  out << "    \"raw_kappa_max\": " << stats.raw_kappa_max << ",\n";
-  out << "    \"filtered_kappa_max\": " << stats.filtered_kappa_max << ",\n";
-  out << "    \"smoothed_kappa_max\": " << stats.smoothed_kappa_max << ",\n";
-  out << "    \"pre_limiter_estimated_faces\": " << stats.pre_limiter_estimated_faces << ",\n";
-  out << "    \"post_limiter_estimated_faces\": " << stats.post_limiter_estimated_faces << ",\n";
-  out << "    \"gradation_runtime_ms\": " << stats.gradation_runtime_ms << ",\n";
-  out << "    \"gradation_queue_pops\": " << stats.gradation_queue_pops << ",\n";
-  out << "    \"gradation_relaxations\": " << stats.gradation_relaxations << ",\n";
-  out << "    \"gradation_changed_vertices\": " << stats.gradation_changed_vertices << ",\n";
-  out << "    \"gradation_changed_vertex_rate\": " << stats.gradation_changed_vertex_rate << ",\n";
-  out << "    \"gradation_min_log_reduction\": " << stats.gradation_min_log_reduction << ",\n";
-  out << "    \"gradation_mean_log_reduction\": " << stats.gradation_mean_log_reduction << ",\n";
-  out << "    \"gradation_max_log_reduction\": " << stats.gradation_max_log_reduction << ",\n";
-  out << "    \"gradation_max_normalized_log_slope_before\": "
-      << stats.gradation_max_normalized_log_slope_before << ",\n";
-  out << "    \"gradation_max_normalized_log_slope_after\": "
-      << stats.gradation_max_normalized_log_slope_after << ",\n";
-  out << "    \"gradation_p95_normalized_log_slope_after\": "
-      << stats.gradation_p95_normalized_log_slope_after << ",\n";
-  out << "    \"gradation_p99_normalized_log_slope_after\": "
-      << stats.gradation_p99_normalized_log_slope_after << ",\n";
-  out << "    \"gradation_max_adjacent_ratio_before\": "
-      << stats.gradation_max_adjacent_ratio_before << ",\n";
-  out << "    \"gradation_max_adjacent_ratio_after\": "
-      << stats.gradation_max_adjacent_ratio_after << ",\n";
-  out << "    \"final_gradation_max_normalized_log_slope\": "
-      << stats.final_gradation_max_normalized_log_slope << ",\n";
-  out << "    \"final_gradation_p95_normalized_log_slope\": "
-      << stats.final_gradation_p95_normalized_log_slope << ",\n";
-  out << "    \"final_gradation_p99_normalized_log_slope\": "
-      << stats.final_gradation_p99_normalized_log_slope << ",\n";
-  out << "    \"final_gradation_max_adjacent_ratio\": "
-      << stats.final_gradation_max_adjacent_ratio << ",\n";
-  out << "    \"final_estimated_faces\": " << stats.final_estimated_faces << ",\n";
-  out << "    \"final_estimated_faces_mean\": "
-      << stats.final_estimated_faces_mean << ",\n";
-  out << "    \"final_estimated_faces_min\": "
-      << stats.final_estimated_faces_min << ",\n";
-  out << "    \"final_min_mean_estimate_ratio\": "
-      << stats.final_min_mean_estimate_ratio << ",\n";
-  out << "    \"final_face_estimate_relative_error\": "
-      << stats.final_face_estimate_relative_error << ",\n";
-  out << "    \"target_h_min_saturation_rate\": "
-      << stats.target_h_min_saturation_rate << ",\n";
-  out << "    \"target_h_max_saturation_rate\": "
-      << stats.target_h_max_saturation_rate << ",\n";
-  out << "    \"smallest_five_percent_face_budget_rate\": "
-      << stats.smallest_five_percent_face_budget_rate << ",\n";
-  out << "    \"input_edge_target_violation_rate\": "
-      << stats.input_edge_target_violation_rate << ",\n";
-  out << "    \"target_scale\": " << stats.target_scale << ",\n";
-  out << "    \"target_faces_reachable\": " << (stats.target_faces_reachable ? "true" : "false") << "\n";
+  out << "    \"csf_assembly_time_ms\": " << stats.csf_assembly_time_ms << ",\n";
+  out << "    \"csf_factorization_time_ms\": " << stats.csf_factorization_time_ms << ",\n";
+  out << "    \"csf_solve_time_ms\": " << stats.csf_solve_time_ms << ",\n";
+  out << "    \"csf_residual_abs\": " << stats.csf_residual_abs << ",\n";
+  out << "    \"csf_residual_scaled\": " << stats.csf_residual_scaled << ",\n";
+  out << "    \"csf_matrix_nonzeros\": " << stats.csf_matrix_nonzeros << ",\n";
+  out << "    \"csf_solver_success\": " << (stats.csf_solver_success ? "true" : "false") << "\n";
   out << "  }\n";
   out << "}\n";
   return out.str();
@@ -418,29 +279,13 @@ int main(int argc, char** argv) {
         output_path = requireValue(i, argc, argv, arg);
       } else if (arg == "--variant") {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
-      } else if (arg == "--curvature-outlier-mode") {
-        config.curvature_outlier_mode =
-            parseCurvatureOutlierMode(requireValue(i, argc, argv, arg));
-      } else if (arg == "--curvature-outlier-top-k") {
-        config.curvature_outlier_top_k =
-            parsePositiveSize(requireValue(i, argc, argv, arg), arg);
-      } else if (arg == "--curvature-cap-beta") {
-        config.curvature_cap_beta = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--curvature-smoothing-alpha") {
-        config.curvature_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-gradation") {
-        config.enable_target_gradation = parseBool(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-gradation-ratio") {
-        config.target_gradation_ratio = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-face-representative") {
-        config.target_face_representative =
-            parseTargetFaceRepresentative(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-max-factor") {
-        config.target_max_factor = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--curvature-mode") {
+        config.curvature_mode =
+            adaiso::parseCurvatureMode(requireValue(i, argc, argv, arg));
+      } else if (arg == "--csf-alpha") {
+        config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-faces") {
         config.target_faces = parsePositiveSize(requireValue(i, argc, argv, arg), arg);
-      } else if (arg == "--target-bisection-iters") {
-        config.target_bisection_iterations = std::stoi(requireValue(i, argc, argv, arg));
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-iteration-meshes") {
@@ -487,15 +332,9 @@ int main(int argc, char** argv) {
     if (config.global_iterations < 0) {
       throw std::runtime_error("--iters must be non-negative");
     }
-    if (config.curvature_smoothing_alpha < 0.0 ||
-        !std::isfinite(config.curvature_smoothing_alpha)) {
-      throw std::runtime_error("--curvature-smoothing-alpha must be finite and non-negative");
-    }
-    if (!std::isfinite(config.target_gradation_ratio) || config.target_gradation_ratio <= 1.0) {
-      throw std::runtime_error("--target-gradation-ratio must be finite and greater than one");
-    }
-    if (config.target_bisection_iterations < 0) {
-      throw std::runtime_error("--target-bisection-iters must be non-negative");
+    if (config.csf_smoothing_alpha <= 0.0 ||
+        !std::isfinite(config.csf_smoothing_alpha)) {
+      throw std::runtime_error("--csf-alpha must be positive");
     }
     if (config.collapse_feature_omega < 0.0 || !std::isfinite(config.collapse_feature_omega)) {
       throw std::runtime_error("--collapse-feature-omega must be finite and non-negative");

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(cpp_adaiso VERSION 2.11.2 LANGUAGES CXX)
+project(cpp_adaiso VERSION 2.11.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,16 +32,14 @@ find_package(Libigl CONFIG REQUIRED)
 
 add_library(adaiso_core
   src/AdaIsoRemesher.cpp
-  src/CurvatureFilter.cpp
   src/Geometry.cpp
   src/IO.cpp
   src/KDTree.cpp
   src/Mesh.cpp
   src/Metrics.cpp
-  src/PrincipalCurvature.cpp
+  src/RawCurvature.cpp
   src/ScreenedLaplacian.cpp
   src/TargetFaceSizing.cpp
-  src/TargetGradation.cpp
 )
 
 target_include_directories(adaiso_core
@@ -83,15 +81,11 @@ if(ADAISO_BUILD_TESTS)
   target_link_libraries(screened_laplacian_tests PRIVATE adaiso_core)
   add_test(NAME screened_laplacian_tests COMMAND screened_laplacian_tests)
 
-  add_executable(curvature_filter_tests tests/curvature_filter_tests.cpp)
-  target_link_libraries(curvature_filter_tests PRIVATE adaiso_core)
-  add_test(NAME curvature_filter_tests COMMAND curvature_filter_tests)
-
-  add_executable(target_gradation_tests tests/target_gradation_tests.cpp)
-  target_link_libraries(target_gradation_tests PRIVATE adaiso_core)
-  add_test(NAME target_gradation_tests COMMAND target_gradation_tests)
-
   add_executable(target_face_sizing_tests tests/target_face_sizing_tests.cpp)
   target_link_libraries(target_face_sizing_tests PRIVATE adaiso_core)
   add_test(NAME target_face_sizing_tests COMMAND target_face_sizing_tests)
+
+  add_executable(raw_curvature_tests tests/raw_curvature_tests.cpp)
+  target_link_libraries(raw_curvature_tests PRIVATE adaiso_core)
+  add_test(NAME raw_curvature_tests COMMAND raw_curvature_tests)
 endif()
