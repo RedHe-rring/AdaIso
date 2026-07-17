@@ -1,9 +1,9 @@
 #include "adaiso/AdaIsoRemesher.hpp"
 
 #include "adaiso/Geometry.hpp"
-#include "adaiso/IO.hpp"
-#include "adaiso/KDTree.hpp"
 #include "adaiso/Metrics.hpp"
+#include "adaiso/detail/FeatureClassification.hpp"
+#include "adaiso/detail/LocalOperators.hpp"
 #include "adaiso/detail/RawCurvature.hpp"
 #include "adaiso/detail/ScreenedLaplacian.hpp"
 #include "adaiso/detail/TargetFaceSizing.hpp"
@@ -35,8 +35,6 @@
 #include <igl/AABB.cpp>
 
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -59,8 +57,8 @@ namespace {
 
 constexpr double kEps = 1e-14;
 constexpr double kPi = 3.141592653589793238462643383279502884;
-constexpr double kRelocationFeatureEps = 1e-12;
-constexpr double kRelocationZeta = 0.5;
+constexpr double kCsfSmoothingAlpha = 2.0;
+constexpr double kMaxFlipDihedralRadians = 45.0 * kPi / 180.0;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -90,83 +88,6 @@ double faceNormalAngle(const std::vector<Eigen::Vector3d>& vertices, const Eigen
     return std::numeric_limits<double>::infinity();
   }
   return std::acos(std::clamp(n0.dot(n1), -1.0, 1.0));
-}
-
-double cornerAngle(
-    const std::vector<Eigen::Vector3d>& vertices,
-    const Eigen::Vector3i& face,
-    int corner) {
-  const Eigen::Vector3d& p = vertices[static_cast<std::size_t>(face[corner])];
-  const Eigen::Vector3d& q = vertices[static_cast<std::size_t>(face[(corner + 1) % 3])];
-  const Eigen::Vector3d& r = vertices[static_cast<std::size_t>(face[(corner + 2) % 3])];
-  const Eigen::Vector3d u = q - p;
-  const Eigen::Vector3d v = r - p;
-  const double denom = u.norm() * v.norm();
-  if (denom <= kEps || !std::isfinite(denom)) {
-    return 0.0;
-  }
-  return std::acos(std::clamp(u.dot(v) / denom, -1.0, 1.0));
-}
-
-std::vector<double> computeVertexFeatureStrengths(const Mesh& mesh) {
-  const std::size_t n = mesh.vertexCount();
-  std::vector<double> theta_sum(n, 0.0);
-  for (const auto& face : mesh.faces) {
-    for (int corner = 0; corner < 3; ++corner) {
-      theta_sum[static_cast<std::size_t>(face[corner])] += cornerAngle(mesh.vertices, face, corner);
-    }
-  }
-
-  const auto e2f = edgeFaces(mesh);
-  std::unordered_set<int> boundary;
-  std::vector<double> max_dihedral(n, 0.0);
-  for (const auto& item : e2f) {
-    const Edge& edge = item.first;
-    const auto& incident = item.second;
-    if (incident.size() == 1) {
-      boundary.insert(edge.first);
-      boundary.insert(edge.second);
-      continue;
-    }
-    if (incident.size() != 2) {
-      continue;
-    }
-    const int f0 = incident[0];
-    const int f1 = incident[1];
-    if (f0 < 0 || f1 < 0 || static_cast<std::size_t>(f0) >= mesh.faces.size() ||
-        static_cast<std::size_t>(f1) >= mesh.faces.size()) {
-      continue;
-    }
-    const double angle = faceNormalAngle(
-        mesh.vertices,
-        mesh.faces[static_cast<std::size_t>(f0)],
-        mesh.faces[static_cast<std::size_t>(f1)]);
-    if (!std::isfinite(angle)) {
-      continue;
-    }
-    max_dihedral[static_cast<std::size_t>(edge.first)] =
-        std::max(max_dihedral[static_cast<std::size_t>(edge.first)], angle);
-    max_dihedral[static_cast<std::size_t>(edge.second)] =
-        std::max(max_dihedral[static_cast<std::size_t>(edge.second)], angle);
-  }
-
-  auto tau = [](double value) {
-    if (!std::isfinite(value) || value <= 0.0) {
-      return 0.0;
-    }
-    return std::min(kPi, 2.0 * value);
-  };
-
-  std::vector<double> strengths(n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    const double reference_angle =
-        boundary.find(static_cast<int>(i)) == boundary.end() ? 2.0 * kPi : kPi;
-    const double angle_defect = reference_angle - theta_sum[i];
-    const double k_feature = tau(std::abs(angle_defect));
-    const double e_feature = tau(max_dihedral[i]);
-    strengths[i] = (k_feature + 1.0) * (e_feature + 1.0) - 1.0;
-  }
-  return strengths;
 }
 
 Eigen::Vector3i orientTriangle(
@@ -208,6 +129,18 @@ bool unorderedSetsEqual(const std::unordered_set<int>& a, const std::unordered_s
     }
   }
   return true;
+}
+
+detail::CurvatureSignalMode toDetailCurvatureMode(AdaIsoConfig::CurvatureSignal mode) {
+  switch (mode) {
+    case AdaIsoConfig::CurvatureSignal::LogDimensionless:
+      return detail::CurvatureSignalMode::LogDimensionless;
+    case AdaIsoConfig::CurvatureSignal::Dimensionless:
+      return detail::CurvatureSignalMode::Dimensionless;
+    case AdaIsoConfig::CurvatureSignal::Physical:
+      return detail::CurvatureSignalMode::Physical;
+  }
+  return detail::CurvatureSignalMode::LogDimensionless;
 }
 
 bool finiteVector(const Eigen::Vector3d& v) {
@@ -280,468 +213,169 @@ Eigen::Vector3d barycentricOnTriangle(
   return bary / sum;
 }
 
-struct Rgb {
-  int r = 0;
-  int g = 0;
-  int b = 0;
-};
-
-struct TargetFieldStageData {
-  std::vector<double> raw_curvature;
-  std::vector<double> csf_curvature;
-  std::vector<double> target_lengths;
-  double base_length = 0.0;
-  double min_length = 0.0;
-  double max_length = 0.0;
-};
-
-struct EdgeFieldRecord {
-  Edge edge;
-  double edge_length = 0.0;
-  double abs_dh = 0.0;
-  double target_ratio = 1.0;
-  double h_slope = 0.0;
-};
-
-struct FaceFieldRecord {
-  double grad_h_norm = 0.0;
-  double max_edge_target_ratio = 1.0;
-};
-
-std::ofstream openOutputFile(const std::filesystem::path& path) {
-  if (path.has_parent_path()) {
-    std::filesystem::create_directories(path.parent_path());
-  }
-  std::ofstream out(path);
-  if (!out) {
-    throw std::runtime_error("failed to write file: " + path.string());
-  }
-  out << std::setprecision(17);
-  return out;
-}
-
-void writeTextFile(const std::filesystem::path& path, const std::string& text) {
-  auto out = openOutputFile(path);
-  out << text;
-}
-
-std::pair<double, double> scalarRange(const std::vector<double>& values) {
-  double lo = std::numeric_limits<double>::infinity();
-  double hi = -std::numeric_limits<double>::infinity();
-  for (double value : values) {
-    if (!std::isfinite(value)) {
-      continue;
-    }
-    lo = std::min(lo, value);
-    hi = std::max(hi, value);
-  }
-  if (!std::isfinite(lo) || !std::isfinite(hi)) {
-    return {0.0, 1.0};
-  }
-  if (hi <= lo) {
-    const double pad = std::max(1.0, std::abs(lo)) * 0.5;
-    return {lo - pad, hi + pad};
-  }
-  return {lo, hi};
-}
-
-double normalizedScalar(double value, double lo, double hi) {
-  if (!std::isfinite(value)) {
-    return 0.0;
-  }
-  if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo) {
-    return 0.5;
-  }
-  return std::clamp((value - lo) / (hi - lo), 0.0, 1.0);
-}
-
-int colorByte(double value) {
-  return static_cast<int>(std::round(std::clamp(value, 0.0, 1.0) * 255.0));
-}
-
-Rgb lerpColor(const Rgb& a, const Rgb& b, double t) {
-  t = std::clamp(t, 0.0, 1.0);
-  return {
-      colorByte((1.0 - t) * static_cast<double>(a.r) / 255.0 + t * static_cast<double>(b.r) / 255.0),
-      colorByte((1.0 - t) * static_cast<double>(a.g) / 255.0 + t * static_cast<double>(b.g) / 255.0),
-      colorByte((1.0 - t) * static_cast<double>(a.b) / 255.0 + t * static_cast<double>(b.b) / 255.0)};
-}
-
-Rgb heatColor(double t) {
-  t = std::clamp(t, 0.0, 1.0);
-  const std::array<Rgb, 5> palette = {{
-      {45, 70, 180},
-      {0, 170, 210},
-      {80, 190, 80},
-      {245, 210, 70},
-      {210, 40, 40},
-  }};
-  const double scaled = t * static_cast<double>(palette.size() - 1);
-  const auto index = static_cast<std::size_t>(std::min<double>(
-      std::floor(scaled),
-      static_cast<double>(palette.size() - 2)));
-  return lerpColor(palette[index], palette[index + 1], scaled - static_cast<double>(index));
-}
-
-void writeVertexColorPly(
-    const std::filesystem::path& path,
-    const Mesh& mesh,
-    const std::vector<Rgb>& colors) {
-  if (colors.size() != mesh.vertices.size()) {
-    throw std::runtime_error("vertex color count does not match mesh vertices");
-  }
-  auto out = openOutputFile(path);
-  out << "ply\n";
-  out << "format ascii 1.0\n";
-  out << "element vertex " << mesh.vertices.size() << '\n';
-  out << "property float x\n";
-  out << "property float y\n";
-  out << "property float z\n";
-  out << "property uchar red\n";
-  out << "property uchar green\n";
-  out << "property uchar blue\n";
-  out << "element face " << mesh.faces.size() << '\n';
-  out << "property list uchar int vertex_indices\n";
-  out << "end_header\n";
-  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    const auto& v = mesh.vertices[i];
-    const Rgb& color = colors[i];
-    out << v[0] << ' ' << v[1] << ' ' << v[2] << ' '
-        << color.r << ' ' << color.g << ' ' << color.b << '\n';
-  }
-  for (const auto& f : mesh.faces) {
-    out << "3 " << f[0] << ' ' << f[1] << ' ' << f[2] << '\n';
-  }
-}
-
-void writeVertexHeatPly(
-    const std::filesystem::path& path,
-    const Mesh& mesh,
-    const std::vector<double>& values,
-    double lo,
-    double hi,
-    bool inverted = false) {
-  if (values.size() != mesh.vertices.size()) {
-    throw std::runtime_error("vertex scalar count does not match mesh vertices");
-  }
-  std::vector<Rgb> colors;
-  colors.reserve(values.size());
-  for (double value : values) {
-    double t = normalizedScalar(value, lo, hi);
-    if (inverted) {
-      t = 1.0 - t;
-    }
-    colors.push_back(heatColor(t));
-  }
-  writeVertexColorPly(path, mesh, colors);
-}
-
-std::vector<EdgeFieldRecord> computeEdgeFieldRecords(
-    const Mesh& mesh,
-    const std::vector<double>& target_lengths) {
-  if (target_lengths.size() != mesh.vertices.size()) {
-    throw std::runtime_error("target diagnostic length size mismatch");
-  }
-
-  std::vector<EdgeFieldRecord> records;
-  const auto edges = uniqueEdges(mesh);
-  records.reserve(edges.size());
-  for (const auto& edge : edges) {
-    const int a = edge.first;
-    const int b = edge.second;
-    const double length =
-        (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
-    const double ha = target_lengths[static_cast<std::size_t>(a)];
-    const double hb = target_lengths[static_cast<std::size_t>(b)];
-    if (ha <= 0.0 || hb <= 0.0 || !std::isfinite(ha) || !std::isfinite(hb)) {
-      throw std::runtime_error("target diagnostic length must be positive and finite");
-    }
-    const double abs_dh = std::abs(ha - hb);
-    const double ratio = std::max(ha, hb) / std::min(ha, hb);
-    EdgeFieldRecord record;
-    record.edge = edge;
-    record.edge_length = length;
-    record.abs_dh = abs_dh;
-    record.target_ratio = ratio;
-    record.h_slope = length > kEps ? abs_dh / length : 0.0;
-    records.push_back(record);
-  }
-  return records;
-}
-
-double faceTargetGradientNorm(
-    const Mesh& mesh,
-    const Eigen::Vector3i& face,
-    const std::vector<double>& target_lengths) {
-  const Eigen::Vector3d& p0 = mesh.vertices[static_cast<std::size_t>(face[0])];
-  const Eigen::Vector3d& p1 = mesh.vertices[static_cast<std::size_t>(face[1])];
-  const Eigen::Vector3d& p2 = mesh.vertices[static_cast<std::size_t>(face[2])];
-  const Eigen::Vector3d e1 = p1 - p0;
-  const Eigen::Vector3d e2 = p2 - p0;
-  const double g00 = e1.dot(e1);
-  const double g01 = e1.dot(e2);
-  const double g11 = e2.dot(e2);
-  const double det = g00 * g11 - g01 * g01;
-  if (std::abs(det) <= kEps || !std::isfinite(det)) {
-    return 0.0;
-  }
-  const double rhs0 =
-      target_lengths[static_cast<std::size_t>(face[1])] - target_lengths[static_cast<std::size_t>(face[0])];
-  const double rhs1 =
-      target_lengths[static_cast<std::size_t>(face[2])] - target_lengths[static_cast<std::size_t>(face[0])];
-  const double a = (rhs0 * g11 - rhs1 * g01) / det;
-  const double b = (g00 * rhs1 - g01 * rhs0) / det;
-  return (a * e1 + b * e2).norm();
-}
-
-std::vector<FaceFieldRecord> computeFaceFieldRecords(
-    const Mesh& mesh,
-    const std::vector<double>& target_lengths,
-    const std::unordered_map<Edge, double, EdgeHash>& edge_ratios) {
-  std::vector<FaceFieldRecord> records;
-  records.reserve(mesh.faces.size());
-  for (const auto& face : mesh.faces) {
-    double max_ratio = 1.0;
-    for (const Edge& edge : {
-             makeEdge(face[0], face[1]),
-             makeEdge(face[1], face[2]),
-             makeEdge(face[2], face[0]),
-         }) {
-      const auto found = edge_ratios.find(edge);
-      if (found != edge_ratios.end()) {
-        max_ratio = std::max(max_ratio, found->second);
-      }
-    }
-    FaceFieldRecord record;
-    record.grad_h_norm = faceTargetGradientNorm(mesh, face, target_lengths);
-    record.max_edge_target_ratio = max_ratio;
-    records.push_back(record);
-  }
-  return records;
-}
-
-void writeVerticesCsv(
-    const std::filesystem::path& path,
-    const Mesh& mesh,
-    const TargetFieldStageData& data) {
-  auto out = openOutputFile(path);
-  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,target_h\n";
-  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    const auto& p = mesh.vertices[i];
-    out << i << ','
-        << p[0] << ',' << p[1] << ',' << p[2] << ','
-        << data.raw_curvature[i] << ','
-        << data.csf_curvature[i] << ','
-        << data.target_lengths[i]
-        << '\n';
-  }
-}
-
-void writeEdgesCsv(
-    const std::filesystem::path& path,
-    const std::vector<EdgeFieldRecord>& records) {
-  auto out = openOutputFile(path);
-  out << "i,j,edge_length,abs_dh,target_ratio,h_slope\n";
-  for (const auto& record : records) {
-    out << record.edge.first << ','
-        << record.edge.second << ','
-        << record.edge_length << ','
-        << record.abs_dh << ','
-        << record.target_ratio << ','
-        << record.h_slope << '\n';
-  }
-}
-
-void writeFacesCsv(
-    const std::filesystem::path& path,
-    const std::vector<FaceFieldRecord>& records) {
-  auto out = openOutputFile(path);
-  out << "face_id,grad_h_norm,max_edge_target_ratio\n";
-  for (std::size_t i = 0; i < records.size(); ++i) {
-    out << i << ','
-        << records[i].grad_h_norm << ','
-        << records[i].max_edge_target_ratio << '\n';
-  }
-}
-
-std::string targetFieldStatsJson(
-    const TargetFieldStageData& data,
-    const std::vector<EdgeFieldRecord>& edge_records,
-    const std::vector<FaceFieldRecord>& face_records) {
-  std::vector<double> ratios;
-  ratios.reserve(edge_records.size());
-  for (const auto& record : edge_records) {
-    ratios.push_back(record.target_ratio);
-  }
-  std::sort(ratios.begin(), ratios.end());
-
-  std::vector<double> gradients;
-  gradients.reserve(face_records.size());
-  for (const auto& record : face_records) {
-    gradients.push_back(record.grad_h_norm);
-  }
-  std::sort(gradients.begin(), gradients.end());
-
-  double observed_min = std::numeric_limits<double>::infinity();
-  double observed_max = -std::numeric_limits<double>::infinity();
-  for (double value : data.target_lengths) {
-    observed_min = std::min(observed_min, value);
-    observed_max = std::max(observed_max, value);
-  }
-  const bool range_ok =
-      observed_min + 1e-12 >= data.min_length &&
-      observed_max <= data.max_length + 1e-12;
-  const double max_ratio = ratios.empty() ? 0.0 : ratios.back();
-
-  std::size_t min_saturated = 0;
-  std::size_t max_saturated = 0;
-  for (double value : data.target_lengths) {
-    if (std::abs(value - data.min_length) <=
-        1e-12 * std::max(1.0, data.min_length)) {
-      ++min_saturated;
-    }
-    if (std::abs(value - data.max_length) <=
-        1e-12 * std::max(1.0, data.max_length)) {
-      ++max_saturated;
-    }
-  }
-
-  std::ostringstream out;
-  out << std::setprecision(17);
-  out << "{\n";
-  out << "  \"base_length\": " << data.base_length << ",\n";
-  out << "  \"h_min\": " << data.min_length << ",\n";
-  out << "  \"h_max\": " << data.max_length << ",\n";
-  out << "  \"observed_h_min\": " << observed_min << ",\n";
-  out << "  \"observed_h_max\": " << observed_max << ",\n";
-  out << "  \"h_min_saturation_rate\": "
-      << static_cast<double>(min_saturated) / static_cast<double>(data.target_lengths.size())
-      << ",\n";
-  out << "  \"h_max_saturation_rate\": "
-      << static_cast<double>(max_saturated) / static_cast<double>(data.target_lengths.size())
-      << ",\n";
-  out << "  \"range_ok\": " << (range_ok ? "true" : "false") << ",\n";
-  out << "  \"edge_count\": " << edge_records.size() << ",\n";
-  out << "  \"max_edge_target_ratio\": " << max_ratio << ",\n";
-  out << "  \"p95_edge_target_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
-  out << "  \"p99_edge_target_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
-  out << "  \"face_count\": " << face_records.size() << ",\n";
-  out << "  \"max_grad_h_norm\": " << (gradients.empty() ? 0.0 : gradients.back()) << ",\n";
-  out << "  \"p95_grad_h_norm\": " << quantileOfSorted(gradients, 0.95) << ",\n";
-  out << "  \"p99_grad_h_norm\": " << quantileOfSorted(gradients, 0.99) << "\n";
-  out << "}\n";
-  return out.str();
-}
-
-std::string colorScalesJson(
-    const std::pair<double, double>& curvature_range,
-    double target_h_min,
-    double target_h_max) {
-  std::ostringstream out;
-  out << std::setprecision(17);
-  out << "{\n";
-  out << "  \"palette\": \"heat\",\n";
-  out << "  \"normalization\": \"linear_clamp\",\n";
-  out << "  \"scales\": {\n";
-  out << "    \"raw_curvature_shared\": {\n";
-  out << "      \"file\": \"raw_curvature_heat_shared.ply\",\n";
-  out << "      \"field\": \"raw_curvature\",\n";
-  out << "      \"min\": " << curvature_range.first << ",\n";
-  out << "      \"max\": " << curvature_range.second << "\n";
-  out << "    },\n";
-  out << "    \"csf_curvature_shared\": {\n";
-  out << "      \"file\": \"csf_curvature_heat_shared.ply\",\n";
-  out << "      \"field\": \"csf_curvature\",\n";
-  out << "      \"min\": " << curvature_range.first << ",\n";
-  out << "      \"max\": " << curvature_range.second << "\n";
-  out << "    },\n";
-  out << "    \"target_h\": {\n";
-  out << "      \"file\": \"target_h_heat.ply\",\n";
-  out << "      \"field\": \"target_h\",\n";
-  out << "      \"min\": " << target_h_min << ",\n";
-  out << "      \"max\": " << target_h_max << ",\n";
-  out << "      \"inverted\": true\n";
-  out << "    }\n";
-  out << "  }\n";
-  out << "}\n";
-  return out.str();
-}
-
 void writeTargetFieldDiagnostics(
-    const std::filesystem::path& out_dir,
     const Mesh& mesh,
-    const TargetFieldStageData& data) {
-  if (out_dir.empty()) {
+    const std::vector<double>& physical_curvature,
+    const std::vector<double>& raw_curvature,
+    const std::vector<double>& csf_curvature,
+    const detail::TargetFaceSizingResult& sizing,
+    double base_length,
+    const std::filesystem::path& directory) {
+  if (directory.empty()) {
     return;
   }
-  const std::size_t n = mesh.vertices.size();
-  if (data.raw_curvature.size() != n || data.csf_curvature.size() != n ||
-      data.target_lengths.size() != n) {
-    throw std::runtime_error("target diagnostic field size mismatch");
+  mesh.validate();
+  if (physical_curvature.size() != mesh.vertexCount() ||
+      raw_curvature.size() != mesh.vertexCount() ||
+      csf_curvature.size() != mesh.vertexCount() ||
+      sizing.capped_curvature.size() != mesh.vertexCount() ||
+      sizing.target_lengths.size() != mesh.vertexCount()) {
+    throw std::runtime_error("target-field diagnostic size mismatch");
   }
-  std::filesystem::create_directories(out_dir);
-
-  const auto edge_records = computeEdgeFieldRecords(mesh, data.target_lengths);
-  std::unordered_map<Edge, double, EdgeHash> edge_ratios;
-  edge_ratios.reserve(edge_records.size());
-  for (const auto& record : edge_records) {
-    edge_ratios.emplace(record.edge, record.target_ratio);
+  if (!std::isfinite(base_length) || base_length <= 0.0) {
+    throw std::runtime_error("target-field diagnostics require positive base length");
   }
-  const auto face_records = computeFaceFieldRecords(mesh, data.target_lengths, edge_ratios);
 
-  writeVerticesCsv(out_dir / "vertices.csv", mesh, data);
-  writeEdgesCsv(out_dir / "edges.csv", edge_records);
-  writeFacesCsv(out_dir / "faces.csv", face_records);
-  writeTextFile(
-      out_dir / "field_stats.json",
-      targetFieldStatsJson(
-          data,
-          edge_records,
-          face_records));
+  std::filesystem::create_directories(directory);
 
-  std::vector<double> combined_curvature = data.raw_curvature;
-  combined_curvature.insert(
-      combined_curvature.end(), data.csf_curvature.begin(), data.csf_curvature.end());
-  const auto curvature_range = scalarRange(combined_curvature);
-  const auto raw_range = scalarRange(data.raw_curvature);
-  const auto csf_range = scalarRange(data.csf_curvature);
-  writeTextFile(
-      out_dir / "color_scales.json",
-      colorScalesJson(
-          curvature_range,
-          data.min_length,
-          data.max_length));
-  writeVertexHeatPly(
-      out_dir / "raw_curvature_heat_shared.ply",
-      mesh,
-      data.raw_curvature,
-      curvature_range.first,
-      curvature_range.second);
-  writeVertexHeatPly(
-      out_dir / "csf_curvature_heat_shared.ply",
-      mesh,
-      data.csf_curvature,
-      curvature_range.first,
-      curvature_range.second);
-  writeVertexHeatPly(
-      out_dir / "raw_curvature_heat_independent.ply",
-      mesh,
-      data.raw_curvature,
-      raw_range.first,
-      raw_range.second);
-  writeVertexHeatPly(
-      out_dir / "csf_curvature_heat_independent.ply",
-      mesh,
-      data.csf_curvature,
-      csf_range.first,
-      csf_range.second);
-  writeVertexHeatPly(
-      out_dir / "target_h_heat.ply",
-      mesh,
-      data.target_lengths,
-      data.min_length,
-      data.max_length,
-      true);
+  {
+    std::ofstream out(directory / "vertices.csv");
+    if (!out) {
+      throw std::runtime_error("failed to write target-field vertices.csv");
+    }
+    out << std::setprecision(17);
+    out << "vertex_id,x,y,z,H_physical,raw_kappa,csf_kappa,capped_kappa,target_h,h_over_base,is_capped\n";
+    for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
+      const Eigen::Vector3d& p = mesh.vertices[i];
+      const double h = sizing.target_lengths[i];
+      const bool capped = csf_curvature[i] > sizing.capped_curvature[i] + 1e-14;
+      out << i << ','
+          << p.x() << ',' << p.y() << ',' << p.z() << ','
+          << physical_curvature[i] << ','
+          << raw_curvature[i] << ','
+          << csf_curvature[i] << ','
+          << sizing.capped_curvature[i] << ','
+          << h << ','
+          << (h / base_length) << ','
+          << (capped ? 1 : 0) << '\n';
+    }
+  }
+
+  const auto edges = uniqueEdges(mesh);
+  {
+    std::ofstream out(directory / "edges.csv");
+    if (!out) {
+      throw std::runtime_error("failed to write target-field edges.csv");
+    }
+    out << std::setprecision(17);
+    out << "i,j,edge_length,target_h_min,target_ratio,h_slope\n";
+    for (const auto& edge : edges) {
+      const int a = edge.first;
+      const int b = edge.second;
+      const double length = (mesh.vertices[static_cast<std::size_t>(a)] -
+                             mesh.vertices[static_cast<std::size_t>(b)])
+                                .norm();
+      const double ha = sizing.target_lengths[static_cast<std::size_t>(a)];
+      const double hb = sizing.target_lengths[static_cast<std::size_t>(b)];
+      const double target = std::min(ha, hb);
+      const double ratio = length / target;
+      const double slope = std::abs(ha - hb) / std::max(length, kEps);
+      out << a << ',' << b << ','
+          << length << ','
+          << target << ','
+          << ratio << ','
+          << slope << '\n';
+    }
+  }
+
+  {
+    std::ofstream out(directory / "faces.csv");
+    if (!out) {
+      throw std::runtime_error("failed to write target-field faces.csv");
+    }
+    out << std::setprecision(17);
+    out << "face_id,mean_csf,mean_target_h,grad_h_norm,max_edge_target_ratio\n";
+    for (std::size_t i = 0; i < mesh.faceCount(); ++i) {
+      const Eigen::Vector3i& f = mesh.faces[i];
+      const int a = f[0];
+      const int b = f[1];
+      const int c = f[2];
+      const double ha = sizing.target_lengths[static_cast<std::size_t>(a)];
+      const double hb = sizing.target_lengths[static_cast<std::size_t>(b)];
+      const double hc = sizing.target_lengths[static_cast<std::size_t>(c)];
+      const double mean_csf =
+          (csf_curvature[static_cast<std::size_t>(a)] +
+           csf_curvature[static_cast<std::size_t>(b)] +
+           csf_curvature[static_cast<std::size_t>(c)]) /
+          3.0;
+      const double mean_h = (ha + hb + hc) / 3.0;
+      auto edgeRatio = [&](int u, int v, double hu, double hv) {
+        const double length = (mesh.vertices[static_cast<std::size_t>(u)] -
+                               mesh.vertices[static_cast<std::size_t>(v)])
+                                  .norm();
+        return length / std::min(hu, hv);
+      };
+      auto edgeSlope = [&](int u, int v, double hu, double hv) {
+        const double length = (mesh.vertices[static_cast<std::size_t>(u)] -
+                               mesh.vertices[static_cast<std::size_t>(v)])
+                                  .norm();
+        return std::abs(hu - hv) / std::max(length, kEps);
+      };
+      const double max_ratio = std::max({
+          edgeRatio(a, b, ha, hb),
+          edgeRatio(b, c, hb, hc),
+          edgeRatio(c, a, hc, ha)});
+      const double grad_norm = std::max({
+          edgeSlope(a, b, ha, hb),
+          edgeSlope(b, c, hb, hc),
+          edgeSlope(c, a, hc, ha)});
+      out << i << ','
+          << mean_csf << ','
+          << mean_h << ','
+          << grad_norm << ','
+          << max_ratio << '\n';
+    }
+  }
+
+  auto sortedCopy = [](const std::vector<double>& values) {
+    std::vector<double> sorted = values;
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+  };
+  const auto target_sorted = sortedCopy(sizing.target_lengths);
+  const auto raw_sorted = sortedCopy(raw_curvature);
+  const auto csf_sorted = sortedCopy(csf_curvature);
+  const auto capped_sorted = sortedCopy(sizing.capped_curvature);
+
+  std::ofstream out(directory / "field_stats.json");
+  if (!out) {
+    throw std::runtime_error("failed to write target-field field_stats.json");
+  }
+  out << std::setprecision(17);
+  out << "{\n";
+  out << "  \"base_length\": " << base_length << ",\n";
+  out << "  \"target_faces\": " << sizing.target_faces << ",\n";
+  out << "  \"target_estimated_faces\": " << sizing.estimated_faces << ",\n";
+  out << "  \"lambda\": " << sizing.lambda << ",\n";
+  out << "  \"h_min\": " << sizing.h_min << ",\n";
+  out << "  \"h_max\": " << sizing.h_max << ",\n";
+  out << "  \"target_h_min\": " << quantileOfSorted(target_sorted, 0.0) << ",\n";
+  out << "  \"target_h_p05\": " << quantileOfSorted(target_sorted, 0.05) << ",\n";
+  out << "  \"target_h_p50\": " << quantileOfSorted(target_sorted, 0.5) << ",\n";
+  out << "  \"target_h_p95\": " << quantileOfSorted(target_sorted, 0.95) << ",\n";
+  out << "  \"target_h_max\": " << quantileOfSorted(target_sorted, 1.0) << ",\n";
+  out << "  \"raw_kappa_p95\": " << quantileOfSorted(raw_sorted, 0.95) << ",\n";
+  out << "  \"raw_kappa_max\": " << quantileOfSorted(raw_sorted, 1.0) << ",\n";
+  out << "  \"csf_kappa_p95\": " << quantileOfSorted(csf_sorted, 0.95) << ",\n";
+  out << "  \"csf_kappa_max\": " << quantileOfSorted(csf_sorted, 1.0) << ",\n";
+  out << "  \"capped_kappa_p95\": " << quantileOfSorted(capped_sorted, 0.95) << ",\n";
+  out << "  \"capped_kappa_max\": " << quantileOfSorted(capped_sorted, 1.0) << ",\n";
+  out << "  \"curvature_cap_value\": " << sizing.curvature_cap_value << ",\n";
+  out << "  \"curvature_cap_changed_rate\": " << sizing.curvature_cap_changed_rate << ",\n";
+  out << "  \"vertex_count\": " << mesh.vertexCount() << ",\n";
+  out << "  \"edge_count\": " << edges.size() << ",\n";
+  out << "  \"face_count\": " << mesh.faceCount() << "\n";
+  out << "}\n";
 }
 
 }  // namespace
@@ -882,58 +516,20 @@ EdgeRatioStats computeEdgeRatioStats(
 }
 
 double AdaIsoConfig::splitFactor() const {
-  return variant == Variant::Paper ? 5.0 / 3.0 : 1.65;
+  return 1.65;
 }
 
 double AdaIsoConfig::collapseFactor() const {
   return 4.0 / 5.0;
 }
 
-bool AdaIsoConfig::collapseUsesMaxReference() const {
-  return variant == Variant::Paper;
-}
-
-Variant parseVariant(const std::string& value) {
-  std::string lower = value;
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (lower == "paper") {
-    return Variant::Paper;
-  }
-  if (lower == "code") {
-    return Variant::Code;
-  }
-  throw std::runtime_error("unknown variant: " + value);
-}
-
-std::string toString(Variant variant) {
-  return variant == Variant::Paper ? "paper" : "code";
-}
-
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
-  if (config_.csf_smoothing_alpha <= 0.0 ||
-      !std::isfinite(config_.csf_smoothing_alpha)) {
-    throw std::runtime_error("CSF smoothing alpha must be positive and finite");
-  }
-  if (config_.max_flip_dihedral_degrees <= 0.0 || config_.max_flip_dihedral_degrees > 180.0 ||
-      !std::isfinite(config_.max_flip_dihedral_degrees)) {
-    throw std::runtime_error("max flip dihedral angle must be finite and in (0, 180]");
-  }
-  if (config_.collapse_feature_omega < 0.0 || !std::isfinite(config_.collapse_feature_omega)) {
-    throw std::runtime_error("collapse feature omega must be finite and non-negative");
-  }
-
   stats_ = {};
   Mesh mesh = removeDegenerateFaces(input);
   const std::size_t effective_target_faces =
       config_.target_faces > 0 ? config_.target_faces : mesh.faceCount();
-  // TODO: 入口添加一个开关，用于输出mesh清理后的结果
-
-
-  Mesh original_for_projection = mesh;
 
   if (config_.verbose) {
     std::cerr << "input: " << mesh.vertexCount() << " vertices, " << mesh.faceCount() << " faces\n";
@@ -949,46 +545,22 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
 
   buildTargetLengths(mesh, effective_target_faces);
   stats_.iterations.reserve(static_cast<std::size_t>(std::max(0, config_.global_iterations)));
-  if (!config_.iteration_mesh_export_dir.empty()) {
-    writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / "iter000.ply", mesh);
-  }
 
   for (int it = 0; it < config_.global_iterations; ++it) {
     if (config_.verbose) {
       std::cerr << "iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
     }
-    const bool export_first_iteration_stages = it == 0 && !config_.stage_mesh_export_dir.empty();
-    auto write_stage_mesh = [&](const std::string& stage) {
-      if (export_first_iteration_stages) {
-        writeMesh(
-            std::filesystem::path(config_.stage_mesh_export_dir) / ("iter001_after_" + stage + ".ply"),
-            mesh);
-      }
-      if (!config_.all_stage_mesh_export_dir.empty()) {
-        std::ostringstream filename;
-        filename << "iter" << std::setw(3) << std::setfill('0') << (it + 1)
-                 << "_after_" << stage << ".ply";
-        writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / filename.str(), mesh);
-      }
-    };
-
     const int split_count = splitLongEdges(mesh);
-    write_stage_mesh("split");
     const int collapse_count = collapseShortEdges(mesh);
     mesh = removeDegenerateFaces(mesh);
-    write_stage_mesh("collapse");
     const int flip_count = flipEdges(mesh);
-    write_stage_mesh("flip");
-    relocateVertices(mesh, original_for_projection);
+    stats_.split_total += split_count;
+    stats_.collapse_total += collapse_count;
+    stats_.flip_total += flip_count;
+    relocateVertices(mesh);
     mesh = removeDegenerateFaces(mesh);
-    write_stage_mesh("smooth");
     const MeshSummary iteration_summary = summarizeMesh(mesh);
     const EdgeRatioStats ratio_stats = edgeRatioStats(mesh);
-    if (!config_.iteration_mesh_export_dir.empty()) {
-      std::ostringstream filename;
-      filename << "iter" << std::setw(3) << std::setfill('0') << (it + 1) << ".ply";
-      writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / filename.str(), mesh);
-    }
     stats_.iterations.push_back({
         it + 1,
         split_count,
@@ -1045,30 +617,44 @@ Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
 
 void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_faces) {
   const double base_len = meanEdgeLength(mesh);
-  const auto raw_curvature =
-      detail::computeRawCurvatureField(mesh, config_.curvature_mode);
-  const auto csf_curvature = solveCsf(mesh, raw_curvature);
+  const auto curvature_fields = detail::computeRobustMeanCurvatureFields(
+      mesh,
+      toDetailCurvatureMode(config_.curvature_signal));
+  const auto& raw_curvature = curvature_fields.raw_signal;
+  const auto csf_curvature =
+      config_.use_csf ? solveCsf(mesh, raw_curvature) : raw_curvature;
+  if (!config_.use_csf) {
+    stats_.csf_solver_success = true;
+  }
   const auto sizing = detail::targetFaceCurvatureLengths(
       mesh,
       csf_curvature,
       target_faces,
-      base_len);
-
-  if (!config_.target_field_export_dir.empty()) {
-    TargetFieldStageData diagnostic;
-    diagnostic.raw_curvature = raw_curvature;
-    diagnostic.csf_curvature = csf_curvature;
-    diagnostic.target_lengths = sizing.target_lengths;
-    diagnostic.base_length = base_len;
-    diagnostic.min_length = sizing.h_min;
-    diagnostic.max_length = sizing.h_max;
-    writeTargetFieldDiagnostics(
-        std::filesystem::path(config_.target_field_export_dir),
-        mesh,
-        diagnostic);
-  }
+      base_len,
+      config_.curvature_cap_quantile);
 
   target_field_.build(mesh, sizing.target_lengths);
+  writeTargetFieldDiagnostics(
+      mesh,
+      curvature_fields.physical_mean_curvature,
+      raw_curvature,
+      csf_curvature,
+      sizing,
+      base_len,
+      config_.export_target_field_dir);
+  stats_.target_lambda = sizing.lambda;
+  stats_.target_estimated_faces = sizing.estimated_faces;
+  stats_.target_h_min = sizing.h_min;
+  stats_.target_h_max = sizing.h_max;
+  stats_.curvature_cap_value = sizing.curvature_cap_value;
+  stats_.curvature_cap_changed_rate = sizing.curvature_cap_changed_rate;
+
+  if (!sizing.target_lengths.empty()) {
+    const auto [min_it, max_it] =
+        std::minmax_element(sizing.target_lengths.begin(), sizing.target_lengths.end());
+    stats_.target_observed_h_min = *min_it;
+    stats_.target_observed_h_max = *max_it;
+  }
 
   if (config_.verbose && !sizing.target_lengths.empty()) {
     const auto [min_it, max_it] =
@@ -1082,19 +668,13 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
   }
 }
 
-std::vector<double> AdaIsoRemesher::computeCsf(const Mesh& mesh) {
-  return solveCsf(
-      mesh,
-      detail::computeRawCurvatureField(mesh, config_.curvature_mode));
-}
-
 std::vector<double> AdaIsoRemesher::solveCsf(
     const Mesh& mesh,
     const std::vector<double>& raw_curvature) {
   const auto solved = detail::solveScreenedScalarField(
       mesh,
       raw_curvature,
-      config_.csf_smoothing_alpha);
+      kCsfSmoothingAlpha);
   stats_.csf_assembly_time_ms = solved.stats.assembly_time_ms;
   stats_.csf_factorization_time_ms = solved.stats.factorization_time_ms;
   stats_.csf_solve_time_ms = solved.stats.solve_time_ms;
@@ -1250,7 +830,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     const auto e2f = edgeFaces(mesh);
     const auto neigh = vertexNeighbors(mesh);
     const auto vf = vertexFaces(mesh);
-    const auto feature_strengths = computeVertexFeatureStrengths(mesh);
+    const auto feature_strengths = detail::computeVertexFeatureStrengths(mesh);
     std::vector<std::tuple<double, double, int, int>> candidates;
     for (const auto& item : e2f) {
       const int a = item.first.first;
@@ -1259,7 +839,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
         continue;
       }
       const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
-      const double target = edgeTarget(mesh, a, b, config_.collapseUsesMaxReference());
+      const double target = edgeTarget(mesh, a, b, false);
       if (length < config_.collapseFactor() * target) {
         candidates.emplace_back(length / target, length, a, b);
       }
@@ -1416,24 +996,7 @@ Eigen::Vector3d AdaIsoRemesher::collapsePoint(
     int a,
     int b,
     const std::vector<double>& feature_strengths) const {
-  const Eigen::Vector3d midpoint =
-      0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]);
-  if (!config_.feature_aware_collapse || feature_strengths.size() != mesh.vertices.size()) {
-    return midpoint;
-  }
-
-  const double fa = feature_strengths[static_cast<std::size_t>(a)];
-  const double fb = feature_strengths[static_cast<std::size_t>(b)];
-  if (!std::isfinite(fa) || !std::isfinite(fb)) {
-    return midpoint;
-  }
-
-  const double fmax = std::max(fa, fb);
-  constexpr double kFeatureEps = 1e-12;
-  if (fmax <= kFeatureEps || std::abs(fa - fb) < config_.collapse_feature_omega * fmax) {
-    return midpoint;
-  }
-  return fa > fb ? mesh.vertices[static_cast<std::size_t>(a)] : mesh.vertices[static_cast<std::size_t>(b)];
+  return detail::featureAwareCollapsePoint(mesh, a, b, feature_strengths);
 }
 
 int AdaIsoRemesher::collapseEdgesBatch(
@@ -1518,8 +1081,7 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
         continue;
       }
 
-      const double max_flip_dihedral = config_.max_flip_dihedral_degrees * kPi / 180.0;
-      if (faceNormalAngle(mesh.vertices, tri1, tri2) > max_flip_dihedral) {
+      if (faceNormalAngle(mesh.vertices, tri1, tri2) > kMaxFlipDihedralRadians) {
         continue;
       }
 
@@ -1542,21 +1104,19 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
       if (length < config_.collapseFactor() * target || length > config_.splitFactor() * target) {
         continue;
       }
-      if (!flipImprovesValence(valence, boundary, a, b, c, d)) {
+      if (!detail::flipImprovesValence(valence, boundary, a, b, c, d)) {
         continue;
       }
 
       const Eigen::Vector3d ref_normal = safeFaceNormal(mesh.vertices, tri1) + safeFaceNormal(mesh.vertices, tri2);
       Eigen::Vector3i new1 = orientTriangle(Eigen::Vector3i(c, d, b), mesh.vertices, ref_normal);
       Eigen::Vector3i new2 = orientTriangle(Eigen::Vector3i(d, c, a), mesh.vertices, ref_normal);
-      if (faceNormalAngle(mesh.vertices, new1, new2) > max_flip_dihedral) {
+      if (faceNormalAngle(mesh.vertices, new1, new2) > kMaxFlipDihedralRadians) {
         continue;
       }
-      if (config_.avoid_obtuse_flip) {
-        if (maxInnerAngle(mesh.vertices[new1[0]], mesh.vertices[new1[1]], mesh.vertices[new1[2]]) > 0.5 * kPi ||
-            maxInnerAngle(mesh.vertices[new2[0]], mesh.vertices[new2[1]], mesh.vertices[new2[2]]) > 0.5 * kPi) {
-          continue;
-        }
+      if (maxInnerAngle(mesh.vertices[new1[0]], mesh.vertices[new1[1]], mesh.vertices[new1[2]]) > 0.5 * kPi ||
+          maxInnerAngle(mesh.vertices[new2[0]], mesh.vertices[new2[1]], mesh.vertices[new2[2]]) > 0.5 * kPi) {
+        continue;
       }
 
       mesh.faces[static_cast<std::size_t>(f1)] = new1;
@@ -1573,107 +1133,19 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
   return total;
 }
 
-bool AdaIsoRemesher::flipImprovesValence(
-    const std::vector<int>& valence,
-    const std::unordered_set<int>& boundary,
-    int a,
-    int b,
-    int c,
-    int d) const {
-  auto target = [&](int v) {
-    return boundary.find(v) == boundary.end() ? 6 : 4;
-  };
-  const int before = std::abs(valence[static_cast<std::size_t>(a)] - target(a)) +
-                     std::abs(valence[static_cast<std::size_t>(b)] - target(b)) +
-                     std::abs(valence[static_cast<std::size_t>(c)] - target(c)) +
-                     std::abs(valence[static_cast<std::size_t>(d)] - target(d));
-  const int after = std::abs(valence[static_cast<std::size_t>(a)] - 1 - target(a)) +
-                    std::abs(valence[static_cast<std::size_t>(b)] - 1 - target(b)) +
-                    std::abs(valence[static_cast<std::size_t>(c)] + 1 - target(c)) +
-                    std::abs(valence[static_cast<std::size_t>(d)] + 1 - target(d));
-  return after < before;
-}
-
-std::vector<AdaIsoRemesher::VertexRelocationClass> AdaIsoRemesher::classifyVerticesForRelocation(
-    const Mesh& mesh) const {
-  const auto boundary = boundaryVertices(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  const auto feature_strengths = computeVertexFeatureStrengths(mesh);
-  std::vector<VertexRelocationClass> classes(mesh.vertexCount(), VertexRelocationClass::Smooth);
-
-  for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
-    if (boundary.find(static_cast<int>(i)) != boundary.end()) {
-      classes[i] = VertexRelocationClass::Corner;
-      continue;
-    }
-
-    const double center_strength = feature_strengths[i];
-    if (!std::isfinite(center_strength) || center_strength <= kRelocationFeatureEps) {
-      classes[i] = VertexRelocationClass::Smooth;
-      continue;
-    }
-
-    const std::size_t n = neigh[i].size();
-    if (n == 0) {
-      classes[i] = VertexRelocationClass::Corner;
-      continue;
-    }
-
-    const double threshold = kRelocationZeta * center_strength;
-    std::size_t important_count = 0;
-    for (int neighbor : neigh[i]) {
-      if (neighbor < 0 || static_cast<std::size_t>(neighbor) >= feature_strengths.size()) {
-        continue;
-      }
-      const double neighbor_strength = feature_strengths[static_cast<std::size_t>(neighbor)];
-      if (std::isfinite(neighbor_strength) && neighbor_strength >= threshold) {
-        ++important_count;
-      }
-    }
-
-    const std::size_t d_corner = important_count;
-    const std::size_t d_crease = important_count > 2 ? important_count - 2 : 2 - important_count;
-    const std::size_t d_smooth = important_count > n ? important_count - n : n - important_count;
-    if (d_corner <= d_crease && d_corner <= d_smooth) {
-      classes[i] = VertexRelocationClass::Corner;
-    } else if (d_crease <= d_smooth) {
-      classes[i] = VertexRelocationClass::Crease;
-    } else {
-      classes[i] = VertexRelocationClass::Smooth;
-    }
-  }
-
-  return classes;
-}
-
-void AdaIsoRemesher::relocateVertices(Mesh& mesh, const Mesh& original_for_projection) {
-  const auto classes = classifyVerticesForRelocation(mesh);
+void AdaIsoRemesher::relocateVertices(Mesh& mesh) {
+  const auto classes = detail::classifyVerticesForRelocation(mesh);
   tangentSmoothing(mesh, classes);
-
-  if (!config_.enable_relocation_mls) {
-    return;
-  }
-
-  const auto projected = mlsProject(mesh.vertices, original_for_projection);
-  if (projected.size() != mesh.vertices.size()) {
-    return;
-  }
-
-  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    if (classes[i] == VertexRelocationClass::Smooth && finiteVector(projected[i])) {
-      mesh.vertices[i] = projected[i];
-    }
-  }
 }
 
-void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes) {
+void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<detail::VertexRelocationClass>& classes) {
   const auto vf = vertexFaces(mesh);
   const auto normals = vertexNormals(mesh);
   const auto areas = faceAreas(mesh);
   auto new_vertices = mesh.vertices;
 
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    if (i >= classes.size() || classes[i] != VertexRelocationClass::Smooth || vf[i].empty()) {
+    if (i >= classes.size() || classes[i] != detail::VertexRelocationClass::Smooth || vf[i].empty()) {
       continue;
     }
     std::unordered_map<int, double> weights;
@@ -1713,86 +1185,6 @@ void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexReloca
   }
 
   mesh.vertices = std::move(new_vertices);
-}
-
-std::vector<Eigen::Vector3d> AdaIsoRemesher::mlsProject(
-    const std::vector<Eigen::Vector3d>& points,
-    const Mesh& original) const {
-  if (original.vertices.empty()) {
-    return points;
-  }
-
-  const auto normals = vertexNormals(original);
-  NearestNeighborIndex tree(original.vertices);
-  const std::size_t k = std::min<std::size_t>(std::max(1, config_.mls_k), original.vertexCount());
-  auto out = points;
-
-  for (std::size_t pi = 0; pi < points.size(); ++pi) {
-    const Eigen::Vector3d& point = points[pi];
-    auto initial = tree.nearestK(point, k);
-    if (initial.empty() || std::sqrt(initial.front().second) <= kEps) {
-      out[pi] = point;
-      continue;
-    }
-
-    Eigen::Vector3d px = point;
-    double best_err = std::numeric_limits<double>::infinity();
-    for (int it = 0; it < config_.mls_iterations; ++it) {
-      auto knn = tree.nearestK(px, k);
-      if (knn.empty()) {
-        break;
-      }
-
-      std::vector<double> dists;
-      dists.reserve(knn.size());
-      for (const auto& item : knn) {
-        dists.push_back(std::sqrt(std::max(0.0, item.second)));
-      }
-
-      double h = dists.back();
-      if (dists.size() > 1) {
-        h += std::max(0.0, h - dists[dists.size() - 2]);
-      }
-      h = std::max(h, 1e-12);
-
-      double sum_w = 0.0;
-      Eigen::Vector3d a = Eigen::Vector3d::Zero();
-      Eigen::Vector3d n = Eigen::Vector3d::Zero();
-      for (std::size_t i = 0; i < knn.size(); ++i) {
-        const double ratio = dists[i] / h;
-        const double w = std::exp(-(ratio * ratio));
-        const std::size_t idx = knn[i].first;
-        sum_w += w;
-        a += w * original.vertices[idx];
-        n += w * normals[idx];
-      }
-      if (sum_w <= kEps) {
-        break;
-      }
-      a /= sum_w;
-      n /= sum_w;
-      const double n_norm = n.norm();
-      if (n_norm <= kEps) {
-        break;
-      }
-      n /= n_norm;
-
-      const double err = std::abs(n.dot(point - a));
-      if (err > best_err) {
-        break;
-      }
-      best_err = err;
-      px = point - n.dot(point - a) * n;
-      if (err < config_.mls_tolerance) {
-        break;
-      }
-    }
-    if (finiteVector(px)) {
-      out[pi] = px;
-    }
-  }
-
-  return out;
 }
 
 }  // namespace adaiso

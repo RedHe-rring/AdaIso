@@ -2,7 +2,7 @@
 
 #include "adaiso/Geometry.hpp"
 #include "adaiso/Mesh.hpp"
-#include "adaiso/detail/RawCurvature.hpp"
+#include "adaiso/detail/FeatureClassification.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -11,11 +11,6 @@
 #include <vector>
 
 namespace adaiso {
-
-enum class Variant {
-  Paper,
-  Code,
-};
 
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
@@ -47,36 +42,30 @@ class TargetLengthField {
 };
 
 struct AdaIsoConfig {
-  Variant variant = Variant::Code;
-  CurvatureMode curvature_mode = CurvatureMode::RobustMean;
-  double csf_smoothing_alpha = 2.0;
+  enum class CurvatureSignal {
+    LogDimensionless,
+    Dimensionless,
+    Physical,
+  };
+
   std::size_t target_faces = 0;
-  std::string target_field_export_dir;
-  std::string iteration_mesh_export_dir;
-  std::string stage_mesh_export_dir;
-  std::string all_stage_mesh_export_dir;
   bool preprocess = false;
   int global_iterations = 5;
+  CurvatureSignal curvature_signal = CurvatureSignal::LogDimensionless;
+  bool use_csf = true;
+  double curvature_cap_quantile = 0.995;
+  std::string export_target_field_dir;
   double subremesh_multiplier = 1.5;
   int max_subremesh_rounds = 8;
   int max_split_passes = 5;
   int max_collapse_passes = 5;
   int max_flip_passes = 5;
   double tangent_lambda = 0.6;
-  bool enable_relocation_mls = false;
-  int mls_k = 8;
-  int mls_iterations = 5;
-  double mls_tolerance = 1e-4;
-  bool avoid_obtuse_flip = true;
-  double max_flip_dihedral_degrees = 45.0;
-  bool feature_aware_collapse = true;
-  double collapse_feature_omega = 0.15;
   double min_quality_after_collapse = 0.05;
   bool verbose = true;
 
   [[nodiscard]] double splitFactor() const;
   [[nodiscard]] double collapseFactor() const;
-  [[nodiscard]] bool collapseUsesMaxReference() const;
 };
 
 struct AdaIsoStats {
@@ -106,6 +95,17 @@ struct AdaIsoStats {
   double csf_residual_scaled = 0.0;
   std::size_t csf_matrix_nonzeros = 0;
   bool csf_solver_success = false;
+  int split_total = 0;
+  int collapse_total = 0;
+  int flip_total = 0;
+  double target_lambda = 0.0;
+  double target_estimated_faces = 0.0;
+  double target_h_min = 0.0;
+  double target_h_max = 0.0;
+  double target_observed_h_min = 0.0;
+  double target_observed_h_max = 0.0;
+  double curvature_cap_value = 0.0;
+  double curvature_cap_changed_rate = 0.0;
 };
 
 class AdaIsoRemesher {
@@ -116,15 +116,8 @@ class AdaIsoRemesher {
   [[nodiscard]] const AdaIsoStats& stats() const { return stats_; }
 
  private:
-  enum class VertexRelocationClass {
-    Corner,
-    Crease,
-    Smooth
-  };
-
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
   void buildTargetLengths(const Mesh& mesh, std::size_t target_faces);
-  [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
   [[nodiscard]] std::vector<double> solveCsf(
       const Mesh& mesh,
       const std::vector<double>& raw_curvature);
@@ -152,27 +145,14 @@ class AdaIsoRemesher {
       const std::vector<Edge>& selected,
       const std::vector<double>& feature_strengths) const;
   [[nodiscard]] int flipEdges(Mesh& mesh);
-  [[nodiscard]] bool flipImprovesValence(
-      const std::vector<int>& valence,
-      const std::unordered_set<int>& boundary,
-      int a,
-      int b,
-      int c,
-      int d) const;
-  [[nodiscard]] std::vector<VertexRelocationClass> classifyVerticesForRelocation(const Mesh& mesh) const;
-  void relocateVertices(Mesh& mesh, const Mesh& original_for_projection);
-  void tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes);
-  [[nodiscard]] std::vector<Eigen::Vector3d> mlsProject(
-      const std::vector<Eigen::Vector3d>& points,
-      const Mesh& original) const;
+  void relocateVertices(Mesh& mesh);
+  void tangentSmoothing(Mesh& mesh, const std::vector<detail::VertexRelocationClass>& classes);
 
   AdaIsoConfig config_;
   AdaIsoStats stats_;
   TargetLengthField target_field_;
 };
 
-[[nodiscard]] Variant parseVariant(const std::string& value);
-[[nodiscard]] std::string toString(Variant variant);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

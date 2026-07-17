@@ -5,7 +5,6 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
@@ -16,13 +15,6 @@ namespace {
 constexpr double kEps = 1e-14;
 constexpr double kRobustMeanCotMax = 10.0;
 constexpr double kRobustMeanAreaFloorFactor = 1e-8;
-
-std::string lowerString(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
 
 double clampedPositiveCotangent(
     const Eigen::Vector3d& a,
@@ -77,57 +69,11 @@ std::unordered_map<Edge, double, EdgeHash> robustMeanCotangentWeights(
 
 }  // namespace
 
-CurvatureMode parseCurvatureMode(const std::string& value) {
-  const std::string lower = lowerString(value);
-  if (lower == "normal-angle" || lower == "normal_angle") {
-    return CurvatureMode::NormalAngle;
-  }
-  if (lower == "robust-mean" || lower == "robust_mean") {
-    return CurvatureMode::RobustMean;
-  }
-  throw std::runtime_error("unknown curvature mode: " + value);
-}
-
-std::string toString(CurvatureMode mode) {
-  switch (mode) {
-    case CurvatureMode::NormalAngle:
-      return "normal-angle";
-    case CurvatureMode::RobustMean:
-      return "robust-mean";
-  }
-  return "unknown";
-}
-
 namespace detail {
 
-std::vector<double> computeNormalAngleCurvatureField(const Mesh& mesh) {
-  mesh.validate();
-  if (mesh.vertices.empty()) {
-    throw std::runtime_error("normal-angle curvature requires a non-empty mesh");
-  }
-
-  const auto normals = vertexNormals(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
-
-  for (std::size_t i = 0; i < neigh.size(); ++i) {
-    if (neigh[i].empty()) {
-      continue;
-    }
-    double accum = 0.0;
-    int count = 0;
-    for (int j : neigh[i]) {
-      const double dot = std::clamp(
-          normals[i].dot(normals[static_cast<std::size_t>(j)]), -1.0, 1.0);
-      accum += std::acos(dot);
-      ++count;
-    }
-    curvature[i] = accum / static_cast<double>(count);
-  }
-  return curvature;
-}
-
-std::vector<double> computeRobustMeanCurvatureField(const Mesh& mesh) {
+RobustMeanCurvatureFields computeRobustMeanCurvatureFields(
+    const Mesh& mesh,
+    CurvatureSignalMode mode) {
   mesh.validate();
   if (mesh.vertices.empty()) {
     throw std::runtime_error("robust mean curvature requires a non-empty mesh");
@@ -163,32 +109,44 @@ std::vector<double> computeRobustMeanCurvatureField(const Mesh& mesh) {
     laplacian[static_cast<std::size_t>(b)] += weight * (pa - pb);
   }
 
-  std::vector<double> curvature(mesh.vertexCount(), 0.0);
-  for (std::size_t i = 0; i < curvature.size(); ++i) {
+  RobustMeanCurvatureFields result;
+  result.physical_mean_curvature.assign(mesh.vertexCount(), 0.0);
+  result.raw_signal.assign(mesh.vertexCount(), 0.0);
+  for (std::size_t i = 0; i < result.raw_signal.size(); ++i) {
     const double area = std::max(areas[i], area_floor);
     if (!std::isfinite(area) || area <= 0.0) {
       throw std::runtime_error("robust mean curvature produced an invalid vertex area");
     }
     const double mean_curvature = 0.5 * laplacian[i].norm() / area;
-    const double signal = std::log1p(mean_curvature * mean_length);
+    double signal = 0.0;
+    switch (mode) {
+      case CurvatureSignalMode::LogDimensionless:
+        signal = std::log1p(mean_curvature * mean_length);
+        break;
+      case CurvatureSignalMode::Dimensionless:
+        signal = mean_curvature * mean_length;
+        break;
+      case CurvatureSignalMode::Physical:
+        signal = mean_curvature;
+        break;
+    }
+    if (!std::isfinite(mean_curvature)) {
+      throw std::runtime_error("robust mean curvature produced a non-finite physical value");
+    }
     if (!std::isfinite(signal)) {
       throw std::runtime_error("robust mean curvature produced a non-finite value");
     }
-    curvature[i] = signal;
+    result.physical_mean_curvature[i] = mean_curvature;
+    result.raw_signal[i] = signal;
   }
-  return curvature;
+  return result;
 }
 
-std::vector<double> computeRawCurvatureField(
-    const Mesh& mesh,
-    CurvatureMode mode) {
-  switch (mode) {
-    case CurvatureMode::NormalAngle:
-      return computeNormalAngleCurvatureField(mesh);
-    case CurvatureMode::RobustMean:
-      return computeRobustMeanCurvatureField(mesh);
-  }
-  throw std::runtime_error("unknown curvature mode");
+std::vector<double> computeRobustMeanCurvatureField(const Mesh& mesh) {
+  return computeRobustMeanCurvatureFields(
+             mesh,
+             CurvatureSignalMode::LogDimensionless)
+      .raw_signal;
 }
 
 }  // namespace detail

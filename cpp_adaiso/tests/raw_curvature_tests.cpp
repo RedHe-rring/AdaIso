@@ -1,5 +1,6 @@
 #include "TestSupport.hpp"
 
+#include "adaiso/Geometry.hpp"
 #include "adaiso/detail/RawCurvature.hpp"
 
 #include <algorithm>
@@ -19,6 +20,18 @@ adaiso::Mesh squareFanMesh() {
       {0.5, 0.5, 0.0},
   };
   mesh.faces = {{0, 1, 4}, {1, 2, 4}, {2, 3, 4}, {3, 0, 4}};
+  return mesh;
+}
+
+adaiso::Mesh tetraMesh() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {0.0, 1.0, 0.0},
+      {0.0, 0.0, 1.0},
+  };
+  mesh.faces = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
   return mesh;
 }
 
@@ -42,19 +55,29 @@ int main() {
         fan_robust[4], 0.0, 1e-12,
         "symmetric planar interior robust-mean curvature was not zero");
 
-    const auto normal =
-        adaiso::detail::computeNormalAngleCurvatureField(square);
-    for (double value : normal) {
+    const adaiso::Mesh tetra = tetraMesh();
+    const double tetra_mean = adaiso::meanEdgeLength(tetra);
+    const auto physical = adaiso::detail::computeRobustMeanCurvatureFields(
+        tetra,
+        adaiso::detail::CurvatureSignalMode::Physical);
+    const auto dimless = adaiso::detail::computeRobustMeanCurvatureFields(
+        tetra,
+        adaiso::detail::CurvatureSignalMode::Dimensionless);
+    const auto log_dimless = adaiso::detail::computeRobustMeanCurvatureFields(
+        tetra,
+        adaiso::detail::CurvatureSignalMode::LogDimensionless);
+    for (std::size_t i = 0; i < tetra.vertexCount(); ++i) {
       test_support::requireNear(
-          value, 0.0, 1e-12,
-          "planar normal-angle curvature was not zero");
+          dimless.raw_signal[i],
+          physical.physical_mean_curvature[i] * tetra_mean,
+          1e-12,
+          "dimensionless robust curvature did not equal H times mean edge");
+      test_support::requireNear(
+          log_dimless.raw_signal[i],
+          std::log1p(dimless.raw_signal[i]),
+          1e-12,
+          "log-dimensionless robust curvature did not equal log1p(dimless)");
     }
-
-    const auto via_mode = adaiso::detail::computeRawCurvatureField(
-        square, adaiso::CurvatureMode::RobustMean);
-    test_support::require(
-        via_mode.size() == square.vertexCount(),
-        "raw curvature mode dispatch returned wrong size");
 
     bool rejected = false;
     try {

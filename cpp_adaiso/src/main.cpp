@@ -21,20 +21,13 @@ void printUsage(std::ostream& out) {
   out << "Usage:\n"
       << "  adaiso_cli <input.obj|input.ply|input.off> -o <output.obj|output.ply> [options]\n\n"
       << "Options:\n"
-      << "  --variant <code|paper>     Default: code\n"
-      << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
-      << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-faces <n>         Target face budget. Default: cleaned input face count\n"
-      << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
-      << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
-      << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
-      << "  --export-all-stage-meshes <dir> Export every iteration's remesh stage snapshots\n"
+      << "  --curvature-signal <mode>  log_dimless|dimless|physical. Default: log_dimless\n"
+      << "  --use-csf <0|1>            Use screened CSF smoothing. Default: 1\n"
+      << "  --curvature-cap <q|off>    Curvature cap quantile or off. Default: 0.995\n"
+      << "  --export-target-field <dir> Write target-field CSV diagnostics\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
-      << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
-      << "  --feature-aware-collapse <0|1> Feature-aware collapse placement. Default: 1\n"
-      << "  --collapse-feature-omega <v> Feature similarity threshold for collapse. Default: 0.15\n"
-      << "  --relocation-mls <0|1>    Enable MLS projection inside relocation. Default: 0\n"
       << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
       << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
       << "  --summary-json <path>      Write JSON summary to file\n"
@@ -58,6 +51,44 @@ bool parseBool(const std::string& value) {
     return false;
   }
   throw std::runtime_error("expected boolean value 0/1, got: " + value);
+}
+
+adaiso::AdaIsoConfig::CurvatureSignal parseCurvatureSignal(const std::string& value) {
+  const std::string lower = lowerString(value);
+  if (lower == "log_dimless" || lower == "log-dimless" || lower == "log") {
+    return adaiso::AdaIsoConfig::CurvatureSignal::LogDimensionless;
+  }
+  if (lower == "dimless" || lower == "dimensionless") {
+    return adaiso::AdaIsoConfig::CurvatureSignal::Dimensionless;
+  }
+  if (lower == "physical") {
+    return adaiso::AdaIsoConfig::CurvatureSignal::Physical;
+  }
+  throw std::runtime_error("unknown curvature signal mode: " + value);
+}
+
+std::string curvatureSignalName(adaiso::AdaIsoConfig::CurvatureSignal mode) {
+  switch (mode) {
+    case adaiso::AdaIsoConfig::CurvatureSignal::LogDimensionless:
+      return "log_dimless";
+    case adaiso::AdaIsoConfig::CurvatureSignal::Dimensionless:
+      return "dimless";
+    case adaiso::AdaIsoConfig::CurvatureSignal::Physical:
+      return "physical";
+  }
+  return "log_dimless";
+}
+
+double parseCurvatureCap(const std::string& value) {
+  const std::string lower = lowerString(value);
+  if (lower == "off" || lower == "none" || lower == "no") {
+    return -1.0;
+  }
+  const double parsed = std::stod(value);
+  if (!std::isfinite(parsed) || parsed <= 0.0 || parsed > 1.0) {
+    throw std::runtime_error("--curvature-cap must be in (0,1] or off");
+  }
+  return parsed;
 }
 
 std::string requireValue(int& i, int argc, char** argv, const std::string& option) {
@@ -187,36 +218,30 @@ std::string buildSummaryJson(
   }
   out << "  \"runtime_sec\": " << runtime_sec << ",\n";
   out << "  \"parameters\": {\n";
-  out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
-  out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
-  out << "    \"target_size_mapping\": \"target_faces_inverse_sqrt_diffused_curvature\",\n";
-  out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
+  out << "    \"target_size_mapping\": \"target_faces_inverse_sqrt_"
+      << curvatureSignalName(config.curvature_signal)
+      << (config.use_csf ? "_csf" : "_raw")
+      << (config.curvature_cap_quantile >= 0.0 ? "_cap" : "_nocap")
+      << "\",\n";
+  out << "    \"raw_curvature\": \"robust_mean\",\n";
+  out << "    \"curvature_signal\": \"" << curvatureSignalName(config.curvature_signal) << "\",\n";
+  out << "    \"use_csf\": " << (config.use_csf ? "true" : "false") << ",\n";
+  if (config.curvature_cap_quantile >= 0.0) {
+    out << "    \"curvature_cap_quantile\": " << config.curvature_cap_quantile << ",\n";
+  } else {
+    out << "    \"curvature_cap_quantile\": \"off\",\n";
+  }
+  if (!config.export_target_field_dir.empty()) {
+    out << "    \"export_target_field\": \"" << jsonEscape(config.export_target_field_dir) << "\",\n";
+  }
   out << "    \"target_faces\": "
       << (config.target_faces > 0 ? config.target_faces : input_summary.faces) << ",\n";
-  if (!config.target_field_export_dir.empty()) {
-    out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
-  }
-  if (!config.iteration_mesh_export_dir.empty()) {
-    out << "    \"iteration_mesh_export_dir\": \"" << jsonEscape(config.iteration_mesh_export_dir) << "\",\n";
-  }
-  if (!config.stage_mesh_export_dir.empty()) {
-    out << "    \"stage_mesh_export_dir\": \"" << jsonEscape(config.stage_mesh_export_dir) << "\",\n";
-  }
-  if (!config.all_stage_mesh_export_dir.empty()) {
-    out << "    \"all_stage_mesh_export_dir\": \"" << jsonEscape(config.all_stage_mesh_export_dir) << "\",\n";
-  }
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
   out << "    \"split_factor\": " << config.splitFactor() << ",\n";
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
-  out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
-  out << "    \"max_flip_dihedral_degrees\": " << config.max_flip_dihedral_degrees << ",\n";
-  out << "    \"feature_aware_collapse\": " << (config.feature_aware_collapse ? "true" : "false") << ",\n";
-  out << "    \"collapse_feature_omega\": " << config.collapse_feature_omega << ",\n";
-  out << "    \"relocation_mls\": " << (config.enable_relocation_mls ? "true" : "false") << ",\n";
-  out << "    \"mls_k\": " << config.mls_k << ",\n";
-  out << "    \"mls_iterations\": " << config.mls_iterations << "\n";
+  out << "    \"tangent_lambda\": " << config.tangent_lambda << "\n";
   out << "  },\n";
   out << "  \"input_summary\": " << adaiso::summaryToJson(input_summary, 2) << ",\n";
   out << "  \"output_summary\": " << adaiso::summaryToJson(output_summary, 2) << ",\n";
@@ -228,6 +253,17 @@ std::string buildSummaryJson(
   out << "  \"stats\": {\n";
   out << "    \"vertices\": " << stats.vertices << ",\n";
   out << "    \"faces\": " << stats.faces << ",\n";
+  out << "    \"target_lambda\": " << stats.target_lambda << ",\n";
+  out << "    \"target_estimated_faces\": " << stats.target_estimated_faces << ",\n";
+  out << "    \"target_h_min\": " << stats.target_h_min << ",\n";
+  out << "    \"target_h_max\": " << stats.target_h_max << ",\n";
+  out << "    \"target_observed_h_min\": " << stats.target_observed_h_min << ",\n";
+  out << "    \"target_observed_h_max\": " << stats.target_observed_h_max << ",\n";
+  out << "    \"curvature_cap_value\": " << stats.curvature_cap_value << ",\n";
+  out << "    \"curvature_cap_changed_rate\": " << stats.curvature_cap_changed_rate << ",\n";
+  out << "    \"split_total\": " << stats.split_total << ",\n";
+  out << "    \"collapse_total\": " << stats.collapse_total << ",\n";
+  out << "    \"flip_total\": " << stats.flip_total << ",\n";
   out << "    \"csf_assembly_time_ms\": " << stats.csf_assembly_time_ms << ",\n";
   out << "    \"csf_factorization_time_ms\": " << stats.csf_factorization_time_ms << ",\n";
   out << "    \"csf_solve_time_ms\": " << stats.csf_solve_time_ms << ",\n";
@@ -256,7 +292,6 @@ void writeTextFile(const std::filesystem::path& path, const std::string& text) {
 int main(int argc, char** argv) {
   try {
     adaiso::AdaIsoConfig config;
-    config.variant = adaiso::Variant::Code;
 
     std::filesystem::path input_path;
     std::filesystem::path output_path;
@@ -277,35 +312,20 @@ int main(int argc, char** argv) {
       }
       if (arg == "-o" || arg == "--output") {
         output_path = requireValue(i, argc, argv, arg);
-      } else if (arg == "--variant") {
-        config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
-      } else if (arg == "--curvature-mode") {
-        config.curvature_mode =
-            adaiso::parseCurvatureMode(requireValue(i, argc, argv, arg));
-      } else if (arg == "--csf-alpha") {
-        config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--curvature-signal") {
+        config.curvature_signal = parseCurvatureSignal(requireValue(i, argc, argv, arg));
+      } else if (arg == "--use-csf") {
+        config.use_csf = parseBool(requireValue(i, argc, argv, arg));
+      } else if (arg == "--curvature-cap") {
+        config.curvature_cap_quantile = parseCurvatureCap(requireValue(i, argc, argv, arg));
+      } else if (arg == "--export-target-field") {
+        config.export_target_field_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--target-faces") {
         config.target_faces = parsePositiveSize(requireValue(i, argc, argv, arg), arg);
-      } else if (arg == "--export-target-field") {
-        config.target_field_export_dir = requireValue(i, argc, argv, arg);
-      } else if (arg == "--export-iteration-meshes") {
-        config.iteration_mesh_export_dir = requireValue(i, argc, argv, arg);
-      } else if (arg == "--export-stage-meshes") {
-        config.stage_mesh_export_dir = requireValue(i, argc, argv, arg);
-      } else if (arg == "--export-all-stage-meshes") {
-        config.all_stage_mesh_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--preprocess") {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
         config.global_iterations = std::stoi(requireValue(i, argc, argv, arg));
-      } else if (arg == "--max-flip-dihedral-deg") {
-        config.max_flip_dihedral_degrees = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--feature-aware-collapse") {
-        config.feature_aware_collapse = parseBool(requireValue(i, argc, argv, arg));
-      } else if (arg == "--collapse-feature-omega") {
-        config.collapse_feature_omega = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--relocation-mls") {
-        config.enable_relocation_mls = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--gt") {
         gt_path = requireValue(i, argc, argv, arg);
       } else if (arg == "--cd-samples") {
@@ -331,13 +351,6 @@ int main(int argc, char** argv) {
     }
     if (config.global_iterations < 0) {
       throw std::runtime_error("--iters must be non-negative");
-    }
-    if (config.csf_smoothing_alpha <= 0.0 ||
-        !std::isfinite(config.csf_smoothing_alpha)) {
-      throw std::runtime_error("--csf-alpha must be positive");
-    }
-    if (config.collapse_feature_omega < 0.0 || !std::isfinite(config.collapse_feature_omega)) {
-      throw std::runtime_error("--collapse-feature-omega must be finite and non-negative");
     }
 
     const auto started = std::chrono::steady_clock::now();

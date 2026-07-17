@@ -5,16 +5,44 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 namespace adaiso::detail {
 namespace {
+
+constexpr double kLogSmoothEtaBase = 0.35;
+constexpr double kLogSmoothTau = 0.35;
+constexpr int kLogSmoothIterations = 1;
 
 void validateMesh(const Mesh& mesh) {
   mesh.validate();
   if (mesh.vertices.empty() || mesh.faces.empty()) {
     throw std::runtime_error("target face sizing requires a non-empty mesh");
   }
+}
+
+double quantileOfSorted(const std::vector<double>& sorted, double q) {
+  if (sorted.empty()) {
+    return 0.0;
+  }
+  if (sorted.size() == 1) {
+    return sorted.front();
+  }
+  q = std::clamp(q, 0.0, 1.0);
+  const double pos = q * static_cast<double>(sorted.size() - 1);
+  const auto lo = static_cast<std::size_t>(std::floor(pos));
+  const auto hi = static_cast<std::size_t>(std::ceil(pos));
+  const double t = pos - static_cast<double>(lo);
+  return sorted[lo] * (1.0 - t) + sorted[hi] * t;
+}
+
+double medianValue(std::vector<double> values) {
+  if (values.empty()) {
+    return 0.0;
+  }
+  std::sort(values.begin(), values.end());
+  return quantileOfSorted(values, 0.5);
 }
 
 }  // namespace
@@ -52,11 +80,117 @@ double estimateTargetFaceCount(
   return estimate;
 }
 
+CurvatureCapResult capCurvatureQuantile(
+    const std::vector<double>& curvature,
+    double quantile) {
+  if (curvature.empty()) {
+    throw std::runtime_error("curvature cap requires a non-empty field");
+  }
+  std::vector<double> finite_values;
+  finite_values.reserve(curvature.size());
+  for (double value : curvature) {
+    if (!std::isfinite(value)) {
+      throw std::runtime_error("curvature cap values must be finite");
+    }
+    finite_values.push_back(std::max(value, kTargetKappaMin));
+  }
+  std::sort(finite_values.begin(), finite_values.end());
+  const double cap_value = std::max(
+      kTargetKappaMin,
+      quantileOfSorted(finite_values, quantile));
+
+  CurvatureCapResult result;
+  result.curvature.reserve(curvature.size());
+  result.cap_value = cap_value;
+  std::size_t changed = 0;
+  for (double value : curvature) {
+    const double safe = std::max(value, kTargetKappaMin);
+    const double capped = std::min(safe, cap_value);
+    if (capped < safe) {
+      ++changed;
+    }
+    result.curvature.push_back(capped);
+  }
+  result.changed_rate =
+      static_cast<double>(changed) / static_cast<double>(curvature.size());
+  return result;
+}
+
+std::vector<double> smoothLogDomainSmallSizeOutliers(
+    const Mesh& mesh,
+    const std::vector<double>& target_lengths,
+    double h_min,
+    double h_max,
+    std::size_t target_faces) {
+  validateMesh(mesh);
+  if (target_lengths.size() != mesh.vertices.size()) {
+    throw std::runtime_error("log-domain smoothing length size mismatch");
+  }
+  if (!std::isfinite(h_min) || !std::isfinite(h_max) ||
+      h_min <= 0.0 || h_max <= h_min) {
+    throw std::runtime_error("log-domain smoothing requires valid h bounds");
+  }
+  if (target_faces == 0) {
+    throw std::runtime_error("log-domain smoothing requires target faces");
+  }
+
+  std::vector<double> x(target_lengths.size(), 0.0);
+  for (std::size_t i = 0; i < target_lengths.size(); ++i) {
+    const double h = target_lengths[i];
+    if (!std::isfinite(h) || h <= 0.0) {
+      throw std::runtime_error("log-domain smoothing requires positive lengths");
+    }
+    x[i] = std::log(std::clamp(h, h_min, h_max));
+  }
+
+  const auto neigh = vertexNeighbors(mesh);
+  for (int iter = 0; iter < kLogSmoothIterations; ++iter) {
+    std::vector<double> next = x;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      if (neigh[i].empty()) {
+        continue;
+      }
+      std::vector<double> neighbor_logs;
+      neighbor_logs.reserve(neigh[i].size());
+      double mean = 0.0;
+      for (int n : neigh[i]) {
+        const double value = x[static_cast<std::size_t>(n)];
+        neighbor_logs.push_back(value);
+        mean += value;
+      }
+      mean /= static_cast<double>(neighbor_logs.size());
+      const double median = medianValue(std::move(neighbor_logs));
+      const double outlier_weight =
+          std::clamp((median - x[i] - kLogSmoothTau) / kLogSmoothTau, 0.0, 1.0);
+      const double eta = kLogSmoothEtaBase * outlier_weight;
+      next[i] = (1.0 - eta) * x[i] + eta * mean;
+    }
+    x = std::move(next);
+  }
+
+  std::vector<double> smoothed(x.size(), h_min);
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    smoothed[i] = std::clamp(std::exp(x[i]), h_min, h_max);
+  }
+
+  const double estimate = estimateTargetFaceCount(mesh, smoothed);
+  const double scale =
+      std::sqrt(estimate / static_cast<double>(target_faces));
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    throw std::runtime_error("log-domain smoothing produced invalid rescale");
+  }
+  for (double& value : smoothed) {
+    value = std::clamp(scale * value, h_min, h_max);
+  }
+  return smoothed;
+}
+
 TargetFaceSizingResult targetFaceCurvatureLengths(
     const Mesh& mesh,
     const std::vector<double>& diffused_curvature,
     std::size_t target_faces,
-    double mean_edge_length) {
+    double mean_edge_length,
+    double cap_quantile) {
   validateMesh(mesh);
   if (diffused_curvature.size() != mesh.vertices.size()) {
     throw std::runtime_error("target face sizing curvature size mismatch");
@@ -69,13 +203,30 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
         "target face sizing requires a positive mean edge length");
   }
 
+  CurvatureCapResult cap;
+  if (cap_quantile >= 0.0) {
+    cap = capCurvatureQuantile(diffused_curvature, cap_quantile);
+  } else {
+    if (diffused_curvature.empty()) {
+      throw std::runtime_error("curvature cap requires a non-empty field");
+    }
+    cap.curvature.reserve(diffused_curvature.size());
+    cap.cap_value = 0.0;
+    cap.changed_rate = 0.0;
+    for (double value : diffused_curvature) {
+      if (!std::isfinite(value)) {
+        throw std::runtime_error("curvature cap values must be finite");
+      }
+      const double safe = std::max(value, kTargetKappaMin);
+      cap.curvature.push_back(safe);
+      cap.cap_value = std::max(cap.cap_value, safe);
+    }
+  }
+
   std::vector<double> safe_kappa(diffused_curvature.size(), kTargetKappaMin);
   double max_kappa = kTargetKappaMin;
-  for (std::size_t i = 0; i < diffused_curvature.size(); ++i) {
-    const double value = diffused_curvature[i];
-    if (!std::isfinite(value)) {
-      throw std::runtime_error("target face sizing curvature values must be finite");
-    }
+  for (std::size_t i = 0; i < cap.curvature.size(); ++i) {
+    const double value = cap.curvature[i];
     safe_kappa[i] = std::max(value, kTargetKappaMin);
     max_kappa = std::max(max_kappa, safe_kappa[i]);
   }
@@ -83,6 +234,9 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
   TargetFaceSizingResult result;
   result.h_min = kTargetMinEdgeFactor * mean_edge_length;
   result.h_max = kTargetMaxEdgeFactor * mean_edge_length;
+  result.curvature_cap_value = cap.cap_value;
+  result.curvature_cap_changed_rate = cap.changed_rate;
+  result.capped_curvature = cap.curvature;
   result.target_faces = target_faces;
   if (!std::isfinite(result.h_min) || !std::isfinite(result.h_max) ||
       result.h_min <= 0.0 || result.h_max <= result.h_min) {

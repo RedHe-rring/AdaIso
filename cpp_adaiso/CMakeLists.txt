@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(cpp_adaiso VERSION 2.11.3 LANGUAGES CXX)
+project(cpp_adaiso VERSION 2.12.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,9 +32,11 @@ find_package(Libigl CONFIG REQUIRED)
 
 add_library(adaiso_core
   src/AdaIsoRemesher.cpp
+  src/FeatureClassification.cpp
   src/Geometry.cpp
   src/IO.cpp
   src/KDTree.cpp
+  src/LocalOperators.cpp
   src/Mesh.cpp
   src/Metrics.cpp
   src/RawCurvature.cpp
@@ -88,4 +90,8 @@ if(ADAISO_BUILD_TESTS)
   add_executable(raw_curvature_tests tests/raw_curvature_tests.cpp)
   target_link_libraries(raw_curvature_tests PRIVATE adaiso_core)
   add_test(NAME raw_curvature_tests COMMAND raw_curvature_tests)
+
+  add_executable(local_operators_tests tests/local_operators_tests.cpp)
+  target_link_libraries(local_operators_tests PRIVATE adaiso_core)
+  add_test(NAME local_operators_tests COMMAND local_operators_tests)
 endif()
