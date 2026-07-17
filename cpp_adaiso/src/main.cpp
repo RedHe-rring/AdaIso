@@ -23,6 +23,7 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --variant <code|paper>     Default: code\n"
       << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
+      << "  --target-size-mapping <inverse-sqrt|inverse-linear> Default: inverse-sqrt\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-faces <n>         Target face budget. Default: cleaned input face count\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
@@ -190,7 +191,7 @@ std::string buildSummaryJson(
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
   out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
-  out << "    \"target_size_mapping\": \"target_faces_inverse_sqrt_diffused_curvature\",\n";
+  out << "    \"target_size_mapping\": \"" << adaiso::toString(config.target_size_mapping) << "\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_faces\": "
       << (config.target_faces > 0 ? config.target_faces : input_summary.faces) << ",\n";
@@ -281,6 +282,8 @@ int main(int argc, char** argv) {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
       } else if (arg == "--curvature-mode") {
         config.curvature_mode = adaiso::parseCurvatureMode(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-size-mapping") {
+        config.target_size_mapping = adaiso::parseTargetSizeMapping(requireValue(i, argc, argv, arg));
       } else if (arg == "--csf-alpha") {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-faces") {

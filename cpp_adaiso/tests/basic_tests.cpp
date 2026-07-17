@@ -422,6 +422,17 @@ void testTargetFaceCurvatureSizing() {
       varying.estimated_faces,
       1e-12);
 
+  const auto linear = adaiso::detail::targetFaceCurvatureLengths(
+      triangle,
+      {1.0, 4.0, 16.0},
+      1,
+      mean_length,
+      adaiso::TargetSizeMapping::InverseLinear);
+  assert(linear.target_lengths.size() == triangle.vertexCount());
+  assert(linear.target_lengths[0] > varying.target_lengths[0]);
+  assert(linear.target_lengths[2] < varying.target_lengths[2]);
+  assertNear(linear.estimated_faces, 1.0, 1e-9);
+
   const auto constant = adaiso::detail::targetFaceCurvatureLengths(
       triangle,
       {5.0, 5.0, 5.0},
@@ -505,6 +516,21 @@ void testCurvatureModeParsing() {
   bool threw = false;
   try {
     (void)adaiso::parseCurvatureMode("gaussian");
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+}
+
+void testTargetSizeMappingParsing() {
+  assert(adaiso::parseTargetSizeMapping("inverse-sqrt") == adaiso::TargetSizeMapping::InverseSqrt);
+  assert(adaiso::parseTargetSizeMapping("INVERSE-LINEAR") == adaiso::TargetSizeMapping::InverseLinear);
+  assert(adaiso::toString(adaiso::TargetSizeMapping::InverseSqrt) == "inverse-sqrt");
+  assert(adaiso::toString(adaiso::TargetSizeMapping::InverseLinear) == "inverse-linear");
+
+  bool threw = false;
+  try {
+    (void)adaiso::parseTargetSizeMapping("quadratic");
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -597,6 +623,11 @@ void testTargetFieldDiagnosticExport() {
       dir / "csf_curvature_heat_independent.ply",
       dir / "target_h_heat.ply",
       dir / "target_h_heat_observed.ply",
+      dir / "output_target_h_samebar.ply",
+      dir / "output_edge_ratio_min_heat.ply",
+      dir / "output_edge_ratio_max_heat.ply",
+      dir / "output_edge_ratios.csv",
+      dir / "output_visualization_stats.json",
       dir / "color_scales.json",
   };
   for (const auto& path : expected) {
@@ -617,6 +648,10 @@ void testTargetFieldDiagnosticExport() {
     std::ifstream faces(dir / "faces.csv");
     std::getline(faces, header);
     assert(header == "face_id,grad_h_norm,max_edge_target_ratio");
+
+    std::ifstream output_edges(dir / "output_edge_ratios.csv");
+    std::getline(output_edges, header);
+    assert(header == "i,j,edge_length,target_i,target_j,target_min,target_max,ratio");
   }
 
   {
@@ -640,6 +675,20 @@ void testTargetFieldDiagnosticExport() {
     assert(color_scales_text.find("\"target_h_heat.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h_heat_observed.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"inverted\": true") != std::string::npos);
+  }
+
+  {
+    std::ifstream output_stats(dir / "output_visualization_stats.json");
+    std::string output_stats_text;
+    std::string line;
+    while (std::getline(output_stats, line)) {
+      output_stats_text += line;
+      output_stats_text += '\n';
+    }
+    assert(output_stats_text.find("\"output_target_h_samebar.ply\"") != std::string::npos);
+    assert(output_stats_text.find("\"output_edge_ratio_min_heat.ply\"") != std::string::npos);
+    assert(output_stats_text.find("\"output_edge_ratio_max_heat.ply\"") != std::string::npos);
+    assert(output_stats_text.find("\"violation_rate\"") != std::string::npos);
   }
 
   {
@@ -997,6 +1046,7 @@ int main() {
   testTargetFaceCurvatureSizing();
   testEdgeRatioStats();
   testCurvatureModeParsing();
+  testTargetSizeMappingParsing();
   testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();
   testTargetFieldDiagnosticExport();

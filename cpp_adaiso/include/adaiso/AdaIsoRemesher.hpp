@@ -2,6 +2,7 @@
 
 #include "adaiso/Geometry.hpp"
 #include "adaiso/Mesh.hpp"
+#include "adaiso/detail/TargetFaceSizing.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -53,6 +54,7 @@ class TargetLengthField {
 struct AdaIsoConfig {
   Variant variant = Variant::Code;
   CurvatureMode curvature_mode = CurvatureMode::RobustMean;
+  TargetSizeMapping target_size_mapping = TargetSizeMapping::InverseSqrt;
   double csf_smoothing_alpha = 2.0;
   std::size_t target_faces = 0;
   std::string target_field_export_dir;
@@ -173,12 +175,16 @@ class AdaIsoRemesher {
   AdaIsoConfig config_;
   AdaIsoStats stats_;
   TargetLengthField target_field_;
+  double target_min_length_ = 0.0;
+  double target_max_length_ = 0.0;
 };
 
 [[nodiscard]] Variant parseVariant(const std::string& value);
 [[nodiscard]] std::string toString(Variant variant);
 [[nodiscard]] CurvatureMode parseCurvatureMode(const std::string& value);
 [[nodiscard]] std::string toString(CurvatureMode mode);
+[[nodiscard]] TargetSizeMapping parseTargetSizeMapping(const std::string& value);
+[[nodiscard]] std::string toString(TargetSizeMapping mapping);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

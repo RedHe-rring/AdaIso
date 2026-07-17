@@ -929,7 +929,8 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
     const Mesh& mesh,
     const std::vector<double>& diffused_curvature,
     std::size_t target_faces,
-    double mean_edge_length) {
+    double mean_edge_length,
+    TargetSizeMapping mapping) {
   mesh.validate();
   if (mesh.vertices.empty() || mesh.faces.empty()) {
     throw std::runtime_error("target face sizing requires a non-empty mesh");
@@ -967,7 +968,15 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
   auto lengths_for_lambda = [&](double lambda) {
     std::vector<double> lengths(safe_kappa.size(), result.h_min);
     for (std::size_t i = 0; i < safe_kappa.size(); ++i) {
-      const double h = lambda / std::sqrt(safe_kappa[i]);
+      double h = 0.0;
+      switch (mapping) {
+        case TargetSizeMapping::InverseSqrt:
+          h = lambda / std::sqrt(safe_kappa[i]);
+          break;
+        case TargetSizeMapping::InverseLinear:
+          h = lambda / safe_kappa[i];
+          break;
+      }
       lengths[i] = std::clamp(h, result.h_min, result.h_max);
     }
     return lengths;
@@ -975,7 +984,9 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
 
   const auto min_lengths = lengths_for_lambda(0.0);
   const double max_density_faces = estimateTargetFaceCount(mesh, min_lengths);
-  const double hi_lambda = result.h_max * std::sqrt(max_kappa);
+  const double hi_lambda =
+      mapping == TargetSizeMapping::InverseSqrt ? result.h_max * std::sqrt(max_kappa)
+                                                : result.h_max * max_kappa;
   const auto max_lengths = lengths_for_lambda(hi_lambda);
   const double min_density_faces = estimateTargetFaceCount(mesh, max_lengths);
   const double target = static_cast<double>(target_faces);
@@ -1149,6 +1160,141 @@ EdgeRatioStats computeEdgeRatioStats(
   return stats;
 }
 
+void writeOutputTargetDiagnostics(
+    const std::filesystem::path& out_dir,
+    const Mesh& mesh,
+    const TargetLengthField& target_field,
+    double target_h_min,
+    double target_h_max,
+    double collapse_factor,
+    double split_factor) {
+  if (out_dir.empty() || target_field.empty()) {
+    return;
+  }
+  std::filesystem::create_directories(out_dir);
+
+  std::vector<double> vertex_target_h(mesh.vertexCount(), 0.0);
+  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+    vertex_target_h[i] = target_field.valueAt(mesh.vertices[i]);
+  }
+
+  std::vector<double> vertex_min_ratio(mesh.vertexCount(), std::numeric_limits<double>::infinity());
+  std::vector<double> vertex_max_ratio(mesh.vertexCount(), -std::numeric_limits<double>::infinity());
+  std::vector<double> ratios;
+  const auto edges = uniqueEdges(mesh);
+  ratios.reserve(edges.size());
+
+  auto edge_csv = openOutputFile(out_dir / "output_edge_ratios.csv");
+  edge_csv << "i,j,edge_length,target_i,target_j,target_min,target_max,ratio\n";
+  for (const auto& edge : edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    const auto ai = static_cast<std::size_t>(a);
+    const auto bi = static_cast<std::size_t>(b);
+    const double edge_length = (mesh.vertices[ai] - mesh.vertices[bi]).norm();
+    const double target_i = vertex_target_h[ai];
+    const double target_j = vertex_target_h[bi];
+    const double target_min = std::min(target_i, target_j);
+    const double target_max = std::max(target_i, target_j);
+    if (target_min <= kEps || !std::isfinite(edge_length) || !std::isfinite(target_min)) {
+      continue;
+    }
+    const double ratio = edge_length / target_min;
+    if (!std::isfinite(ratio)) {
+      continue;
+    }
+    edge_csv << a << ',' << b << ','
+             << edge_length << ','
+             << target_i << ','
+             << target_j << ','
+             << target_min << ','
+             << target_max << ','
+             << ratio << '\n';
+    ratios.push_back(ratio);
+    vertex_min_ratio[ai] = std::min(vertex_min_ratio[ai], ratio);
+    vertex_min_ratio[bi] = std::min(vertex_min_ratio[bi], ratio);
+    vertex_max_ratio[ai] = std::max(vertex_max_ratio[ai], ratio);
+    vertex_max_ratio[bi] = std::max(vertex_max_ratio[bi], ratio);
+  }
+
+  for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
+    if (!std::isfinite(vertex_min_ratio[i])) {
+      vertex_min_ratio[i] = 1.0;
+    }
+    if (!std::isfinite(vertex_max_ratio[i])) {
+      vertex_max_ratio[i] = 1.0;
+    }
+  }
+
+  writeVertexHeatPly(
+      out_dir / "output_target_h_samebar.ply",
+      mesh,
+      vertex_target_h,
+      target_h_min,
+      target_h_max,
+      true);
+  writeVertexHeatPly(
+      out_dir / "output_edge_ratio_min_heat.ply",
+      mesh,
+      vertex_min_ratio,
+      collapse_factor,
+      split_factor);
+  writeVertexHeatPly(
+      out_dir / "output_edge_ratio_max_heat.ply",
+      mesh,
+      vertex_max_ratio,
+      collapse_factor,
+      split_factor);
+
+  std::sort(ratios.begin(), ratios.end());
+  int violations = 0;
+  double sum = 0.0;
+  for (double ratio : ratios) {
+    sum += ratio;
+    if (ratio < collapse_factor || ratio > split_factor) {
+      ++violations;
+    }
+  }
+  const double mean = ratios.empty() ? 0.0 : sum / static_cast<double>(ratios.size());
+  double variance = 0.0;
+  for (double ratio : ratios) {
+    const double diff = ratio - mean;
+    variance += diff * diff;
+  }
+  const double stddev = ratios.empty() ? 0.0 : std::sqrt(variance / static_cast<double>(ratios.size()));
+
+  std::ostringstream stats;
+  stats << std::setprecision(17);
+  stats << "{\n";
+  stats << "  \"palette\": \"heat\",\n";
+  stats << "  \"normalization\": \"linear_clamp\",\n";
+  stats << "  \"target_h_samebar\": {\n";
+  stats << "    \"file\": \"output_target_h_samebar.ply\",\n";
+  stats << "    \"field\": \"target_h_sampled_on_output\",\n";
+  stats << "    \"min\": " << target_h_min << ",\n";
+  stats << "    \"max\": " << target_h_max << ",\n";
+  stats << "    \"inverted\": true\n";
+  stats << "  },\n";
+  stats << "  \"edge_ratio\": {\n";
+  stats << "    \"files\": [\"output_edge_ratio_min_heat.ply\", \"output_edge_ratio_max_heat.ply\"],\n";
+  stats << "    \"field\": \"edge_length_over_min_endpoint_target_h\",\n";
+  stats << "    \"min\": " << collapse_factor << ",\n";
+  stats << "    \"max\": " << split_factor << ",\n";
+  stats << "    \"edge_count\": " << ratios.size() << ",\n";
+  stats << "    \"ratio_min\": " << (ratios.empty() ? 0.0 : ratios.front()) << ",\n";
+  stats << "    \"ratio_max\": " << (ratios.empty() ? 0.0 : ratios.back()) << ",\n";
+  stats << "    \"mean_ratio\": " << mean << ",\n";
+  stats << "    \"std_ratio\": " << stddev << ",\n";
+  stats << "    \"p05_ratio\": " << quantileOfSorted(ratios, 0.05) << ",\n";
+  stats << "    \"p95_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
+  stats << "    \"p99_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
+  stats << "    \"violation_rate\": "
+        << (ratios.empty() ? 0.0 : static_cast<double>(violations) / static_cast<double>(ratios.size())) << "\n";
+  stats << "  }\n";
+  stats << "}\n";
+  writeTextFile(out_dir / "output_visualization_stats.json", stats.str());
+}
+
 double AdaIsoConfig::splitFactor() const {
   return variant == Variant::Paper ? 5.0 / 3.0 : 1.65;
 }
@@ -1203,6 +1349,30 @@ std::string toString(CurvatureMode mode) {
   return "unknown";
 }
 
+TargetSizeMapping parseTargetSizeMapping(const std::string& value) {
+  std::string lower = value;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lower == "inverse-sqrt") {
+    return TargetSizeMapping::InverseSqrt;
+  }
+  if (lower == "inverse-linear") {
+    return TargetSizeMapping::InverseLinear;
+  }
+  throw std::runtime_error("unknown target size mapping: " + value);
+}
+
+std::string toString(TargetSizeMapping mapping) {
+  switch (mapping) {
+    case TargetSizeMapping::InverseSqrt:
+      return "inverse-sqrt";
+    case TargetSizeMapping::InverseLinear:
+      return "inverse-linear";
+  }
+  return "unknown";
+}
+
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
@@ -1218,6 +1388,8 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
 
   stats_ = {};
+  target_min_length_ = 0.0;
+  target_max_length_ = 0.0;
   Mesh mesh = removeDegenerateFaces(input);
   const std::size_t effective_target_faces =
       config_.target_faces > 0 ? config_.target_faces : mesh.faceCount();
@@ -1303,6 +1475,16 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
 
   stats_.vertices = mesh.vertexCount();
   stats_.faces = mesh.faceCount();
+  if (!config_.target_field_export_dir.empty()) {
+    writeOutputTargetDiagnostics(
+        std::filesystem::path(config_.target_field_export_dir),
+        mesh,
+        target_field_,
+        target_min_length_,
+        target_max_length_,
+        config_.collapseFactor(),
+        config_.splitFactor());
+  }
   return mesh;
 }
 
@@ -1342,7 +1524,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
       mesh,
       curvature,
       target_faces,
-      base_len);
+      base_len,
+      config_.target_size_mapping);
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
@@ -1357,6 +1540,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh, std::size_t target_fac
   }
 
   target_field_.build(mesh, sizing.target_lengths);
+  target_min_length_ = sizing.h_min;
+  target_max_length_ = sizing.h_max;
 
   if (config_.verbose && !sizing.target_lengths.empty()) {
     const auto [min_it, max_it] = std::minmax_element(sizing.target_lengths.begin(), sizing.target_lengths.end());

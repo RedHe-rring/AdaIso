@@ -5,7 +5,14 @@
 #include <cstddef>
 #include <vector>
 
-namespace adaiso::detail {
+namespace adaiso {
+
+enum class TargetSizeMapping {
+  InverseSqrt,
+  InverseLinear,
+};
+
+namespace detail {
 
 struct TargetFaceSizingResult {
   std::vector<double> target_lengths;
@@ -24,6 +31,8 @@ struct TargetFaceSizingResult {
     const Mesh& mesh,
     const std::vector<double>& diffused_curvature,
     std::size_t target_faces,
-    double mean_edge_length);
+    double mean_edge_length,
+    TargetSizeMapping mapping = TargetSizeMapping::InverseSqrt);
 
-}  // namespace adaiso::detail
+}  // namespace detail
+}  // namespace adaiso
