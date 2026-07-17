@@ -220,6 +220,19 @@ bool finiteVector(const Eigen::Vector3d& v) {
   return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
 }
 
+double targetMetricSplitParameter(double h_a, double h_b) {
+  if (!std::isfinite(h_a) || !std::isfinite(h_b) || h_a <= 0.0 || h_b <= 0.0) {
+    return 0.5;
+  }
+  const double sqrt_a = std::sqrt(h_a);
+  const double sqrt_b = std::sqrt(h_b);
+  const double denom = sqrt_a + sqrt_b;
+  if (!std::isfinite(denom) || denom <= kEps) {
+    return 0.5;
+  }
+  return std::clamp(sqrt_a / denom, 0.25, 0.75);
+}
+
 double minQuality(const Mesh& mesh) {
   const auto qualities = triangleQualities(mesh);
   if (qualities.empty()) {
@@ -1026,7 +1039,7 @@ TargetFaceSizingResult targetFaceCurvatureLengths(
 }  // namespace detail
 
 std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m);
-void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges);
+void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges, const TargetLengthField& target_field);
 
 struct TargetLengthFieldImpl {
   Mesh mesh;
@@ -1633,7 +1646,7 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     if (selected.empty()) {
       break;
     }
-    splitEdgesBatch(mesh, selected);
+    splitEdgesBatch(mesh, selected, target_field_);
     total += static_cast<int>(selected.size());
   }
   return total;
@@ -1654,7 +1667,7 @@ std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a,
   throw std::runtime_error("internal error: face does not contain requested edge");
 }
 
-void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
+void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges, const TargetLengthField& target_field) {
   if (edges.empty()) {
     return;
   }
@@ -1665,8 +1678,10 @@ void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges) {
     const int a = edge.first;
     const int b = edge.second;
     const int m = static_cast<int>(mesh.vertices.size());
-    mesh.vertices.push_back(
-        0.5 * (mesh.vertices[static_cast<std::size_t>(a)] + mesh.vertices[static_cast<std::size_t>(b)]));
+    const Eigen::Vector3d& pa = mesh.vertices[static_cast<std::size_t>(a)];
+    const Eigen::Vector3d& pb = mesh.vertices[static_cast<std::size_t>(b)];
+    const double t = targetMetricSplitParameter(target_field.valueAt(pa), target_field.valueAt(pb));
+    mesh.vertices.push_back((1.0 - t) * pa + t * pb);
     midpoint_indices.emplace(edge, m);
   }
 

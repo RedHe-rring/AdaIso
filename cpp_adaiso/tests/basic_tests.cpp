@@ -50,6 +50,28 @@ adaiso::Mesh makeSingleTriangle() {
   return mesh;
 }
 
+adaiso::Mesh makeEquilateralTriangle() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {0.5, std::sqrt(3.0) * 0.5, 0.0},
+  };
+  mesh.faces = {{0, 1, 2}};
+  return mesh;
+}
+
+adaiso::Mesh makeTargetMetricSplitTriangle() {
+  adaiso::Mesh mesh;
+  mesh.vertices = {
+      {0.0, 0.0, 0.0},
+      {100.0, 0.0, 0.0},
+      {0.0, 1.0, 0.0},
+  };
+  mesh.faces = {{0, 1, 2}};
+  return mesh;
+}
+
 adaiso::Mesh makeSliverTriangle() {
   adaiso::Mesh mesh;
   mesh.vertices = {
@@ -153,6 +175,30 @@ bool containsPointNear(const adaiso::Mesh& mesh, const Eigen::Vector3d& point, d
     }
   }
   return false;
+}
+
+Eigen::Vector3d findAddedVertex(const adaiso::Mesh& output, const adaiso::Mesh& input) {
+  bool found = false;
+  Eigen::Vector3d added = Eigen::Vector3d::Zero();
+  for (const auto& vertex : output.vertices) {
+    if (!containsPointNear(input, vertex)) {
+      assert(!found);
+      added = vertex;
+      found = true;
+    }
+  }
+  assert(found);
+  return added;
+}
+
+double segmentParameter(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& p) {
+  const Eigen::Vector3d ab = b - a;
+  return (p - a).dot(ab) / ab.squaredNorm();
+}
+
+double distanceToSegmentLine(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& p) {
+  const double t = segmentParameter(a, b, p);
+  return (p - ((1.0 - t) * a + t * b)).norm();
 }
 
 adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, double omega = 0.15) {
@@ -923,6 +969,90 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
   assert(remesher.stats().csf_solver_success);
 }
 
+void testTargetMetricSplitPlacement() {
+  {
+    const adaiso::Mesh input = makeTargetMetricSplitTriangle();
+    input.validate();
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "adaiso_target_metric_split_placement";
+    std::filesystem::remove_all(dir);
+
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Code;
+    config.target_faces = 5;
+    config.global_iterations = 1;
+    config.max_split_passes = 1;
+    config.max_collapse_passes = 0;
+    config.max_flip_passes = 0;
+    config.preprocess = false;
+    config.tangent_lambda = 0.0;
+    config.enable_relocation_mls = false;
+    config.stage_mesh_export_dir = dir.string();
+    config.verbose = false;
+
+    adaiso::AdaIsoRemesher remesher(config);
+    const adaiso::Mesh output = remesher.remesh(input);
+    output.validate();
+    assert(remesher.stats().iterations.size() == 1);
+    assert(remesher.stats().iterations.front().split_count == 1);
+
+    const adaiso::Mesh split_stage = adaiso::loadMesh(dir / "iter001_after_split.ply");
+    split_stage.validate();
+    assert(split_stage.vertexCount() == input.vertexCount() + 1);
+    const Eigen::Vector3d added = findAddedVertex(split_stage, input);
+    const double t = segmentParameter(input.vertices[1], input.vertices[2], added);
+
+    assert(distanceToSegmentLine(input.vertices[1], input.vertices[2], added) <= 1e-8);
+    assert(t >= 0.25 - 1e-10);
+    assert(t <= 0.75 + 1e-10);
+    assert(std::abs(t - 0.5) > 1e-3);
+  }
+
+  {
+    const adaiso::Mesh input = makeEquilateralTriangle();
+    input.validate();
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "adaiso_target_metric_equal_split";
+    std::filesystem::remove_all(dir);
+
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Code;
+    config.target_faces = 10;
+    config.global_iterations = 1;
+    config.max_split_passes = 1;
+    config.max_collapse_passes = 0;
+    config.max_flip_passes = 0;
+    config.preprocess = false;
+    config.tangent_lambda = 0.0;
+    config.enable_relocation_mls = false;
+    config.stage_mesh_export_dir = dir.string();
+    config.verbose = false;
+
+    adaiso::AdaIsoRemesher remesher(config);
+    const adaiso::Mesh output = remesher.remesh(input);
+    output.validate();
+    assert(remesher.stats().iterations.size() == 1);
+    assert(remesher.stats().iterations.front().split_count == 1);
+
+    const adaiso::Mesh split_stage = adaiso::loadMesh(dir / "iter001_after_split.ply");
+    split_stage.validate();
+    assert(split_stage.vertexCount() == input.vertexCount() + 1);
+    const Eigen::Vector3d added = findAddedVertex(split_stage, input);
+
+    bool midpoint_found = false;
+    for (const auto& edge : adaiso::uniqueEdges(input)) {
+      const Eigen::Vector3d midpoint =
+          0.5 * (input.vertices[static_cast<std::size_t>(edge.first)] +
+                 input.vertices[static_cast<std::size_t>(edge.second)]);
+      if ((added - midpoint).norm() <= 1e-8) {
+        midpoint_found = true;
+        break;
+      }
+    }
+    assert(midpoint_found);
+  }
+}
+
 void testFeatureAwareCollapsePlacement() {
   const adaiso::Mesh input = makeFeatureCollapseMesh();
   input.validate();
@@ -1056,6 +1186,7 @@ int main() {
   testRelocationKeepsBoundaryVerticesFixed();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
+  testTargetMetricSplitPlacement();
   testFeatureAwareCollapsePlacement();
   testRemeshEdgeCases();
   testAreaSampledChamferDistance();
