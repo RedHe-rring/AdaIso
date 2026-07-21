@@ -530,27 +530,56 @@ void testTargetFaceCurvatureSizing() {
 }
 
 void testEdgeRatioStats() {
-  adaiso::Mesh mesh = makeSingleTriangle();
-  adaiso::TargetLengthField field;
-  field.build(mesh, {1.0, 1.0, 1.0});
+  {
+    adaiso::Mesh mesh = makeSingleTriangle();
+    adaiso::TargetLengthField field;
+    field.build(mesh, {1.0, 1.0, 1.0});
 
-  const auto stats = adaiso::computeEdgeRatioStats(
-      mesh,
-      field,
-      0.8,
-      1.33);
+    const auto stats = adaiso::computeEdgeRatioStats(
+        mesh,
+        field,
+        0.8,
+        1.33);
 
-  const double sqrt2 = std::sqrt(2.0);
-  const double expected_mean = (2.0 + sqrt2) / 3.0;
-  const double expected_variance =
-      ((1.0 - expected_mean) * (1.0 - expected_mean) * 2.0 +
-          (sqrt2 - expected_mean) * (sqrt2 - expected_mean)) /
-      3.0;
-  assertNear(stats.mean_ratio, expected_mean);
-  assertNear(stats.std_ratio, std::sqrt(expected_variance));
-  assertNear(stats.p05_ratio, 1.0);
-  assertNear(stats.p95_ratio, 0.1 + 0.9 * sqrt2);
-  assertNear(stats.violation_rate, 1.0 / 3.0);
+    const double sqrt2 = std::sqrt(2.0);
+    const double expected_mean = (2.0 + sqrt2) / 3.0;
+    const double expected_variance =
+        ((1.0 - expected_mean) * (1.0 - expected_mean) * 2.0 +
+            (sqrt2 - expected_mean) * (sqrt2 - expected_mean)) /
+        3.0;
+    assertNear(stats.mean_ratio, expected_mean);
+    assertNear(stats.std_ratio, std::sqrt(expected_variance));
+    assertNear(stats.p05_ratio, 1.0);
+    assertNear(stats.p95_ratio, 0.1 + 0.9 * sqrt2);
+    assertNear(stats.violation_rate, 1.0 / 3.0);
+  }
+
+  {
+    adaiso::Mesh mesh = makeSingleTriangle();
+    adaiso::TargetLengthField field;
+    field.build(mesh, {1.0, 4.0, 4.0});
+
+    const auto stats = adaiso::computeEdgeRatioStats(
+        mesh,
+        field,
+        0.4,
+        0.8);
+
+    const double sqrt2 = std::sqrt(2.0);
+    const double equal_target_metric = sqrt2 / 4.0;
+    const double varying_target_metric = std::log(4.0) / 3.0;
+    const double expected_mean = (equal_target_metric + 2.0 * varying_target_metric) / 3.0;
+    const double expected_variance =
+        ((equal_target_metric - expected_mean) * (equal_target_metric - expected_mean) +
+            2.0 * (varying_target_metric - expected_mean) * (varying_target_metric - expected_mean)) /
+        3.0;
+
+    assertNear(stats.mean_ratio, expected_mean);
+    assertNear(stats.std_ratio, std::sqrt(expected_variance));
+    assertNear(stats.p05_ratio, 0.9 * equal_target_metric + 0.1 * varying_target_metric);
+    assertNear(stats.p95_ratio, varying_target_metric);
+    assertNear(stats.violation_rate, 1.0 / 3.0);
+  }
 }
 
 void testCurvatureModeParsing() {
@@ -697,7 +726,7 @@ void testTargetFieldDiagnosticExport() {
 
     std::ifstream output_edges(dir / "output_edge_ratios.csv");
     std::getline(output_edges, header);
-    assert(header == "i,j,edge_length,target_i,target_j,target_min,target_max,ratio");
+    assert(header == "i,j,edge_length,target_i,target_j,target_min,target_max,metric_length");
   }
 
   {
@@ -734,6 +763,7 @@ void testTargetFieldDiagnosticExport() {
     assert(output_stats_text.find("\"output_target_h_samebar.ply\"") != std::string::npos);
     assert(output_stats_text.find("\"output_edge_ratio_min_heat.ply\"") != std::string::npos);
     assert(output_stats_text.find("\"output_edge_ratio_max_heat.ply\"") != std::string::npos);
+    assert(output_stats_text.find("\"target_metric_edge_length\"") != std::string::npos);
     assert(output_stats_text.find("\"violation_rate\"") != std::string::npos);
   }
 

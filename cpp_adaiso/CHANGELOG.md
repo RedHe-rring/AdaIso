@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.0.2
+
+Behavior update:
+Split, collapse, flip-length guards, and edge-ratio diagnostics now use a
+single target metric edge length instead of separate endpoint min/max target
+references.
+
+- Added linear-target metric length evaluation,
+  `M = length * (log(h_b) - log(h_a)) / (h_b - h_a)`, with equal-target
+  fallback to `length / h`.
+- Split uses `M > splitFactor()` and collapse uses `M < collapseFactor()`.
+- Collapse validity and flip candidate checks use the same metric interval.
+- Output edge diagnostics now report `target_metric_edge_length`.
+
 ## 2.8.1
 
 Breaking change:

@@ -233,6 +233,32 @@ double targetMetricSplitParameter(double h_a, double h_b) {
   return std::clamp(sqrt_a / denom, 0.25, 0.75);
 }
 
+double targetMetricLength(double length, double h_a, double h_b) {
+  if (!std::isfinite(length) || !std::isfinite(h_a) || !std::isfinite(h_b) ||
+      length < 0.0 || h_a <= 0.0 || h_b <= 0.0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  const double dh = h_b - h_a;
+  const double scale = std::max({1.0, std::abs(h_a), std::abs(h_b)});
+  if (std::abs(dh) <= kEps * scale) {
+    return length / h_a;
+  }
+
+  const double metric = length * (std::log(h_b) - std::log(h_a)) / dh;
+  return metric > 0.0 && std::isfinite(metric) ? metric : std::numeric_limits<double>::quiet_NaN();
+}
+
+double edgeTargetMetricLength(const Mesh& mesh, const TargetLengthField& target_field, int a, int b) {
+  const auto ai = static_cast<std::size_t>(a);
+  const auto bi = static_cast<std::size_t>(b);
+  const double length = (mesh.vertices[ai] - mesh.vertices[bi]).norm();
+  return targetMetricLength(
+      length,
+      target_field.valueAt(mesh.vertices[ai]),
+      target_field.valueAt(mesh.vertices[bi]));
+}
+
 double minQuality(const Mesh& mesh) {
   const auto qualities = triangleQualities(mesh);
   if (qualities.empty()) {
@@ -1137,14 +1163,7 @@ EdgeRatioStats computeEdgeRatioStats(
   for (const auto& edge : edges) {
     const int a = edge.first;
     const int b = edge.second;
-    const double length = (mesh.vertices[static_cast<std::size_t>(a)] - mesh.vertices[static_cast<std::size_t>(b)]).norm();
-    const double target = std::min(
-        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(a)]),
-        target_field.valueAt(mesh.vertices[static_cast<std::size_t>(b)]));
-    if (target <= kEps || !std::isfinite(length) || !std::isfinite(target)) {
-      continue;
-    }
-    const double ratio = length / target;
+    const double ratio = edgeTargetMetricLength(mesh, target_field, a, b);
     if (!std::isfinite(ratio)) {
       continue;
     }
@@ -1198,7 +1217,7 @@ void writeOutputTargetDiagnostics(
   ratios.reserve(edges.size());
 
   auto edge_csv = openOutputFile(out_dir / "output_edge_ratios.csv");
-  edge_csv << "i,j,edge_length,target_i,target_j,target_min,target_max,ratio\n";
+  edge_csv << "i,j,edge_length,target_i,target_j,target_min,target_max,metric_length\n";
   for (const auto& edge : edges) {
     const int a = edge.first;
     const int b = edge.second;
@@ -1209,10 +1228,11 @@ void writeOutputTargetDiagnostics(
     const double target_j = vertex_target_h[bi];
     const double target_min = std::min(target_i, target_j);
     const double target_max = std::max(target_i, target_j);
-    if (target_min <= kEps || !std::isfinite(edge_length) || !std::isfinite(target_min)) {
+    if (target_min <= kEps || !std::isfinite(edge_length) || !std::isfinite(target_min) ||
+        !std::isfinite(target_max)) {
       continue;
     }
-    const double ratio = edge_length / target_min;
+    const double ratio = targetMetricLength(edge_length, target_i, target_j);
     if (!std::isfinite(ratio)) {
       continue;
     }
@@ -1290,7 +1310,7 @@ void writeOutputTargetDiagnostics(
   stats << "  },\n";
   stats << "  \"edge_ratio\": {\n";
   stats << "    \"files\": [\"output_edge_ratio_min_heat.ply\", \"output_edge_ratio_max_heat.ply\"],\n";
-  stats << "    \"field\": \"edge_length_over_min_endpoint_target_h\",\n";
+  stats << "    \"field\": \"target_metric_edge_length\",\n";
   stats << "    \"min\": " << collapse_factor << ",\n";
   stats << "    \"max\": " << split_factor << ",\n";
   stats << "    \"edge_count\": " << ratios.size() << ",\n";
@@ -1309,7 +1329,7 @@ void writeOutputTargetDiagnostics(
 }
 
 double AdaIsoConfig::splitFactor() const {
-  return variant == Variant::Paper ? 5.0 / 3.0 : 1.65;
+  return variant == Variant::Paper ? 5.0 / 3.0 : 1.33;
 }
 
 double AdaIsoConfig::collapseFactor() const {
@@ -1589,13 +1609,6 @@ double AdaIsoRemesher::targetAt(const Eigen::Vector3d& point) const {
   return target_field_.valueAt(point);
 }
 
-// Returns the target length for an edge defined by vertices a and b. If use_max is true, returns the maximum of the two vertex targets; otherwise, returns the minimum.
-double AdaIsoRemesher::edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const {
-  const double ta = targetAt(mesh.vertices[static_cast<std::size_t>(a)]);
-  const double tb = targetAt(mesh.vertices[static_cast<std::size_t>(b)]);
-  return use_max ? std::max(ta, tb) : std::min(ta, tb);
-}
-
 EdgeRatioStats AdaIsoRemesher::edgeRatioStats(const Mesh& mesh) const {
   return computeEdgeRatioStats(
       mesh,
@@ -1612,10 +1625,9 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     for (const auto& item : edgeFaces(mesh)) {
       const int a = item.first.first;
       const int b = item.first.second;
-      const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
-      const double target = edgeTarget(mesh, a, b, false);
-      if (length > config_.splitFactor() * target) {
-        candidates.emplace_back(length, a, b);
+      const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
+      if (metric_length > config_.splitFactor()) {
+        candidates.emplace_back(metric_length, a, b);
       }
     }
     if (candidates.empty()) {
@@ -1629,14 +1641,13 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     std::vector<Edge> selected;
     selected.reserve(candidates.size());
     std::unordered_set<int> used_vertices;
-    for (const auto& [old_length, a, b] : candidates) {
-      (void)old_length;
+    for (const auto& [old_metric_length, a, b] : candidates) {
+      (void)old_metric_length;
       if (used_vertices.find(a) != used_vertices.end() || used_vertices.find(b) != used_vertices.end()) {
         continue;
       }
-      const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
-      const double target = edgeTarget(mesh, a, b, false);
-      if (length <= config_.splitFactor() * target) {
+      const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
+      if (!std::isfinite(metric_length) || metric_length <= config_.splitFactor()) {
         continue;
       }
       selected.push_back(makeEdge(a, b));
@@ -1741,9 +1752,9 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
         continue;
       }
       const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
-      const double target = edgeTarget(mesh, a, b, config_.collapseUsesMaxReference());
-      if (length < config_.collapseFactor() * target) {
-        candidates.emplace_back(length / target, length, a, b);
+      const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
+      if (metric_length < config_.collapseFactor()) {
+        candidates.emplace_back(metric_length, length, a, b);
       }
     }
     if (candidates.empty()) {
@@ -1838,10 +1849,14 @@ bool AdaIsoRemesher::collapseValid(
   if (related.size() < 3) {
     return false;
   }
+  const double candidate_target = targetAt(candidate);
   for (int n : related) {
     const double length = (candidate - mesh.vertices[static_cast<std::size_t>(n)]).norm();
-    const double target = std::min(targetAt(candidate), targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
-    if (length > config_.splitFactor() * target) {
+    const double metric_length = targetMetricLength(
+        length,
+        candidate_target,
+        targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
+    if (!std::isfinite(metric_length) || metric_length > config_.splitFactor()) {
       return false;
     }
   }
@@ -2019,9 +2034,10 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
         continue;
       }
 
-      const double length = (mesh.vertices[static_cast<std::size_t>(c)] - mesh.vertices[static_cast<std::size_t>(d)]).norm();
-      const double target = edgeTarget(mesh, c, d, false);
-      if (length < config_.collapseFactor() * target || length > config_.splitFactor() * target) {
+      const double metric_length = edgeTargetMetricLength(mesh, target_field_, c, d);
+      if (!std::isfinite(metric_length) ||
+          metric_length < config_.collapseFactor() ||
+          metric_length > config_.splitFactor()) {
         continue;
       }
       if (!flipImprovesValence(valence, boundary, a, b, c, d)) {

@@ -23,7 +23,7 @@ void printUsage(std::ostream& out) {
       << "Options:\n"
       << "  --variant <code|paper>     Default: code\n"
       << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
-      << "  --target-size-mapping <inverse-sqrt|inverse-linear> Default: inverse-sqrt\n"
+      << "  --target-size-mapping <inverse-sqrt|inverse-linear> Default: inverse-linear\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-faces <n>         Target face budget. Default: cleaned input face count\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"

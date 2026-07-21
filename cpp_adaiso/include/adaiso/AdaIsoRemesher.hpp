@@ -54,7 +54,7 @@ class TargetLengthField {
 struct AdaIsoConfig {
   Variant variant = Variant::Code;
   CurvatureMode curvature_mode = CurvatureMode::RobustMean;
-  TargetSizeMapping target_size_mapping = TargetSizeMapping::InverseSqrt;
+  TargetSizeMapping target_size_mapping = TargetSizeMapping::InverseLinear;
   double csf_smoothing_alpha = 2.0;
   std::size_t target_faces = 0;
   std::string target_field_export_dir;
@@ -135,7 +135,6 @@ class AdaIsoRemesher {
       const Mesh& mesh,
       const std::vector<double>& raw_curvature);
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
-  [[nodiscard]] double edgeTarget(const Mesh& mesh, int a, int b, bool use_max) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
   [[nodiscard]] int splitLongEdges(Mesh& mesh);
   void splitOneEdge(Mesh& mesh, int a, int b) const;
