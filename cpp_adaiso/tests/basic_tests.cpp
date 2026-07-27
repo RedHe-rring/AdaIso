@@ -457,6 +457,7 @@ void testTargetErrorCurvatureSizing() {
   const double mean_length = adaiso::meanEdgeLength(triangle);
   const double bbox_diagonal = std::sqrt(2.0);
   const double delta = 0.01;
+  const double h_ref_factor = 0.6;
   const double h_max_factor = 3.0;
   const auto varying = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
@@ -464,6 +465,7 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
+      h_ref_factor,
       h_max_factor);
   assert(varying.target_lengths.size() == triangle.vertexCount());
   assert(varying.target_lengths[0] > varying.target_lengths[1]);
@@ -486,6 +488,7 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
+      h_ref_factor,
       h_max_factor);
   assert(constant.target_lengths.size() == triangle.vertexCount());
   assertNear(constant.target_lengths[0], constant.target_lengths[1], 1e-12);
@@ -499,8 +502,9 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       0.0,
+      h_ref_factor,
       h_max_factor);
-  const double h_ref = 0.5 * mean_length;
+  const double h_ref = h_ref_factor * mean_length;
   const double expected_auto_delta = 1.0 - std::sqrt(1.0 - h_ref * h_ref / 3.0);
   assertNear(automatic.target_error_delta, expected_auto_delta);
   assertNear(automatic.h_min, h_ref, 1e-12);
@@ -511,6 +515,7 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
+      h_ref_factor,
       h_max_factor);
   assert(flat.flat_fallback);
   assert(flat.target_lengths.size() == triangle.vertexCount());
@@ -530,7 +535,7 @@ void testTargetErrorCurvatureSizing() {
   };
 
   expect_throw([] {
-    (void)adaiso::detail::targetErrorCurvatureLengths(makeSingleTriangle(), {1.0, 2.0}, 1.0, 1.0, 0.01, 5.0);
+    (void)adaiso::detail::targetErrorCurvatureLengths(makeSingleTriangle(), {1.0, 2.0}, 1.0, 1.0, 0.01, 0.5, 5.0);
   });
   const auto nonfinite = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
@@ -538,6 +543,7 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
+      h_ref_factor,
       h_max_factor);
   assertFiniteValues(nonfinite.target_lengths);
   expect_throw([] {
@@ -547,6 +553,7 @@ void testTargetErrorCurvatureSizing() {
         0.0,
         1.0,
         0.01,
+        0.5,
         5.0);
   });
   expect_throw([] {
@@ -556,6 +563,7 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         0.0,
         0.01,
+        0.5,
         5.0);
   });
   expect_throw([] {
@@ -565,6 +573,7 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         1.0,
         3.0,
+        0.5,
         5.0);
   });
   expect_throw([] {
@@ -574,11 +583,22 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         1.0,
         0.01,
+        0.0,
+        5.0);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::targetErrorCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        1.0,
+        1.0,
+        0.01,
+        0.5,
         0.0);
   });
   expect_throw([] {
     adaiso::Mesh empty;
-    (void)adaiso::detail::targetErrorCurvatureLengths(empty, {}, 1.0, 1.0, 0.01, 5.0);
+    (void)adaiso::detail::targetErrorCurvatureLengths(empty, {}, 1.0, 1.0, 0.01, 0.5, 5.0);
   });
 }
 
@@ -1068,6 +1088,16 @@ void testTargetFieldConfigValidation() {
   {
     adaiso::AdaIsoConfig config;
     config.target_h_max_factor = std::numeric_limits<double>::infinity();
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_error_h_ref_factor = 0.0;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_error_h_ref_factor = std::numeric_limits<double>::infinity();
     assert_invalid_config(config);
   }
 }

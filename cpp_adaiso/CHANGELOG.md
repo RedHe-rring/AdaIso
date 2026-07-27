@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.1.3
+
+Feature update:
+Exposes the auto-delta reference edge-length factor for controlled experiments
+without changing defaults.
+
+- Added `--target-error-h-ref-factor` and
+  `AdaIsoConfig::target_error_h_ref_factor`.
+- Replaced the hard-coded `0.5 * mean_edge_length` auto-delta reference length
+  with the configured factor.
+- Summary JSON now reports `target_error_h_ref_factor`.
+
 ## 5.1.2
 
 Feature update:

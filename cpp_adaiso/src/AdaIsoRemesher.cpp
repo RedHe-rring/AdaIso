@@ -64,7 +64,6 @@ constexpr double kRobustMeanAreaFloorFactor = 1e-8;
 constexpr double kRelocationFeatureEps = 1e-12;
 constexpr double kRelocationZeta = 0.5;
 constexpr double kTargetKappaMin = 1e-12;
-constexpr double kDefaultMaxCurvatureEdgeFactor = 0.5;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
@@ -298,12 +297,13 @@ double boundingBoxDiagonal(const Mesh& mesh) {
   return (hi - lo).norm();
 }
 
-double maxCurvatureDefaultDelta(double kappa_max, double mean_edge_length) {
+double maxCurvatureDefaultDelta(double kappa_max, double mean_edge_length, double h_ref_factor) {
   if (!std::isfinite(kappa_max) || kappa_max <= kTargetKappaMin ||
-      !std::isfinite(mean_edge_length) || mean_edge_length <= 0.0) {
+      !std::isfinite(mean_edge_length) || mean_edge_length <= 0.0 ||
+      !std::isfinite(h_ref_factor) || h_ref_factor <= 0.0) {
     return 0.0;
   }
-  const double h_ref = kDefaultMaxCurvatureEdgeFactor * mean_edge_length;
+  const double h_ref = h_ref_factor * mean_edge_length;
   const double max_valid_h = 0.99 * std::sqrt(3.0) / kappa_max;
   const double h = std::min(h_ref, max_valid_h);
   const double discriminant = 1.0 - (kappa_max * kappa_max * h * h) / 3.0;
@@ -1044,6 +1044,7 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
     double mean_edge_length,
     double bbox_diagonal,
     double target_error_delta,
+    double target_error_h_ref_factor,
     double target_h_max_factor) {
   mesh.validate();
   if (mesh.vertices.empty() || mesh.faces.empty()) {
@@ -1060,6 +1061,9 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   }
   if (!std::isfinite(target_error_delta) || target_error_delta < 0.0) {
     throw std::runtime_error("target error delta must be finite and non-negative");
+  }
+  if (!std::isfinite(target_error_h_ref_factor) || target_error_h_ref_factor <= 0.0) {
+    throw std::runtime_error("target error h ref factor must be finite and positive");
   }
   if (!std::isfinite(target_h_max_factor) || target_h_max_factor <= 0.0) {
     throw std::runtime_error("target h max factor must be finite and positive");
@@ -1084,7 +1088,8 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   }
 
   if (target_error_delta == 0.0) {
-    target_error_delta = maxCurvatureDefaultDelta(observed_max_kappa, mean_edge_length);
+    target_error_delta =
+        maxCurvatureDefaultDelta(observed_max_kappa, mean_edge_length, target_error_h_ref_factor);
   }
   if (!std::isfinite(target_error_delta) || target_error_delta <= 0.0) {
     target_error_delta = kTargetKappaMin * mean_edge_length * mean_edge_length / 6.0;
@@ -1477,6 +1482,10 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.target_h_max_factor <= 0.0 || !std::isfinite(config_.target_h_max_factor)) {
     throw std::runtime_error("target h max factor must be finite and positive");
   }
+  if (config_.target_error_h_ref_factor <= 0.0 ||
+      !std::isfinite(config_.target_error_h_ref_factor)) {
+    throw std::runtime_error("target error h ref factor must be finite and positive");
+  }
 
   if (config_.target_error_delta < 0.0 || !std::isfinite(config_.target_error_delta)) {
     throw std::runtime_error("target error delta must be finite and non-negative");
@@ -1620,6 +1629,7 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
       base_len,
       bbox_diag,
       config_.target_error_delta,
+      config_.target_error_h_ref_factor,
       config_.target_h_max_factor);
 
   if (!config_.target_field_export_dir.empty()) {

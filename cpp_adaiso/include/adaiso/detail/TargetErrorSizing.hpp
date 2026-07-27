@@ -30,6 +30,7 @@ struct TargetErrorSizingResult {
     double mean_edge_length,
     double bbox_diagonal,
     double target_error_delta,
+    double target_error_h_ref_factor,
     double target_h_max_factor);
 
 }  // namespace detail
