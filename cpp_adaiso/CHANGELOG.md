@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.1.2
+
+Feature update:
+Exposes the target sizing upper clamp for controlled experiments without
+changing defaults.
+
+- Added `--target-h-max-factor` and `AdaIsoConfig::target_h_max_factor`.
+- Replaced the hard-coded `5.0 * mean_edge_length` upper target-length clamp
+  with the configured factor.
+- Summary JSON and target-field diagnostics now report `h_max_factor`.
+
 ## 5.1.1
 
 Feature update:

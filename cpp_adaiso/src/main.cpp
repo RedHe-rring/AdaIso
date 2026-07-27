@@ -25,6 +25,7 @@ void printUsage(std::ostream& out) {
       << "  --curvature-mode <normal-angle|robust-mean|principal-max> Default: principal-max\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-error-delta <v>   Absolute error tolerance. Default: auto from kappa_max and mean edge\n"
+      << "  --target-h-max-factor <v>  h_max as a multiple of mean edge length. Default: 5.0\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
@@ -206,6 +207,7 @@ std::string buildSummaryJson(
   out << "    \"bbox_diagonal\": " << stats.bbox_diagonal << ",\n";
   out << "    \"h_min\": " << stats.target_h_min << ",\n";
   out << "    \"h_max\": " << stats.target_h_max << ",\n";
+  out << "    \"h_max_factor\": " << config.target_h_max_factor << ",\n";
   out << "    \"estimated_faces\": " << stats.target_estimated_faces << ",\n";
   out << "    \"kappa_max\": " << stats.target_kappa_max << ",\n";
   out << "    \"flat_fallback\": " << (stats.target_flat_fallback ? "true" : "false") << ",\n";
@@ -300,6 +302,8 @@ int main(int argc, char** argv) {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-error-delta") {
         config.target_error_delta = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--target-h-max-factor") {
+        config.target_h_max_factor = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-iteration-meshes") {
@@ -355,6 +359,9 @@ int main(int argc, char** argv) {
     }
     if (config.target_error_delta < 0.0 || !std::isfinite(config.target_error_delta)) {
       throw std::runtime_error("--target-error-delta must be finite and non-negative");
+    }
+    if (config.target_h_max_factor <= 0.0 || !std::isfinite(config.target_h_max_factor)) {
+      throw std::runtime_error("--target-h-max-factor must be finite and positive");
     }
     if (config.split_factor_override < 0.0 || !std::isfinite(config.split_factor_override)) {
       throw std::runtime_error("--split-factor must be finite and non-negative");

@@ -29,7 +29,8 @@ struct TargetErrorSizingResult {
     const std::vector<double>& diffused_curvature,
     double mean_edge_length,
     double bbox_diagonal,
-    double target_error_delta);
+    double target_error_delta,
+    double target_h_max_factor);
 
 }  // namespace detail
 }  // namespace adaiso

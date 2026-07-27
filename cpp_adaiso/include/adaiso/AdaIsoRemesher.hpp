@@ -79,6 +79,7 @@ struct AdaIsoConfig {
   double collapse_feature_omega = 0.15;
   double split_factor_override = 0.0;
   double collapse_factor_override = 0.0;
+  double target_h_max_factor = 5.0;
   double min_quality_after_collapse = 0.05;
   bool verbose = true;
 

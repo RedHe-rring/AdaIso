@@ -64,7 +64,6 @@ constexpr double kRobustMeanAreaFloorFactor = 1e-8;
 constexpr double kRelocationFeatureEps = 1e-12;
 constexpr double kRelocationZeta = 0.5;
 constexpr double kTargetKappaMin = 1e-12;
-constexpr double kTargetMaxEdgeFactor = 5.0;
 constexpr double kDefaultMaxCurvatureEdgeFactor = 0.5;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 
@@ -370,6 +369,7 @@ struct TargetFieldStageData {
   double target_error_delta = 0.0;
   double target_error_bbox_ratio = 0.0;
   double bbox_diagonal = 0.0;
+  double h_max_factor = 5.0;
   double kappa_max = 0.0;
   double estimated_faces = 0.0;
   bool flat_fallback = false;
@@ -830,6 +830,7 @@ std::string targetFieldStatsJson(
   out << "  \"target_error_delta\": " << data.target_error_delta << ",\n";
   out << "  \"target_error_bbox_ratio\": " << data.target_error_bbox_ratio << ",\n";
   out << "  \"bbox_diagonal\": " << data.bbox_diagonal << ",\n";
+  out << "  \"h_max_factor\": " << data.h_max_factor << ",\n";
   out << "  \"kappa_max\": " << data.kappa_max << ",\n";
   out << "  \"h_min\": " << data.min_length << ",\n";
   out << "  \"h_max\": " << data.max_length << ",\n";
@@ -1042,7 +1043,8 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
     const std::vector<double>& diffused_curvature,
     double mean_edge_length,
     double bbox_diagonal,
-    double target_error_delta) {
+    double target_error_delta,
+    double target_h_max_factor) {
   mesh.validate();
   if (mesh.vertices.empty() || mesh.faces.empty()) {
     throw std::runtime_error("target error sizing requires a non-empty mesh");
@@ -1059,6 +1061,9 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   if (!std::isfinite(target_error_delta) || target_error_delta < 0.0) {
     throw std::runtime_error("target error delta must be finite and non-negative");
   }
+  if (!std::isfinite(target_h_max_factor) || target_h_max_factor <= 0.0) {
+    throw std::runtime_error("target h max factor must be finite and positive");
+  }
 
   std::vector<double> safe_kappa(diffused_curvature.size(), kTargetKappaMin);
   double observed_max_kappa = 0.0;
@@ -1071,7 +1076,7 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   }
 
   TargetErrorSizingResult result;
-  result.h_max = kTargetMaxEdgeFactor * mean_edge_length;
+  result.h_max = target_h_max_factor * mean_edge_length;
   result.bbox_diagonal = bbox_diagonal;
   result.kappa_max = observed_max_kappa;
   if (!std::isfinite(result.h_max) || result.h_max <= 0.0) {
@@ -1469,6 +1474,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.collapse_factor_override < 0.0 || !std::isfinite(config_.collapse_factor_override)) {
     throw std::runtime_error("collapse factor override must be finite and non-negative");
   }
+  if (config_.target_h_max_factor <= 0.0 || !std::isfinite(config_.target_h_max_factor)) {
+    throw std::runtime_error("target h max factor must be finite and positive");
+  }
 
   if (config_.target_error_delta < 0.0 || !std::isfinite(config_.target_error_delta)) {
     throw std::runtime_error("target error delta must be finite and non-negative");
@@ -1611,7 +1619,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
       curvature,
       base_len,
       bbox_diag,
-      config_.target_error_delta);
+      config_.target_error_delta,
+      config_.target_h_max_factor);
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
@@ -1626,6 +1635,7 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
          sizing.target_error_delta,
          sizing.target_error_bbox_ratio,
          sizing.bbox_diagonal,
+         config_.target_h_max_factor,
          sizing.kappa_max,
          sizing.estimated_faces,
          sizing.flat_fallback});
