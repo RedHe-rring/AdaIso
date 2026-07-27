@@ -31,6 +31,8 @@ void printUsage(std::ostream& out) {
       << "  --export-all-stage-meshes <dir> Export every iteration's remesh stage snapshots\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
+      << "  --split-factor <v>        Override split hysteresis factor. Default: variant value\n"
+      << "  --collapse-factor <v>     Override collapse hysteresis factor. Default: 0.8\n"
       << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
       << "  --feature-aware-collapse <0|1> Feature-aware collapse placement. Default: 1\n"
       << "  --collapse-feature-omega <v> Feature similarity threshold for collapse. Default: 0.15\n"
@@ -79,6 +81,14 @@ std::size_t parsePositiveSize(const std::string& value, const std::string& optio
     throw std::runtime_error(option + " must be positive");
   }
   return static_cast<std::size_t>(parsed);
+}
+
+double parsePositiveDouble(const std::string& value, const std::string& option) {
+  const double parsed = std::stod(value);
+  if (!std::isfinite(parsed) || parsed <= 0.0) {
+    throw std::runtime_error(option + " must be finite and positive");
+  }
+  return parsed;
 }
 
 std::string jsonEscape(const std::string& value) {
@@ -302,6 +312,10 @@ int main(int argc, char** argv) {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
         config.global_iterations = std::stoi(requireValue(i, argc, argv, arg));
+      } else if (arg == "--split-factor") {
+        config.split_factor_override = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
+      } else if (arg == "--collapse-factor") {
+        config.collapse_factor_override = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--max-flip-dihedral-deg") {
         config.max_flip_dihedral_degrees = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--feature-aware-collapse") {
@@ -341,6 +355,12 @@ int main(int argc, char** argv) {
     }
     if (config.target_error_delta < 0.0 || !std::isfinite(config.target_error_delta)) {
       throw std::runtime_error("--target-error-delta must be finite and non-negative");
+    }
+    if (config.split_factor_override < 0.0 || !std::isfinite(config.split_factor_override)) {
+      throw std::runtime_error("--split-factor must be finite and non-negative");
+    }
+    if (config.collapse_factor_override < 0.0 || !std::isfinite(config.collapse_factor_override)) {
+      throw std::runtime_error("--collapse-factor must be finite and non-negative");
     }
     if (config.collapse_feature_omega < 0.0 || !std::isfinite(config.collapse_feature_omega)) {
       throw std::runtime_error("--collapse-feature-omega must be finite and non-negative");

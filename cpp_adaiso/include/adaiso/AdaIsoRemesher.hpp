@@ -77,6 +77,8 @@ struct AdaIsoConfig {
   double max_flip_dihedral_degrees = 45.0;
   bool feature_aware_collapse = true;
   double collapse_feature_omega = 0.15;
+  double split_factor_override = 0.0;
+  double collapse_factor_override = 0.0;
   double min_quality_after_collapse = 0.05;
   bool verbose = true;
 

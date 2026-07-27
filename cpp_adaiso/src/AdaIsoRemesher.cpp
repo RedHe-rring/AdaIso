@@ -1386,10 +1386,16 @@ void writeOutputTargetDiagnostics(
 }
 
 double AdaIsoConfig::splitFactor() const {
+  if (split_factor_override > 0.0) {
+    return split_factor_override;
+  }
   return variant == Variant::Paper ? 5.0 / 3.0 : 1.33;
 }
 
 double AdaIsoConfig::collapseFactor() const {
+  if (collapse_factor_override > 0.0) {
+    return collapse_factor_override;
+  }
   return 4.0 / 5.0;
 }
 
@@ -1456,6 +1462,12 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
   if (config_.collapse_feature_omega < 0.0 || !std::isfinite(config_.collapse_feature_omega)) {
     throw std::runtime_error("collapse feature omega must be finite and non-negative");
+  }
+  if (config_.split_factor_override < 0.0 || !std::isfinite(config_.split_factor_override)) {
+    throw std::runtime_error("split factor override must be finite and non-negative");
+  }
+  if (config_.collapse_factor_override < 0.0 || !std::isfinite(config_.collapse_factor_override)) {
+    throw std::runtime_error("collapse factor override must be finite and non-negative");
   }
 
   if (config_.target_error_delta < 0.0 || !std::isfinite(config_.target_error_delta)) {

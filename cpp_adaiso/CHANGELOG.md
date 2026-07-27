@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.1.1
+
+Feature update:
+Exposes remeshing hysteresis factors for controlled experiments without
+changing defaults.
+
+- Added `--split-factor` and `--collapse-factor` CLI overrides.
+- Added `AdaIsoConfig::split_factor_override` and
+  `AdaIsoConfig::collapse_factor_override`; `0` keeps the current defaults.
+- Summary JSON continues to report the effective split and collapse factors.
+
 ## 5.1.0
 
 Breaking change:

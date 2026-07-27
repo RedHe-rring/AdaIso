@@ -634,6 +634,29 @@ void testCurvatureModeParsing() {
   assert(threw);
 }
 
+void testHysteresisFactorOverrides() {
+  {
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Code;
+    assertNear(config.splitFactor(), 1.33);
+    assertNear(config.collapseFactor(), 0.8);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Paper;
+    assertNear(config.splitFactor(), 5.0 / 3.0);
+    assertNear(config.collapseFactor(), 0.8);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Paper;
+    config.split_factor_override = 1.2;
+    config.collapse_factor_override = 0.6;
+    assertNear(config.splitFactor(), 1.2);
+    assertNear(config.collapseFactor(), 0.6);
+  }
+}
+
 void testRobustMeanCurvatureRemeshInitialization() {
   auto run = [](const adaiso::Mesh& input) {
     adaiso::AdaIsoConfig config;
@@ -999,6 +1022,26 @@ void testTargetFieldConfigValidation() {
     config.target_error_delta = -1.0;
     assert_invalid_config(config);
   }
+  {
+    adaiso::AdaIsoConfig config;
+    config.split_factor_override = -1.0;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.split_factor_override = std::numeric_limits<double>::infinity();
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.collapse_factor_override = -1.0;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.collapse_factor_override = std::numeric_limits<double>::infinity();
+    assert_invalid_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -1236,6 +1279,7 @@ int main() {
   testTargetErrorCurvatureSizing();
   testEdgeRatioStats();
   testCurvatureModeParsing();
+  testHysteresisFactorOverrides();
   testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();
   testTargetFieldDiagnosticExport();
