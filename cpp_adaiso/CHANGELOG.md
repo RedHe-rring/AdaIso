@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.1.4
+
+Feature update:
+Exposes the curvature reference used by auto-delta target-error sizing for
+controlled experiments without changing defaults.
+
+- Added `--auto-delta-kappa-ref <max|p99|p95>` and
+  `AdaIsoConfig::target_error_curvature_reference`.
+- Target-error sizing now reports both the selected `kappa_ref` and observed
+  `kappa_max`.
+- Summary JSON and target-field diagnostics now report `kappa_reference`,
+  `kappa_ref`, and `kappa_max`.
+
 ## 5.1.3
 
 Feature update:

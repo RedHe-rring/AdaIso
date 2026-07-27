@@ -81,6 +81,7 @@ struct AdaIsoConfig {
   double collapse_factor_override = 0.0;
   double target_h_max_factor = 5.0;
   double target_error_h_ref_factor = 0.5;
+  TargetErrorCurvatureReference target_error_curvature_reference = TargetErrorCurvatureReference::Max;
   double min_quality_after_collapse = 0.05;
   bool verbose = true;
 
@@ -122,6 +123,7 @@ struct AdaIsoStats {
   double target_h_min = 0.0;
   double target_h_max = 0.0;
   double target_estimated_faces = 0.0;
+  double target_kappa_ref = 0.0;
   double target_kappa_max = 0.0;
   bool target_flat_fallback = false;
 };
@@ -194,6 +196,8 @@ class AdaIsoRemesher {
 [[nodiscard]] std::string toString(Variant variant);
 [[nodiscard]] CurvatureMode parseCurvatureMode(const std::string& value);
 [[nodiscard]] std::string toString(CurvatureMode mode);
+[[nodiscard]] TargetErrorCurvatureReference parseTargetErrorCurvatureReference(const std::string& value);
+[[nodiscard]] std::string toString(TargetErrorCurvatureReference reference);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

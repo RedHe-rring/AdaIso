@@ -26,6 +26,7 @@ void printUsage(std::ostream& out) {
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
       << "  --target-error-delta <v>   Absolute error tolerance. Default: auto from kappa_max and mean edge\n"
       << "  --target-error-h-ref-factor <v> Auto delta reference h as a multiple of mean edge. Default: 0.5\n"
+      << "  --auto-delta-kappa-ref <max|p99|p95> Curvature reference for auto delta. Default: max\n"
       << "  --target-h-max-factor <v>  h_max as a multiple of mean edge length. Default: 5.0\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
@@ -211,6 +212,8 @@ std::string buildSummaryJson(
   out << "    \"h_max\": " << stats.target_h_max << ",\n";
   out << "    \"h_max_factor\": " << config.target_h_max_factor << ",\n";
   out << "    \"estimated_faces\": " << stats.target_estimated_faces << ",\n";
+  out << "    \"kappa_reference\": \"" << adaiso::toString(config.target_error_curvature_reference) << "\",\n";
+  out << "    \"kappa_ref\": " << stats.target_kappa_ref << ",\n";
   out << "    \"kappa_max\": " << stats.target_kappa_max << ",\n";
   out << "    \"flat_fallback\": " << (stats.target_flat_fallback ? "true" : "false") << ",\n";
   if (!config.target_field_export_dir.empty()) {
@@ -306,6 +309,9 @@ int main(int argc, char** argv) {
         config.target_error_delta = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-error-h-ref-factor") {
         config.target_error_h_ref_factor = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
+      } else if (arg == "--auto-delta-kappa-ref") {
+        config.target_error_curvature_reference =
+            adaiso::parseTargetErrorCurvatureReference(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-h-max-factor") {
         config.target_h_max_factor = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--export-target-field") {

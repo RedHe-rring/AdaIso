@@ -6,6 +6,12 @@
 
 namespace adaiso {
 
+enum class TargetErrorCurvatureReference {
+  Max,
+  P99,
+  P95,
+};
+
 namespace detail {
 
 struct TargetErrorSizingResult {
@@ -16,6 +22,7 @@ struct TargetErrorSizingResult {
   double target_error_delta = 0.0;
   double target_error_bbox_ratio = 0.0;
   double bbox_diagonal = 0.0;
+  double kappa_ref = 0.0;
   double kappa_max = 0.0;
   bool flat_fallback = false;
 };
@@ -31,7 +38,8 @@ struct TargetErrorSizingResult {
     double bbox_diagonal,
     double target_error_delta,
     double target_error_h_ref_factor,
-    double target_h_max_factor);
+    double target_h_max_factor,
+    TargetErrorCurvatureReference curvature_reference);
 
 }  // namespace detail
 }  // namespace adaiso
