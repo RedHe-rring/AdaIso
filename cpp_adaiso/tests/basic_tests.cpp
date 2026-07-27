@@ -4,7 +4,7 @@
 #include "adaiso/Mesh.hpp"
 #include "adaiso/Metrics.hpp"
 #include "adaiso/detail/CsfSolver.hpp"
-#include "adaiso/detail/TargetFaceSizing.hpp"
+#include "adaiso/detail/TargetErrorSizing.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -204,7 +204,8 @@ double distanceToSegmentLine(const Eigen::Vector3d& a, const Eigen::Vector3d& b,
 adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, double omega = 0.15) {
   adaiso::AdaIsoConfig config;
   config.variant = adaiso::Variant::Code;
-  config.target_faces = 1;
+  config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+  config.target_error_delta = 0.01;
   config.global_iterations = 1;
   config.max_split_passes = 0;
   config.max_collapse_passes = 1;
@@ -451,43 +452,67 @@ void testTargetLengthFieldQueries() {
   assertNear(field.valueAt({0.5, 0.5, 0.0}), 6.5);
 }
 
-void testTargetFaceCurvatureSizing() {
+void testTargetErrorCurvatureSizing() {
   const adaiso::Mesh triangle = makeSingleTriangle();
   const double mean_length = adaiso::meanEdgeLength(triangle);
-  const auto varying = adaiso::detail::targetFaceCurvatureLengths(
+  const double bbox_diagonal = std::sqrt(2.0);
+  const double delta = 0.01;
+  const auto varying = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
       {1.0, 4.0, 16.0},
-      1,
-      mean_length);
+      mean_length,
+      bbox_diagonal,
+      delta);
   assert(varying.target_lengths.size() == triangle.vertexCount());
   assert(varying.target_lengths[0] > varying.target_lengths[1]);
   assert(varying.target_lengths[1] > varying.target_lengths[2]);
-  assertNear(varying.estimated_faces, 1.0, 1e-9);
+  assert(std::isfinite(varying.estimated_faces));
+  assert(varying.estimated_faces > 0.0);
+  assertNear(varying.h_min, std::sqrt(6.0 * delta / 16.0 - 3.0 * delta * delta));
+  assertNear(varying.h_max, 5.0 * mean_length);
+  assertNear(varying.kappa_max, 16.0);
+  assertNear(varying.target_error_delta, delta);
+  assertNear(varying.target_error_bbox_ratio, delta / bbox_diagonal);
   assertNear(
       adaiso::detail::estimateTargetFaceCount(triangle, varying.target_lengths),
       varying.estimated_faces,
       1e-12);
 
-  const auto linear = adaiso::detail::targetFaceCurvatureLengths(
-      triangle,
-      {1.0, 4.0, 16.0},
-      1,
-      mean_length,
-      adaiso::TargetSizeMapping::InverseLinear);
-  assert(linear.target_lengths.size() == triangle.vertexCount());
-  assert(linear.target_lengths[0] > varying.target_lengths[0]);
-  assert(linear.target_lengths[2] < varying.target_lengths[2]);
-  assertNear(linear.estimated_faces, 1.0, 1e-9);
-
-  const auto constant = adaiso::detail::targetFaceCurvatureLengths(
+  const auto constant = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
       {5.0, 5.0, 5.0},
-      1,
-      mean_length);
+      mean_length,
+      bbox_diagonal,
+      delta);
   assert(constant.target_lengths.size() == triangle.vertexCount());
   assertNear(constant.target_lengths[0], constant.target_lengths[1], 1e-12);
   assertNear(constant.target_lengths[1], constant.target_lengths[2], 1e-12);
-  assertNear(constant.estimated_faces, 1.0, 1e-9);
+  assert(std::isfinite(constant.estimated_faces));
+  assert(constant.estimated_faces > 0.0);
+
+  const auto automatic = adaiso::detail::targetErrorCurvatureLengths(
+      triangle,
+      {1.0, 1.0, 1.0},
+      mean_length,
+      bbox_diagonal,
+      0.0);
+  const double h_ref = 0.5 * mean_length;
+  const double expected_auto_delta = 1.0 - std::sqrt(1.0 - h_ref * h_ref / 3.0);
+  assertNear(automatic.target_error_delta, expected_auto_delta);
+  assertNear(automatic.h_min, h_ref, 1e-12);
+
+  const auto flat = adaiso::detail::targetErrorCurvatureLengths(
+      triangle,
+      {0.0, 0.0, 0.0},
+      mean_length,
+      bbox_diagonal,
+      delta);
+  assert(flat.flat_fallback);
+  assert(flat.target_lengths.size() == triangle.vertexCount());
+  assertNear(flat.h_min, flat.h_max);
+  assertNear(flat.target_lengths[0], flat.h_max);
+  assertNear(flat.target_lengths[1], flat.h_max);
+  assertNear(flat.target_lengths[2], flat.h_max);
 
   auto expect_throw = [](auto&& fn) {
     bool threw = false;
@@ -500,32 +525,42 @@ void testTargetFaceCurvatureSizing() {
   };
 
   expect_throw([] {
-    (void)adaiso::detail::targetFaceCurvatureLengths(makeSingleTriangle(), {1.0, 2.0}, 1, 1.0);
+    (void)adaiso::detail::targetErrorCurvatureLengths(makeSingleTriangle(), {1.0, 2.0}, 1.0, 1.0, 0.01);
   });
+  const auto nonfinite = adaiso::detail::targetErrorCurvatureLengths(
+      triangle,
+      {1.0, std::numeric_limits<double>::infinity(), 2.0},
+      mean_length,
+      bbox_diagonal,
+      delta);
+  assertFiniteValues(nonfinite.target_lengths);
   expect_throw([] {
-    (void)adaiso::detail::targetFaceCurvatureLengths(
-        makeSingleTriangle(),
-        {1.0, std::numeric_limits<double>::infinity(), 2.0},
-        1,
-        1.0);
-  });
-  expect_throw([] {
-    (void)adaiso::detail::targetFaceCurvatureLengths(
-        makeSingleTriangle(),
-        {1.0, 2.0, 3.0},
-        0,
-        1.0);
-  });
-  expect_throw([] {
-    (void)adaiso::detail::targetFaceCurvatureLengths(
+    (void)adaiso::detail::targetErrorCurvatureLengths(
         makeSingleTriangle(),
         {1.0, 2.0, 3.0},
-        1,
-        0.0);
+        0.0,
+        1.0,
+        0.01);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::targetErrorCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        1.0,
+        0.0,
+        0.01);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::targetErrorCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        1.0,
+        1.0,
+        3.0);
   });
   expect_throw([] {
     adaiso::Mesh empty;
-    (void)adaiso::detail::targetFaceCurvatureLengths(empty, {}, 1, 1.0);
+    (void)adaiso::detail::targetErrorCurvatureLengths(empty, {}, 1.0, 1.0, 0.01);
   });
 }
 
@@ -585,27 +620,14 @@ void testEdgeRatioStats() {
 void testCurvatureModeParsing() {
   assert(adaiso::parseCurvatureMode("normal-angle") == adaiso::CurvatureMode::NormalAngle);
   assert(adaiso::parseCurvatureMode("ROBUST-MEAN") == adaiso::CurvatureMode::RobustMean);
+  assert(adaiso::parseCurvatureMode("principal-max") == adaiso::CurvatureMode::PrincipalMax);
   assert(adaiso::toString(adaiso::CurvatureMode::NormalAngle) == "normal-angle");
   assert(adaiso::toString(adaiso::CurvatureMode::RobustMean) == "robust-mean");
+  assert(adaiso::toString(adaiso::CurvatureMode::PrincipalMax) == "principal-max");
 
   bool threw = false;
   try {
     (void)adaiso::parseCurvatureMode("gaussian");
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
-}
-
-void testTargetSizeMappingParsing() {
-  assert(adaiso::parseTargetSizeMapping("inverse-sqrt") == adaiso::TargetSizeMapping::InverseSqrt);
-  assert(adaiso::parseTargetSizeMapping("INVERSE-LINEAR") == adaiso::TargetSizeMapping::InverseLinear);
-  assert(adaiso::toString(adaiso::TargetSizeMapping::InverseSqrt) == "inverse-sqrt");
-  assert(adaiso::toString(adaiso::TargetSizeMapping::InverseLinear) == "inverse-linear");
-
-  bool threw = false;
-  try {
-    (void)adaiso::parseTargetSizeMapping("quadratic");
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -972,6 +994,11 @@ void testTargetFieldConfigValidation() {
     config.collapse_feature_omega = std::numeric_limits<double>::infinity();
     assert_invalid_config(config);
   }
+  {
+    adaiso::AdaIsoConfig config;
+    config.target_error_delta = -1.0;
+    assert_invalid_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -980,7 +1007,8 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
 
   adaiso::AdaIsoConfig config;
   config.variant = adaiso::Variant::Code;
-  config.target_faces = 1;
+  config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+  config.target_error_delta = 0.05;
   config.global_iterations = 1;
   config.max_split_passes = 0;
   config.max_collapse_passes = 1;
@@ -1009,7 +1037,8 @@ void testTargetMetricSplitPlacement() {
 
     adaiso::AdaIsoConfig config;
     config.variant = adaiso::Variant::Code;
-    config.target_faces = 5;
+    config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+    config.target_error_delta = 1e-8;
     config.global_iterations = 1;
     config.max_split_passes = 1;
     config.max_collapse_passes = 0;
@@ -1047,7 +1076,8 @@ void testTargetMetricSplitPlacement() {
 
     adaiso::AdaIsoConfig config;
     config.variant = adaiso::Variant::Code;
-    config.target_faces = 10;
+    config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+    config.target_error_delta = 1e-8;
     config.global_iterations = 1;
     config.max_split_passes = 1;
     config.max_collapse_passes = 0;
@@ -1203,10 +1233,9 @@ int main() {
   testCsfScreenedConstantField();
   testCsfScreenedWeightGraphAndStrictValidation();
   testTargetLengthFieldQueries();
-  testTargetFaceCurvatureSizing();
+  testTargetErrorCurvatureSizing();
   testEdgeRatioStats();
   testCurvatureModeParsing();
-  testTargetSizeMappingParsing();
   testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();
   testTargetFieldDiagnosticExport();

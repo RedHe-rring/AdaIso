@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.1.0
+
+Breaking change:
+Target sizing is now driven by an absolute geometric error tolerance instead of
+a requested face budget.
+
+- Added `principal-max` curvature mode using libigl principal curvature with
+  `max(abs(k1), abs(k2))` as the raw curvature signal.
+- The target field now uses CSF-smoothed principal curvature and
+  `h_min = sqrt(6 * delta / kappa_max - 3 * delta^2)`.
+- Removed `--target-faces` and `--target-size-mapping`.
+- Added `--target-error-delta`; the default is automatically inferred from
+  `kappa_max` and `0.5 * mean_edge_length`.
+- Summary and target-field diagnostics now report delta, bbox diagonal,
+  `kappa_max`, `h_min`, `h_max`, and estimated face count.
+
 ## 5.0.2
 
 Behavior update:

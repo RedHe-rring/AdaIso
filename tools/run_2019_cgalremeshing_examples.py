@@ -54,6 +54,19 @@ def select_inputs(inputs: list[Path], args: argparse.Namespace) -> list[Path]:
     return selected
 
 
+def duplicate_stems(inputs: list[Path]) -> set[str]:
+    counts: dict[str, int] = {}
+    for path in inputs:
+        counts[path.stem] = counts.get(path.stem, 0) + 1
+    return {stem for stem, count in counts.items() if count > 1}
+
+
+def case_id(mesh: Path, duplicate_stem_set: set[str]) -> str:
+    if mesh.stem not in duplicate_stem_set:
+        return mesh.stem
+    return f"{mesh.stem}_{mesh.suffix.lower().lstrip('.')}"
+
+
 def run_command(command: list[str], log_path: Path, timeout_seconds: int | None) -> tuple[int, float]:
     started = time.perf_counter()
     with log_path.open("w", encoding="utf-8", errors="replace") as log:
@@ -120,22 +133,26 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def case_complete(status_path: Path) -> bool:
+def case_skippable(status_path: Path, rerun_failures: bool) -> bool:
     status = read_json(status_path)
-    return isinstance(status, dict) and status.get("status") == "success"
+    if not isinstance(status, dict):
+        return False
+    if status.get("status") == "success":
+        return True
+    return not rerun_failures
 
 
 def run_case(mesh: Path, args: argparse.Namespace, dirs: dict[str, Path]) -> dict[str, Any]:
-    stem = mesh.stem
-    preprocessed_mesh = dirs["preprocessed"] / f"{stem}.off"
-    preprocess_log = dirs["logs"] / f"{stem}.preprocess.log"
-    output_mesh = dirs["meshes"] / f"{stem}.off"
-    remesh_log = dirs["logs"] / f"{stem}.remesh.log"
-    metrics_log = dirs["logs"] / f"{stem}.metrics.log"
-    metrics_json = dirs["metrics"] / f"{stem}.metrics.json"
-    status_json = dirs["status"] / f"{stem}.status.json"
+    cid = case_id(mesh, args.duplicate_stems)
+    preprocessed_mesh = dirs["preprocessed"] / f"{cid}.off"
+    preprocess_log = dirs["logs"] / f"{cid}.preprocess.log"
+    output_mesh = dirs["meshes"] / f"{cid}.off"
+    remesh_log = dirs["logs"] / f"{cid}.remesh.log"
+    metrics_log = dirs["logs"] / f"{cid}.metrics.log"
+    metrics_json = dirs["metrics"] / f"{cid}.metrics.json"
+    status_json = dirs["status"] / f"{cid}.status.json"
 
-    if args.resume and case_complete(status_json):
+    if args.resume and case_skippable(status_json, args.rerun_failures):
         status = read_json(status_json)
         assert status is not None
         return status
@@ -184,8 +201,8 @@ def run_case(mesh: Path, args: argparse.Namespace, dirs: dict[str, Path]) -> dic
     status["remesh_returncode"] = returncode
     status["runtime_seconds"] = runtime
     if returncode != 0 or not output_mesh.is_file():
-        status["status"] = "remesh_failed"
-        status["error"] = f"remesher returned {returncode}"
+        status["status"] = "remesh_timeout" if returncode == 124 else "remesh_failed"
+        status["error"] = "remesher timed out" if returncode == 124 else f"remesher returned {returncode}"
         status_json.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return status
 
@@ -316,6 +333,8 @@ def write_report(rows: list[dict[str, Any]], args: argparse.Namespace, report_pa
     lines.append(f"- 指标脚本：`{args.metrics_script}`")
     lines.append(f"- 模型数量：{len(rows)}，成功：{len(successes)}，失败：{len(failures)}")
     lines.append(f"- CD/RMSE 采样数：每个方向 {args.cd_samples}")
+    lines.append(f"- Remeshing 超时保护：{args.timeout_seconds if args.timeout_seconds is not None else '无'} 秒/模型")
+    lines.append(f"- 并发数：{args.workers}")
     lines.append("")
     lines.append("## 默认参数")
     lines.append("")
@@ -371,7 +390,8 @@ def write_report(rows: list[dict[str, Any]], args: argparse.Namespace, report_pa
         lines.append("| 模型 | 阶段 | 错误 | 日志 |")
         lines.append("|---|---|---|---|")
         for row in failures:
-            log_path = Path(args.out_dir) / "logs" / f"{Path(str(row.get('model'))).stem}.remesh.log"
+            model_path = Path(str(row.get("input"))) if row.get("input") else Path(str(row.get("model")))
+            log_path = Path(args.out_dir) / "logs" / f"{case_id(model_path, args.duplicate_stems)}.remesh.log"
             lines.append(f"| {row.get('model')} | {row.get('status')} | {row.get('error')} | `{log_path}` |")
     lines.append("")
     lines.append("## 指标说明")
@@ -393,6 +413,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=int, default=None, help="Optional timeout per remeshing case.")
     parser.add_argument("--metrics-timeout-seconds", type=int, default=None, help="Optional timeout per metrics case.")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--rerun-failures", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--preprocess-inputs", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--only", nargs="*", help="Optional model names/stems to run.")
     parser.add_argument("--limit", type=int, help="Optional limit after sorting/filtering.")
@@ -423,6 +444,7 @@ def main() -> int:
         path.mkdir(parents=True, exist_ok=True)
 
     inputs = select_inputs(mesh_files(args.input_dir), args)
+    args.duplicate_stems = duplicate_stems(inputs)
     rows_by_model: dict[str, dict[str, Any]] = {}
 
     def record_result(mesh: Path, status: dict[str, Any], done_index: int) -> None:
@@ -474,6 +496,9 @@ def main() -> int:
                 "metrics_script": str(args.metrics_script),
                 "out_dir": str(args.out_dir),
                 "cd_samples": args.cd_samples,
+                "timeout_seconds": args.timeout_seconds,
+                "metrics_timeout_seconds": args.metrics_timeout_seconds,
+                "workers": args.workers,
                 "preprocess_inputs": args.preprocess_inputs,
                 "algorithm_defaults": ALGORITHM_DEFAULTS,
             },

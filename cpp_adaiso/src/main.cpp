@@ -22,10 +22,9 @@ void printUsage(std::ostream& out) {
       << "  adaiso_cli <input.obj|input.ply|input.off> -o <output.obj|output.ply> [options]\n\n"
       << "Options:\n"
       << "  --variant <code|paper>     Default: code\n"
-      << "  --curvature-mode <normal-angle|robust-mean> Default: robust-mean\n"
-      << "  --target-size-mapping <inverse-sqrt|inverse-linear> Default: inverse-linear\n"
+      << "  --curvature-mode <normal-angle|robust-mean|principal-max> Default: principal-max\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
-      << "  --target-faces <n>         Target face budget. Default: cleaned input face count\n"
+      << "  --target-error-delta <v>   Absolute error tolerance. Default: auto from kappa_max and mean edge\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
       << "  --export-stage-meshes <dir> Export first-iteration remesh stage snapshots\n"
@@ -191,10 +190,15 @@ std::string buildSummaryJson(
   out << "    \"variant\": \"" << adaiso::toString(config.variant) << "\",\n";
   out << "    \"curvature_mode\": \"" << adaiso::toString(config.curvature_mode) << "\",\n";
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
-  out << "    \"target_size_mapping\": \"" << adaiso::toString(config.target_size_mapping) << "\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
-  out << "    \"target_faces\": "
-      << (config.target_faces > 0 ? config.target_faces : input_summary.faces) << ",\n";
+  out << "    \"target_error_delta\": " << stats.target_error_delta << ",\n";
+  out << "    \"target_error_bbox_ratio\": " << stats.target_error_bbox_ratio << ",\n";
+  out << "    \"bbox_diagonal\": " << stats.bbox_diagonal << ",\n";
+  out << "    \"h_min\": " << stats.target_h_min << ",\n";
+  out << "    \"h_max\": " << stats.target_h_max << ",\n";
+  out << "    \"estimated_faces\": " << stats.target_estimated_faces << ",\n";
+  out << "    \"kappa_max\": " << stats.target_kappa_max << ",\n";
+  out << "    \"flat_fallback\": " << (stats.target_flat_fallback ? "true" : "false") << ",\n";
   if (!config.target_field_export_dir.empty()) {
     out << "    \"target_field_export_dir\": \"" << jsonEscape(config.target_field_export_dir) << "\",\n";
   }
@@ -282,12 +286,10 @@ int main(int argc, char** argv) {
         config.variant = adaiso::parseVariant(requireValue(i, argc, argv, arg));
       } else if (arg == "--curvature-mode") {
         config.curvature_mode = adaiso::parseCurvatureMode(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-size-mapping") {
-        config.target_size_mapping = adaiso::parseTargetSizeMapping(requireValue(i, argc, argv, arg));
       } else if (arg == "--csf-alpha") {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-faces") {
-        config.target_faces = parsePositiveSize(requireValue(i, argc, argv, arg), arg);
+      } else if (arg == "--target-error-delta") {
+        config.target_error_delta = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--export-target-field") {
         config.target_field_export_dir = requireValue(i, argc, argv, arg);
       } else if (arg == "--export-iteration-meshes") {
@@ -336,6 +338,9 @@ int main(int argc, char** argv) {
     }
     if (config.csf_smoothing_alpha <= 0.0 || !std::isfinite(config.csf_smoothing_alpha)) {
       throw std::runtime_error("--csf-alpha must be positive");
+    }
+    if (config.target_error_delta < 0.0 || !std::isfinite(config.target_error_delta)) {
+      throw std::runtime_error("--target-error-delta must be finite and non-negative");
     }
     if (config.collapse_feature_omega < 0.0 || !std::isfinite(config.collapse_feature_omega)) {
       throw std::runtime_error("--collapse-feature-omega must be finite and non-negative");

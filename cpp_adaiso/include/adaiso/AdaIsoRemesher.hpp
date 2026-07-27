@@ -2,7 +2,7 @@
 
 #include "adaiso/Geometry.hpp"
 #include "adaiso/Mesh.hpp"
-#include "adaiso/detail/TargetFaceSizing.hpp"
+#include "adaiso/detail/TargetErrorSizing.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -20,6 +20,7 @@ enum class Variant {
 enum class CurvatureMode {
   NormalAngle,
   RobustMean,
+  PrincipalMax,
 };
 
 struct EdgeRatioStats {
@@ -53,10 +54,9 @@ class TargetLengthField {
 
 struct AdaIsoConfig {
   Variant variant = Variant::Code;
-  CurvatureMode curvature_mode = CurvatureMode::RobustMean;
-  TargetSizeMapping target_size_mapping = TargetSizeMapping::InverseLinear;
+  CurvatureMode curvature_mode = CurvatureMode::PrincipalMax;
   double csf_smoothing_alpha = 2.0;
-  std::size_t target_faces = 0;
+  double target_error_delta = 0.0;
   std::string target_field_export_dir;
   std::string iteration_mesh_export_dir;
   std::string stage_mesh_export_dir;
@@ -112,6 +112,14 @@ struct AdaIsoStats {
   double csf_residual_scaled = 0.0;
   std::size_t csf_matrix_nonzeros = 0;
   bool csf_solver_success = false;
+  double target_error_delta = 0.0;
+  double target_error_bbox_ratio = 0.0;
+  double bbox_diagonal = 0.0;
+  double target_h_min = 0.0;
+  double target_h_max = 0.0;
+  double target_estimated_faces = 0.0;
+  double target_kappa_max = 0.0;
+  bool target_flat_fallback = false;
 };
 
 class AdaIsoRemesher {
@@ -129,7 +137,7 @@ class AdaIsoRemesher {
   };
 
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
-  void buildTargetLengths(const Mesh& mesh, std::size_t target_faces);
+  void buildTargetLengths(const Mesh& mesh);
   [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
   [[nodiscard]] std::vector<double> solveCsf(
       const Mesh& mesh,
@@ -182,8 +190,6 @@ class AdaIsoRemesher {
 [[nodiscard]] std::string toString(Variant variant);
 [[nodiscard]] CurvatureMode parseCurvatureMode(const std::string& value);
 [[nodiscard]] std::string toString(CurvatureMode mode);
-[[nodiscard]] TargetSizeMapping parseTargetSizeMapping(const std::string& value);
-[[nodiscard]] std::string toString(TargetSizeMapping mapping);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

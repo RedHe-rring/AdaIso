@@ -2,37 +2,34 @@
 
 #include "adaiso/Mesh.hpp"
 
-#include <cstddef>
 #include <vector>
 
 namespace adaiso {
 
-enum class TargetSizeMapping {
-  InverseSqrt,
-  InverseLinear,
-};
-
 namespace detail {
 
-struct TargetFaceSizingResult {
+struct TargetErrorSizingResult {
   std::vector<double> target_lengths;
-  double lambda = 0.0;
   double estimated_faces = 0.0;
   double h_min = 0.0;
   double h_max = 0.0;
-  std::size_t target_faces = 0;
+  double target_error_delta = 0.0;
+  double target_error_bbox_ratio = 0.0;
+  double bbox_diagonal = 0.0;
+  double kappa_max = 0.0;
+  bool flat_fallback = false;
 };
 
 [[nodiscard]] double estimateTargetFaceCount(
     const Mesh& mesh,
     const std::vector<double>& target_lengths);
 
-[[nodiscard]] TargetFaceSizingResult targetFaceCurvatureLengths(
+[[nodiscard]] TargetErrorSizingResult targetErrorCurvatureLengths(
     const Mesh& mesh,
     const std::vector<double>& diffused_curvature,
-    std::size_t target_faces,
     double mean_edge_length,
-    TargetSizeMapping mapping = TargetSizeMapping::InverseSqrt);
+    double bbox_diagonal,
+    double target_error_delta);
 
 }  // namespace detail
 }  // namespace adaiso
