@@ -181,6 +181,11 @@ class AdaIsoRemesher {
       const std::string& stage,
       int iteration) const;
   [[nodiscard]] int splitLongEdges(Mesh& mesh);
+  [[nodiscard]] bool splitAcceptedByAngleGuard(
+      const Mesh& mesh,
+      const EdgeFaceMap& e2f,
+      int a,
+      int b) const;
   void splitOneEdge(Mesh& mesh, int a, int b) const;
   [[nodiscard]] int collapseShortEdges(Mesh& mesh);
   [[nodiscard]] bool collapseValid(

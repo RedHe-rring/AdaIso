@@ -278,6 +278,63 @@ double minInnerAngleDegrees(const Eigen::Vector3d& a, const Eigen::Vector3d& b, 
   });
 }
 
+double maxInnerAngleDegrees(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c) {
+  return std::max({
+      innerAngleDegrees(a, b, c),
+      innerAngleDegrees(b, c, a),
+      innerAngleDegrees(c, a, b),
+  });
+}
+
+struct AnglePatchMetrics {
+  bool valid = false;
+  double min_angle_degrees = 0.0;
+  double max_angle_degrees = 0.0;
+};
+
+Eigen::Vector3d localPatchPoint(
+    const Mesh& mesh,
+    const std::unordered_map<int, Eigen::Vector3d>& overrides,
+    int vertex);
+
+AnglePatchMetrics evaluateAnglePatch(
+    const Mesh& mesh,
+    const std::vector<Eigen::Vector3i>& faces,
+    const std::unordered_map<int, Eigen::Vector3d>& overrides = {}) {
+  AnglePatchMetrics metrics;
+  metrics.valid = true;
+  metrics.min_angle_degrees = std::numeric_limits<double>::infinity();
+  metrics.max_angle_degrees = 0.0;
+  bool checked_face = false;
+
+  for (const auto& face : faces) {
+    if (face[0] == face[1] || face[1] == face[2] || face[2] == face[0]) {
+      metrics.valid = false;
+      return metrics;
+    }
+    const Eigen::Vector3d p0 = localPatchPoint(mesh, overrides, face[0]);
+    const Eigen::Vector3d p1 = localPatchPoint(mesh, overrides, face[1]);
+    const Eigen::Vector3d p2 = localPatchPoint(mesh, overrides, face[2]);
+    const double area = triangleArea(p0, p1, p2);
+    if (!std::isfinite(area) || area <= kEps) {
+      metrics.valid = false;
+      return metrics;
+    }
+    checked_face = true;
+    metrics.min_angle_degrees =
+        std::min(metrics.min_angle_degrees, minInnerAngleDegrees(p0, p1, p2));
+    metrics.max_angle_degrees =
+        std::max(metrics.max_angle_degrees, maxInnerAngleDegrees(p0, p1, p2));
+  }
+
+  if (!checked_face) {
+    metrics.valid = false;
+    metrics.min_angle_degrees = 0.0;
+    metrics.max_angle_degrees = 0.0;
+  }
+  return metrics;
+}
+
 struct LocalPatchMetrics {
   bool valid = false;
   double min_angle_degrees = 0.0;
@@ -1834,11 +1891,11 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
       std::cerr << "size stage iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
     }
 
-    const int split_count = splitLongEdges(mesh);
-    writeStageSnapshot(mesh, "size", it + 1, "split");
     const int collapse_count = collapseShortEdges(mesh);
     mesh = removeDegenerateFaces(mesh);
     writeStageSnapshot(mesh, "size", it + 1, "collapse");
+    const int split_count = splitLongEdges(mesh);
+    writeStageSnapshot(mesh, "size", it + 1, "split");
 
     stats_.size_stage_splits += split_count;
     stats_.size_stage_collapses += collapse_count;
@@ -2071,7 +2128,8 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
   for (int pass = 0; pass < config_.max_split_passes; ++pass) {
     // Collect candidate edges that are longer than the split threshold
     std::vector<std::tuple<double, int, int>> candidates;
-    for (const auto& item : edgeFaces(mesh)) {
+    const auto e2f = edgeFaces(mesh);
+    for (const auto& item : e2f) {
       const int a = item.first.first;
       const int b = item.first.second;
       const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
@@ -2099,6 +2157,9 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
       if (!std::isfinite(metric_length) || metric_length <= config_.splitFactor()) {
         continue;
       }
+      if (!splitAcceptedByAngleGuard(mesh, e2f, a, b)) {
+        continue;
+      }
       selected.push_back(makeEdge(a, b));
       used_vertices.insert(a);
       used_vertices.insert(b);
@@ -2110,6 +2171,65 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     total += static_cast<int>(selected.size());
   }
   return total;
+}
+
+bool AdaIsoRemesher::splitAcceptedByAngleGuard(
+    const Mesh& mesh,
+    const EdgeFaceMap& e2f,
+    int a,
+    int b) const {
+  if (a < 0 || b < 0 ||
+      static_cast<std::size_t>(a) >= mesh.vertices.size() ||
+      static_cast<std::size_t>(b) >= mesh.vertices.size()) {
+    return false;
+  }
+  const auto incident_it = e2f.find(makeEdge(a, b));
+  if (incident_it == e2f.end() || incident_it->second.empty()) {
+    return false;
+  }
+
+  std::vector<Eigen::Vector3i> before_faces;
+  before_faces.reserve(incident_it->second.size());
+  for (int fi : incident_it->second) {
+    if (fi < 0 || static_cast<std::size_t>(fi) >= mesh.faces.size()) {
+      return false;
+    }
+    const auto& face = mesh.faces[static_cast<std::size_t>(fi)];
+    if (!faceContainsEdge(face, a, b)) {
+      return false;
+    }
+    before_faces.push_back(face);
+  }
+
+  const Eigen::Vector3d& pa = mesh.vertices[static_cast<std::size_t>(a)];
+  const Eigen::Vector3d& pb = mesh.vertices[static_cast<std::size_t>(b)];
+  const double t = targetMetricSplitParameter(target_field_.valueAt(pa), target_field_.valueAt(pb));
+  const Eigen::Vector3d split_point = (1.0 - t) * pa + t * pb;
+  if (!finiteVector(split_point)) {
+    return false;
+  }
+
+  const int midpoint_idx = static_cast<int>(mesh.vertices.size());
+  std::vector<Eigen::Vector3i> after_faces;
+  after_faces.reserve(before_faces.size() * 2);
+  for (const auto& face : before_faces) {
+    auto split = splitFaceOnEdge(face, a, b, midpoint_idx);
+    after_faces.insert(after_faces.end(), split.begin(), split.end());
+  }
+
+  const AnglePatchMetrics before = evaluateAnglePatch(mesh, before_faces);
+  const AnglePatchMetrics after =
+      evaluateAnglePatch(mesh, after_faces, {{midpoint_idx, split_point}});
+  if (!before.valid || !after.valid) {
+    return false;
+  }
+  if (after.min_angle_degrees + kMinAngleTolDegrees < before.min_angle_degrees) {
+    return false;
+  }
+  if (before.max_angle_degrees <= 90.0 + kMinAngleTolDegrees) {
+    return after.max_angle_degrees <= 90.0 + kMinAngleTolDegrees;
+  }
+  return after.max_angle_degrees <= before.max_angle_degrees + kMinAngleTolDegrees;
 }
 
 std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m) {

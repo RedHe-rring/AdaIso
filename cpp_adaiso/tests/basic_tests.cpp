@@ -1033,8 +1033,8 @@ void testStageMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
-      dir / "size_iter001_after_split.ply",
       dir / "size_iter001_after_collapse.ply",
+      dir / "size_iter001_after_split.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
   };
@@ -1063,8 +1063,8 @@ void testAllStageMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
-      dir / "size_iter001_after_split.ply",
       dir / "size_iter001_after_collapse.ply",
+      dir / "size_iter001_after_split.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
   };

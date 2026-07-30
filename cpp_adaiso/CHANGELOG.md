@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.3.1
+
+Behavior update:
+Stabilizes the staged remesh size-field fitting phase.
+
+- Stage A now runs collapse before split, so existing over-dense edges are
+  recovered before adding new samples for long edges.
+- Long-edge split candidates now use a local angle guard and are rejected when
+  they would lower the affected patch minimum angle.
+- Split candidates also reject newly created or worsened obtuse local patches,
+  while still allowing already obtuse patches when the maximum angle does not
+  increase.
+
 ## 5.3.0
 
 Behavior update:
