@@ -221,7 +221,10 @@ adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, doubl
   adaiso::AdaIsoRemesher remesher(config);
   adaiso::Mesh output = remesher.remesh(input);
   output.validate();
-  assert(remesher.stats().iterations.size() == 1);
+  assert(remesher.stats().size_stage_iterations == 1);
+  assert(remesher.stats().size_stage_collapses == 1);
+  assert(!remesher.stats().iterations.empty());
+  assert(remesher.stats().iterations.front().stage == "size");
   assert(remesher.stats().iterations.front().collapse_count == 1);
   return output;
 }
@@ -779,25 +782,39 @@ void testRemeshSmoke() {
   assert(remesher.stats().csf_solver_success);
   assert(remesher.stats().csf_residual_scaled < adaiso::detail::kResidualThreshold);
   const auto& iterations = remesher.stats().iterations;
-  assert(iterations.size() == 2);
-  for (std::size_t i = 0; i < iterations.size(); ++i) {
-    assert(iterations[i].iteration == static_cast<int>(i + 1));
-    assert(iterations[i].split_count >= 0);
-    assert(iterations[i].collapse_count >= 0);
-    assert(iterations[i].flip_count >= 0);
-    assert(iterations[i].vertices > 0);
-    assert(iterations[i].faces > 0);
-    assert(std::isfinite(iterations[i].qavg));
-    assert(std::isfinite(iterations[i].qmin));
-    assert(std::isfinite(iterations[i].min_angle_degrees));
-    assert(std::isfinite(iterations[i].angle_lt_10_pct));
-    assert(std::isfinite(iterations[i].angle_lt_20_pct));
-    assert(std::isfinite(iterations[i].mean_ratio));
-    assert(std::isfinite(iterations[i].std_ratio));
-    assert(std::isfinite(iterations[i].p05_ratio));
-    assert(std::isfinite(iterations[i].p95_ratio));
-    assert(std::isfinite(iterations[i].violation_rate));
-    assert(iterations[i].violation_rate >= 0.0 && iterations[i].violation_rate <= 1.0);
+  assert(!iterations.empty());
+  assert(remesher.stats().size_stage_iterations >= 1);
+  assert(remesher.stats().size_stage_iterations <= config.global_iterations);
+  assert(remesher.stats().quality_stage_iterations >= 1);
+  assert(remesher.stats().quality_stage_iterations <= config.global_iterations);
+  for (const auto& iteration : iterations) {
+    assert(iteration.stage == "size" || iteration.stage == "quality");
+    assert(iteration.iteration >= 1);
+    assert(iteration.iteration <= config.global_iterations);
+    assert(iteration.split_count >= 0);
+    assert(iteration.collapse_count >= 0);
+    assert(iteration.flip_count >= 0);
+    assert(iteration.relocation_count >= 0);
+    if (iteration.stage == "size") {
+      assert(iteration.flip_count == 0);
+      assert(iteration.relocation_count == 0);
+    } else {
+      assert(iteration.split_count == 0);
+      assert(iteration.collapse_count == 0);
+    }
+    assert(iteration.vertices > 0);
+    assert(iteration.faces > 0);
+    assert(std::isfinite(iteration.qavg));
+    assert(std::isfinite(iteration.qmin));
+    assert(std::isfinite(iteration.min_angle_degrees));
+    assert(std::isfinite(iteration.angle_lt_10_pct));
+    assert(std::isfinite(iteration.angle_lt_20_pct));
+    assert(std::isfinite(iteration.mean_ratio));
+    assert(std::isfinite(iteration.std_ratio));
+    assert(std::isfinite(iteration.p05_ratio));
+    assert(std::isfinite(iteration.p95_ratio));
+    assert(std::isfinite(iteration.violation_rate));
+    assert(iteration.violation_rate >= 0.0 && iteration.violation_rate <= 1.0);
   }
 }
 
@@ -987,8 +1004,8 @@ void testIterationMeshExport() {
 
   const std::vector<std::filesystem::path> expected = {
       dir / "iter000.ply",
-      dir / "iter001.ply",
-      dir / "iter002.ply",
+      dir / "size_iter001.ply",
+      dir / "quality_iter001.ply",
   };
   for (const auto& path : expected) {
     assert(std::filesystem::exists(path));
@@ -997,7 +1014,7 @@ void testIterationMeshExport() {
     loaded.validate();
   }
 
-  assert(!std::filesystem::exists(dir / "iter003.ply"));
+  assert(!std::filesystem::exists(dir / "iter001.ply"));
   std::filesystem::remove_all(dir);
 }
 
@@ -1016,10 +1033,10 @@ void testStageMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
-      dir / "iter001_after_split.ply",
-      dir / "iter001_after_collapse.ply",
-      dir / "iter001_after_flip.ply",
-      dir / "iter001_after_smooth.ply",
+      dir / "size_iter001_after_split.ply",
+      dir / "size_iter001_after_collapse.ply",
+      dir / "quality_iter001_after_flip.ply",
+      dir / "quality_iter001_after_smooth.ply",
   };
   for (const auto& path : expected) {
     assert(std::filesystem::exists(path));
@@ -1046,14 +1063,10 @@ void testAllStageMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
-      dir / "iter001_after_split.ply",
-      dir / "iter001_after_collapse.ply",
-      dir / "iter001_after_flip.ply",
-      dir / "iter001_after_smooth.ply",
-      dir / "iter002_after_split.ply",
-      dir / "iter002_after_collapse.ply",
-      dir / "iter002_after_flip.ply",
-      dir / "iter002_after_smooth.ply",
+      dir / "size_iter001_after_split.ply",
+      dir / "size_iter001_after_collapse.ply",
+      dir / "quality_iter001_after_flip.ply",
+      dir / "quality_iter001_after_smooth.ply",
   };
   for (const auto& path : expected) {
     assert(std::filesystem::exists(path));
@@ -1062,7 +1075,7 @@ void testAllStageMeshExport() {
     loaded.validate();
   }
 
-  assert(!std::filesystem::exists(dir / "iter003_after_split.ply"));
+  assert(!std::filesystem::exists(dir / "iter001_after_split.ply"));
   std::filesystem::remove_all(dir);
 }
 
@@ -1240,10 +1253,13 @@ void testTargetMetricSplitPlacement() {
     adaiso::AdaIsoRemesher remesher(config);
     const adaiso::Mesh output = remesher.remesh(input);
     output.validate();
-    assert(remesher.stats().iterations.size() == 1);
+    assert(remesher.stats().size_stage_iterations == 1);
+    assert(remesher.stats().size_stage_splits == 1);
+    assert(!remesher.stats().iterations.empty());
+    assert(remesher.stats().iterations.front().stage == "size");
     assert(remesher.stats().iterations.front().split_count == 1);
 
-    const adaiso::Mesh split_stage = adaiso::loadMesh(dir / "iter001_after_split.ply");
+    const adaiso::Mesh split_stage = adaiso::loadMesh(dir / "size_iter001_after_split.ply");
     split_stage.validate();
     assert(split_stage.vertexCount() == input.vertexCount() + 1);
     const Eigen::Vector3d added = findAddedVertex(split_stage, input);
@@ -1279,10 +1295,13 @@ void testTargetMetricSplitPlacement() {
     adaiso::AdaIsoRemesher remesher(config);
     const adaiso::Mesh output = remesher.remesh(input);
     output.validate();
-    assert(remesher.stats().iterations.size() == 1);
+    assert(remesher.stats().size_stage_iterations == 1);
+    assert(remesher.stats().size_stage_splits == 1);
+    assert(!remesher.stats().iterations.empty());
+    assert(remesher.stats().iterations.front().stage == "size");
     assert(remesher.stats().iterations.front().split_count == 1);
 
-    const adaiso::Mesh split_stage = adaiso::loadMesh(dir / "iter001_after_split.ply");
+    const adaiso::Mesh split_stage = adaiso::loadMesh(dir / "size_iter001_after_split.ply");
     split_stage.validate();
     assert(split_stage.vertexCount() == input.vertexCount() + 1);
     const Eigen::Vector3d added = findAddedVertex(split_stage, input);

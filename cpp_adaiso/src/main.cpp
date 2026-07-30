@@ -140,10 +140,12 @@ std::string iterationsToJson(const std::vector<adaiso::AdaIsoStats::IterationSta
   for (std::size_t i = 0; i < iterations.size(); ++i) {
     const auto& item = iterations[i];
     out << pad2 << "{\n";
+    out << pad2 << "  \"stage\": \"" << jsonEscape(item.stage) << "\",\n";
     out << pad2 << "  \"iteration\": " << item.iteration << ",\n";
     out << pad2 << "  \"split_count\": " << item.split_count << ",\n";
     out << pad2 << "  \"collapse_count\": " << item.collapse_count << ",\n";
     out << pad2 << "  \"flip_count\": " << item.flip_count << ",\n";
+    out << pad2 << "  \"relocation_count\": " << item.relocation_count << ",\n";
     out << pad2 << "  \"vertices\": " << item.vertices << ",\n";
     out << pad2 << "  \"faces\": " << item.faces << ",\n";
     out << pad2 << "  \"qavg\": " << item.qavg << ",\n";
@@ -261,6 +263,12 @@ std::string buildSummaryJson(
   out << "  \"stats\": {\n";
   out << "    \"vertices\": " << stats.vertices << ",\n";
   out << "    \"faces\": " << stats.faces << ",\n";
+  out << "    \"size_stage_iterations\": " << stats.size_stage_iterations << ",\n";
+  out << "    \"size_stage_splits\": " << stats.size_stage_splits << ",\n";
+  out << "    \"size_stage_collapses\": " << stats.size_stage_collapses << ",\n";
+  out << "    \"quality_stage_iterations\": " << stats.quality_stage_iterations << ",\n";
+  out << "    \"quality_stage_flips\": " << stats.quality_stage_flips << ",\n";
+  out << "    \"quality_stage_relocations\": " << stats.quality_stage_relocations << ",\n";
   out << "    \"csf_assembly_time_ms\": " << stats.csf_assembly_time_ms << ",\n";
   out << "    \"csf_factorization_time_ms\": " << stats.csf_factorization_time_ms << ",\n";
   out << "    \"csf_solve_time_ms\": " << stats.csf_solve_time_ms << ",\n";

@@ -436,6 +436,16 @@ bool minAngleSafetyAccepted(double before_min_angle, double after_min_angle, dou
   return after_min_angle + kMinAngleTolDegrees >= required_min_angle;
 }
 
+bool minAngleQualityAccepted(double before_min_angle, double after_min_angle, double floor_degrees) {
+  if (!std::isfinite(before_min_angle) || !std::isfinite(after_min_angle)) {
+    return false;
+  }
+  if (before_min_angle < floor_degrees) {
+    return after_min_angle > before_min_angle + kMinAngleTolDegrees;
+  }
+  return after_min_angle + kMinAngleTolDegrees >= before_min_angle;
+}
+
 double minQuality(const Mesh& mesh) {
   const auto qualities = triangleQualities(mesh);
   if (qualities.empty()) {
@@ -1794,71 +1804,14 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
 
   buildTargetLengths(mesh);
-  stats_.iterations.reserve(static_cast<std::size_t>(std::max(0, config_.global_iterations)));
+  stats_.iterations.reserve(static_cast<std::size_t>(2 * std::max(0, config_.global_iterations)));
   if (!config_.iteration_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / "iter000.ply", mesh);
   }
 
-  for (int it = 0; it < config_.global_iterations; ++it) {
-    if (config_.verbose) {
-      std::cerr << "iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
-    }
-    const bool export_first_iteration_stages = it == 0 && !config_.stage_mesh_export_dir.empty();
-    auto write_stage_mesh = [&](const std::string& stage) {
-      if (export_first_iteration_stages) {
-        writeMesh(
-            std::filesystem::path(config_.stage_mesh_export_dir) / ("iter001_after_" + stage + ".ply"),
-            mesh);
-      }
-      if (!config_.all_stage_mesh_export_dir.empty()) {
-        std::ostringstream filename;
-        filename << "iter" << std::setw(3) << std::setfill('0') << (it + 1)
-                 << "_after_" << stage << ".ply";
-        writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / filename.str(), mesh);
-      }
-    };
-
-    const int split_count = splitLongEdges(mesh);
-    write_stage_mesh("split");
-    const int collapse_count = collapseShortEdges(mesh);
-    mesh = removeDegenerateFaces(mesh);
-    write_stage_mesh("collapse");
-    const int flip_count = flipEdges(mesh);
-    write_stage_mesh("flip");
-    relocateVertices(mesh, original_for_projection);
-    mesh = removeDegenerateFaces(mesh);
-    write_stage_mesh("smooth");
-    const MeshSummary iteration_summary = summarizeMesh(mesh);
-    const EdgeRatioStats ratio_stats = edgeRatioStats(mesh);
-    if (!config_.iteration_mesh_export_dir.empty()) {
-      std::ostringstream filename;
-      filename << "iter" << std::setw(3) << std::setfill('0') << (it + 1) << ".ply";
-      writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / filename.str(), mesh);
-    }
-    stats_.iterations.push_back({
-        it + 1,
-        split_count,
-        collapse_count,
-        flip_count,
-        mesh.vertexCount(),
-        mesh.faceCount(),
-        iteration_summary.qavg,
-        iteration_summary.qmin,
-        iteration_summary.min_angle_degrees,
-        iteration_summary.angle_lt_10_pct,
-        iteration_summary.angle_lt_20_pct,
-        ratio_stats.mean_ratio,
-        ratio_stats.std_ratio,
-        ratio_stats.p05_ratio,
-        ratio_stats.p95_ratio,
-        ratio_stats.violation_rate});
-    if (config_.verbose) {
-      std::cerr << "  split=" << split_count << ", collapse=" << collapse_count << ", flip=" << flip_count
-                << ", violation=" << ratio_stats.violation_rate
-                << ", min_angle=" << iteration_summary.min_angle_degrees
-                << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
-    }
-  }
+  runSizeFieldFittingStage(mesh);
+  runQualityRepairStage(mesh, original_for_projection);
+  mesh = removeDegenerateFaces(mesh);
 
   stats_.vertices = mesh.vertexCount();
   stats_.faces = mesh.faceCount();
@@ -1873,6 +1826,122 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
         config_.splitFactor());
   }
   return mesh;
+}
+
+void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
+  for (int it = 0; it < config_.global_iterations; ++it) {
+    if (config_.verbose) {
+      std::cerr << "size stage iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
+    }
+
+    const int split_count = splitLongEdges(mesh);
+    writeStageSnapshot(mesh, "size", it + 1, "split");
+    const int collapse_count = collapseShortEdges(mesh);
+    mesh = removeDegenerateFaces(mesh);
+    writeStageSnapshot(mesh, "size", it + 1, "collapse");
+
+    stats_.size_stage_splits += split_count;
+    stats_.size_stage_collapses += collapse_count;
+    ++stats_.size_stage_iterations;
+    recordIterationStats("size", it + 1, split_count, collapse_count, 0, 0, mesh);
+    writeIterationSnapshot(mesh, "size", it + 1);
+
+    if (split_count == 0 && collapse_count == 0) {
+      break;
+    }
+  }
+}
+
+void AdaIsoRemesher::runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection) {
+  for (int it = 0; it < config_.global_iterations; ++it) {
+    if (config_.verbose) {
+      std::cerr << "quality stage iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
+    }
+
+    const int flip_count = flipEdges(mesh);
+    writeStageSnapshot(mesh, "quality", it + 1, "flip");
+    const int relocation_count = relocateVertices(mesh, original_for_projection);
+    mesh = removeDegenerateFaces(mesh);
+    writeStageSnapshot(mesh, "quality", it + 1, "smooth");
+
+    stats_.quality_stage_flips += flip_count;
+    stats_.quality_stage_relocations += relocation_count;
+    ++stats_.quality_stage_iterations;
+    recordIterationStats("quality", it + 1, 0, 0, flip_count, relocation_count, mesh);
+    writeIterationSnapshot(mesh, "quality", it + 1);
+
+    if (flip_count == 0 && relocation_count == 0) {
+      break;
+    }
+  }
+}
+
+void AdaIsoRemesher::recordIterationStats(
+    const std::string& stage,
+    int iteration,
+    int split_count,
+    int collapse_count,
+    int flip_count,
+    int relocation_count,
+    const Mesh& mesh) {
+  const MeshSummary iteration_summary = summarizeMesh(mesh);
+  const EdgeRatioStats ratio_stats = edgeRatioStats(mesh);
+  stats_.iterations.push_back({
+      stage,
+      iteration,
+      split_count,
+      collapse_count,
+      flip_count,
+      relocation_count,
+      mesh.vertexCount(),
+      mesh.faceCount(),
+      iteration_summary.qavg,
+      iteration_summary.qmin,
+      iteration_summary.min_angle_degrees,
+      iteration_summary.angle_lt_10_pct,
+      iteration_summary.angle_lt_20_pct,
+      ratio_stats.mean_ratio,
+      ratio_stats.std_ratio,
+      ratio_stats.p05_ratio,
+      ratio_stats.p95_ratio,
+      ratio_stats.violation_rate});
+  if (config_.verbose) {
+    std::cerr << "  split=" << split_count
+              << ", collapse=" << collapse_count
+              << ", flip=" << flip_count
+              << ", relocate=" << relocation_count
+              << ", violation=" << ratio_stats.violation_rate
+              << ", min_angle=" << iteration_summary.min_angle_degrees
+              << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
+  }
+}
+
+void AdaIsoRemesher::writeStageSnapshot(
+    const Mesh& mesh,
+    const std::string& stage,
+    int iteration,
+    const std::string& operation) const {
+  std::ostringstream filename;
+  filename << stage << "_iter" << std::setw(3) << std::setfill('0') << iteration
+           << "_after_" << operation << ".ply";
+  if (iteration == 1 && !config_.stage_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.stage_mesh_export_dir) / filename.str(), mesh);
+  }
+  if (!config_.all_stage_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / filename.str(), mesh);
+  }
+}
+
+void AdaIsoRemesher::writeIterationSnapshot(
+    const Mesh& mesh,
+    const std::string& stage,
+    int iteration) const {
+  if (config_.iteration_mesh_export_dir.empty()) {
+    return;
+  }
+  std::ostringstream filename;
+  filename << stage << "_iter" << std::setw(3) << std::setfill('0') << iteration << ".ply";
+  writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / filename.str(), mesh);
 }
 
 Mesh AdaIsoRemesher::subRemesh(Mesh mesh) const {
@@ -2477,11 +2546,20 @@ bool AdaIsoRemesher::flipAcceptedByAngleMetric(
   if (!before.valid || !after.valid) {
     return false;
   }
-  if (!minAngleSafetyAccepted(
+  if (!minAngleQualityAccepted(
           before.min_angle_degrees,
           after.min_angle_degrees,
           config_.min_angle_floor_degrees)) {
     return false;
+  }
+  if (after.target_metric_violation > before.target_metric_violation + kMetricViolationTol) {
+    return false;
+  }
+  if (before.min_angle_degrees < config_.min_angle_floor_degrees) {
+    return true;
+  }
+  if (after.min_angle_degrees > before.min_angle_degrees + kMinAngleTolDegrees) {
+    return true;
   }
   if (after.target_metric_violation + kMetricViolationTol < before.target_metric_violation) {
     return true;
@@ -2545,33 +2623,37 @@ std::vector<AdaIsoRemesher::VertexRelocationClass> AdaIsoRemesher::classifyVerti
   return classes;
 }
 
-void AdaIsoRemesher::relocateVertices(Mesh& mesh, const Mesh& original_for_projection) {
+int AdaIsoRemesher::relocateVertices(Mesh& mesh, const Mesh& original_for_projection) {
   const auto classes = classifyVerticesForRelocation(mesh);
-  tangentSmoothing(mesh, classes);
+  int accepted = tangentSmoothing(mesh, classes);
 
   if (!config_.enable_relocation_mls) {
-    return;
+    return accepted;
   }
 
   const auto projected = mlsProject(mesh.vertices, original_for_projection);
   if (projected.size() != mesh.vertices.size()) {
-    return;
+    return accepted;
   }
 
   const auto vf = vertexFaces(mesh);
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     if (classes[i] == VertexRelocationClass::Smooth &&
         finiteVector(projected[i]) &&
+        (projected[i] - mesh.vertices[i]).norm() > kEps &&
         relocationAcceptedByAngleMetric(mesh, vf, static_cast<int>(i), projected[i])) {
       mesh.vertices[i] = projected[i];
+      ++accepted;
     }
   }
+  return accepted;
 }
 
-void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes) {
+int AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes) {
   const auto vf = vertexFaces(mesh);
   const auto normals = vertexNormals(mesh);
   const auto areas = faceAreas(mesh);
+  int accepted = 0;
 
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     if (i >= classes.size() || classes[i] != VertexRelocationClass::Smooth || vf[i].empty()) {
@@ -2609,10 +2691,13 @@ void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexReloca
     const Eigen::Vector3d tangent = disp - disp.dot(normal) * normal;
     const Eigen::Vector3d candidate = mesh.vertices[i] + config_.tangent_lambda * tangent;
     if (finiteVector(candidate) &&
+        (candidate - mesh.vertices[i]).norm() > kEps &&
         relocationAcceptedByAngleMetric(mesh, vf, static_cast<int>(i), candidate)) {
       mesh.vertices[i] = candidate;
+      ++accepted;
     }
   }
+  return accepted;
 }
 
 bool AdaIsoRemesher::relocationAcceptedByAngleMetric(
@@ -2652,7 +2737,7 @@ bool AdaIsoRemesher::relocationAcceptedByAngleMetric(
   if (after.target_metric_violation > before.target_metric_violation + kMetricViolationTol) {
     return false;
   }
-  return minAngleSafetyAccepted(
+  return minAngleQualityAccepted(
       before.min_angle_degrees,
       after.min_angle_degrees,
       config_.min_angle_floor_degrees);

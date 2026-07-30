@@ -1,5 +1,20 @@
 # Changelog
 
+## 5.3.0
+
+Behavior update:
+Splits remeshing into a size-field fitting stage followed by a quality repair
+stage.
+
+- Stage A now runs split and collapse only, using minimum-angle safety as an
+  admissibility constraint while fitting the target size field.
+- Stage B now runs flip and relocation only, using local minimum-angle repair as
+  the quality objective under a target-metric violation constraint.
+- Iteration summaries now include a `stage` label, `relocation_count`, and
+  aggregate size/quality stage operation counts.
+- Stage mesh snapshots now use stage-qualified names such as
+  `size_iter001_after_split.ply` and `quality_iter001_after_smooth.ply`.
+
 ## 5.2.1
 
 Behavior update:

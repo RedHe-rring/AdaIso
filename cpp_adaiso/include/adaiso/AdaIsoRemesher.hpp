@@ -91,10 +91,12 @@ struct AdaIsoConfig {
 
 struct AdaIsoStats {
   struct IterationStats {
+    std::string stage;
     int iteration = 0;
     int split_count = 0;
     int collapse_count = 0;
     int flip_count = 0;
+    int relocation_count = 0;
     std::size_t vertices = 0;
     std::size_t faces = 0;
     double qavg = 0.0;
@@ -112,6 +114,12 @@ struct AdaIsoStats {
   std::size_t vertices = 0;
   std::size_t faces = 0;
   std::vector<IterationStats> iterations;
+  int size_stage_iterations = 0;
+  int size_stage_splits = 0;
+  int size_stage_collapses = 0;
+  int quality_stage_iterations = 0;
+  int quality_stage_flips = 0;
+  int quality_stage_relocations = 0;
   double csf_assembly_time_ms = 0.0;
   double csf_factorization_time_ms = 0.0;
   double csf_solve_time_ms = 0.0;
@@ -153,6 +161,25 @@ class AdaIsoRemesher {
       const std::vector<double>& raw_curvature);
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
+  void runSizeFieldFittingStage(Mesh& mesh);
+  void runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection);
+  void recordIterationStats(
+      const std::string& stage,
+      int iteration,
+      int split_count,
+      int collapse_count,
+      int flip_count,
+      int relocation_count,
+      const Mesh& mesh);
+  void writeStageSnapshot(
+      const Mesh& mesh,
+      const std::string& stage,
+      int iteration,
+      const std::string& operation) const;
+  void writeIterationSnapshot(
+      const Mesh& mesh,
+      const std::string& stage,
+      int iteration) const;
   [[nodiscard]] int splitLongEdges(Mesh& mesh);
   void splitOneEdge(Mesh& mesh, int a, int b) const;
   [[nodiscard]] int collapseShortEdges(Mesh& mesh);
@@ -187,8 +214,8 @@ class AdaIsoRemesher {
       int c,
       int d) const;
   [[nodiscard]] std::vector<VertexRelocationClass> classifyVerticesForRelocation(const Mesh& mesh) const;
-  void relocateVertices(Mesh& mesh, const Mesh& original_for_projection);
-  void tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes);
+  [[nodiscard]] int relocateVertices(Mesh& mesh, const Mesh& original_for_projection);
+  [[nodiscard]] int tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes);
   [[nodiscard]] bool relocationAcceptedByAngleMetric(
       const Mesh& mesh,
       const std::vector<std::vector<int>>& vf,
