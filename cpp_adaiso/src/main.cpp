@@ -33,6 +33,7 @@ void printUsage(std::ostream& out) {
       << "  --export-all-stage-meshes <dir> Export every iteration's remesh stage snapshots\n"
       << "  --preprocess <0|1>         Default: 0\n"
       << "  --iters <n>                Default: 5\n"
+      << "  --stage-a-policy <name>    Experimental: split_collapse_no_guard|split_collapse_weak_guard|collapse_split_weak_guard\n"
       << "  --split-factor <v>        Override split hysteresis factor. Default: variant value\n"
       << "  --collapse-factor <v>     Override collapse hysteresis factor. Default: 0.8\n"
       << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
@@ -242,8 +243,10 @@ std::string buildSummaryJson(
   }
   out << "    \"preprocess\": " << (config.preprocess ? "true" : "false") << ",\n";
   out << "    \"global_iterations\": " << config.global_iterations << ",\n";
+  out << "    \"stage_a_policy\": \"" << adaiso::toString(config.stage_a_policy) << "\",\n";
   out << "    \"split_factor\": " << config.splitFactor() << ",\n";
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
+  out << "    \"split_min_angle_floor_degrees\": " << config.split_min_angle_floor_degrees << ",\n";
   out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
   out << "    \"max_flip_dihedral_degrees\": " << config.max_flip_dihedral_degrees << ",\n";
   out << "    \"min_angle_floor_degrees\": " << config.min_angle_floor_degrees << ",\n";
@@ -266,6 +269,16 @@ std::string buildSummaryJson(
   out << "    \"size_stage_iterations\": " << stats.size_stage_iterations << ",\n";
   out << "    \"size_stage_splits\": " << stats.size_stage_splits << ",\n";
   out << "    \"size_stage_collapses\": " << stats.size_stage_collapses << ",\n";
+  out << "    \"size_stage_long_edge_candidates\": " << stats.size_stage_long_edge_candidates << ",\n";
+  out << "    \"size_stage_split_accepted\": " << stats.size_stage_split_accepted << ",\n";
+  out << "    \"size_stage_split_rejected_by_angle\": " << stats.size_stage_split_rejected_by_angle << ",\n";
+  out << "    \"size_stage_short_edge_candidates\": " << stats.size_stage_short_edge_candidates << ",\n";
+  out << "    \"size_stage_collapse_accepted\": " << stats.size_stage_collapse_accepted << ",\n";
+  out << "    \"size_stage_collapse_rejected\": " << stats.size_stage_collapse_rejected << ",\n";
+  out << "    \"size_stage_final_violation\": " << stats.size_stage_final_violation << ",\n";
+  out << "    \"size_stage_final_min_angle_degrees\": " << stats.size_stage_final_min_angle_degrees << ",\n";
+  out << "    \"size_stage_final_angle_lt_10_pct\": " << stats.size_stage_final_angle_lt_10_pct << ",\n";
+  out << "    \"size_stage_final_angle_lt_20_pct\": " << stats.size_stage_final_angle_lt_20_pct << ",\n";
   out << "    \"quality_stage_iterations\": " << stats.quality_stage_iterations << ",\n";
   out << "    \"quality_stage_flips\": " << stats.quality_stage_flips << ",\n";
   out << "    \"quality_stage_relocations\": " << stats.quality_stage_relocations << ",\n";
@@ -342,6 +355,8 @@ int main(int argc, char** argv) {
         config.preprocess = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--iters") {
         config.global_iterations = std::stoi(requireValue(i, argc, argv, arg));
+      } else if (arg == "--stage-a-policy") {
+        config.stage_a_policy = adaiso::parseStageAPolicy(requireValue(i, argc, argv, arg));
       } else if (arg == "--split-factor") {
         config.split_factor_override = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--collapse-factor") {
@@ -398,6 +413,11 @@ int main(int argc, char** argv) {
         config.min_angle_floor_degrees < 0.0 ||
         config.min_angle_floor_degrees > 60.0) {
       throw std::runtime_error("min angle floor must be finite and in [0, 60]");
+    }
+    if (!std::isfinite(config.split_min_angle_floor_degrees) ||
+        config.split_min_angle_floor_degrees < 0.0 ||
+        config.split_min_angle_floor_degrees > 60.0) {
+      throw std::runtime_error("split min angle floor must be finite and in [0, 60]");
     }
     if (config.split_factor_override < 0.0 || !std::isfinite(config.split_factor_override)) {
       throw std::runtime_error("--split-factor must be finite and non-negative");

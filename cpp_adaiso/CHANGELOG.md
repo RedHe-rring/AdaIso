@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.3.2
+
+Behavior update:
+Adds Stage A diagnostics and ablation policies for staged remeshing.
+
+- Default Stage A policy is `split_collapse_no_guard`, restoring the v5.3.0
+  size-field fitting baseline after the v5.3.2 ablation showed the weak split
+  guard did not improve quality or violation.
+- Added experimental `--stage-a-policy` values for
+  `split_collapse_no_guard`, `split_collapse_weak_guard`, and
+  `collapse_split_weak_guard`.
+- Experimental weak split angle guard rejects only invalid patches or
+  candidates below the internal split minimum-angle floor.
+- Summary JSON now reports Stage A long/short edge candidates, accepted/rejected
+  operations, and final Stage A violation and angle statistics.
+
 ## 5.3.1
 
 Behavior update:

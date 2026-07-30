@@ -278,18 +278,9 @@ double minInnerAngleDegrees(const Eigen::Vector3d& a, const Eigen::Vector3d& b, 
   });
 }
 
-double maxInnerAngleDegrees(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c) {
-  return std::max({
-      innerAngleDegrees(a, b, c),
-      innerAngleDegrees(b, c, a),
-      innerAngleDegrees(c, a, b),
-  });
-}
-
 struct AnglePatchMetrics {
   bool valid = false;
   double min_angle_degrees = 0.0;
-  double max_angle_degrees = 0.0;
 };
 
 Eigen::Vector3d localPatchPoint(
@@ -304,7 +295,6 @@ AnglePatchMetrics evaluateAnglePatch(
   AnglePatchMetrics metrics;
   metrics.valid = true;
   metrics.min_angle_degrees = std::numeric_limits<double>::infinity();
-  metrics.max_angle_degrees = 0.0;
   bool checked_face = false;
 
   for (const auto& face : faces) {
@@ -323,14 +313,11 @@ AnglePatchMetrics evaluateAnglePatch(
     checked_face = true;
     metrics.min_angle_degrees =
         std::min(metrics.min_angle_degrees, minInnerAngleDegrees(p0, p1, p2));
-    metrics.max_angle_degrees =
-        std::max(metrics.max_angle_degrees, maxInnerAngleDegrees(p0, p1, p2));
   }
 
   if (!checked_face) {
     metrics.valid = false;
     metrics.min_angle_degrees = 0.0;
-    metrics.max_angle_degrees = 0.0;
   }
   return metrics;
 }
@@ -1802,6 +1789,35 @@ std::string toString(CurvatureMode mode) {
   return "unknown";
 }
 
+StageAPolicy parseStageAPolicy(const std::string& value) {
+  std::string lower = value;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lower == "split-collapse-no-guard" || lower == "split_collapse_no_guard") {
+    return StageAPolicy::SplitCollapseNoGuard;
+  }
+  if (lower == "split-collapse-weak-guard" || lower == "split_collapse_weak_guard") {
+    return StageAPolicy::SplitCollapseWeakGuard;
+  }
+  if (lower == "collapse-split-weak-guard" || lower == "collapse_split_weak_guard") {
+    return StageAPolicy::CollapseSplitWeakGuard;
+  }
+  throw std::runtime_error("unknown Stage A policy: " + value);
+}
+
+std::string toString(StageAPolicy policy) {
+  switch (policy) {
+    case StageAPolicy::SplitCollapseNoGuard:
+      return "split_collapse_no_guard";
+    case StageAPolicy::SplitCollapseWeakGuard:
+      return "split_collapse_weak_guard";
+    case StageAPolicy::CollapseSplitWeakGuard:
+      return "collapse_split_weak_guard";
+  }
+  return "unknown";
+}
+
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
@@ -1833,6 +1849,11 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
       config_.min_angle_floor_degrees < 0.0 ||
       config_.min_angle_floor_degrees > 60.0) {
     throw std::runtime_error("min angle floor must be finite and in [0, 60]");
+  }
+  if (!std::isfinite(config_.split_min_angle_floor_degrees) ||
+      config_.split_min_angle_floor_degrees < 0.0 ||
+      config_.split_min_angle_floor_degrees > 60.0) {
+    throw std::runtime_error("split min angle floor must be finite and in [0, 60]");
   }
 
   if (config_.target_error_delta < 0.0 || !std::isfinite(config_.target_error_delta)) {
@@ -1891,11 +1912,21 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
       std::cerr << "size stage iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
     }
 
-    const int collapse_count = collapseShortEdges(mesh);
-    mesh = removeDegenerateFaces(mesh);
-    writeStageSnapshot(mesh, "size", it + 1, "collapse");
-    const int split_count = splitLongEdges(mesh);
-    writeStageSnapshot(mesh, "size", it + 1, "split");
+    int split_count = 0;
+    int collapse_count = 0;
+    if (config_.stage_a_policy == StageAPolicy::CollapseSplitWeakGuard) {
+      collapse_count = collapseShortEdges(mesh);
+      mesh = removeDegenerateFaces(mesh);
+      writeStageSnapshot(mesh, "size", it + 1, "collapse");
+      split_count = splitLongEdges(mesh);
+      writeStageSnapshot(mesh, "size", it + 1, "split");
+    } else {
+      split_count = splitLongEdges(mesh);
+      writeStageSnapshot(mesh, "size", it + 1, "split");
+      collapse_count = collapseShortEdges(mesh);
+      mesh = removeDegenerateFaces(mesh);
+      writeStageSnapshot(mesh, "size", it + 1, "collapse");
+    }
 
     stats_.size_stage_splits += split_count;
     stats_.size_stage_collapses += collapse_count;
@@ -1907,6 +1938,13 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
       break;
     }
   }
+
+  const MeshSummary size_summary = summarizeMesh(mesh);
+  const EdgeRatioStats size_ratio_stats = edgeRatioStats(mesh);
+  stats_.size_stage_final_violation = size_ratio_stats.violation_rate;
+  stats_.size_stage_final_min_angle_degrees = size_summary.min_angle_degrees;
+  stats_.size_stage_final_angle_lt_10_pct = size_summary.angle_lt_10_pct;
+  stats_.size_stage_final_angle_lt_20_pct = size_summary.angle_lt_20_pct;
 }
 
 void AdaIsoRemesher::runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection) {
@@ -2137,6 +2175,7 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
         candidates.emplace_back(metric_length, a, b);
       }
     }
+    stats_.size_stage_long_edge_candidates += candidates.size();
     if (candidates.empty()) {
       break;
     }
@@ -2157,7 +2196,9 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
       if (!std::isfinite(metric_length) || metric_length <= config_.splitFactor()) {
         continue;
       }
-      if (!splitAcceptedByAngleGuard(mesh, e2f, a, b)) {
+      if (config_.stage_a_policy != StageAPolicy::SplitCollapseNoGuard &&
+          !splitAcceptedByAngleGuard(mesh, e2f, a, b)) {
+        ++stats_.size_stage_split_rejected_by_angle;
         continue;
       }
       selected.push_back(makeEdge(a, b));
@@ -2168,6 +2209,7 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
       break;
     }
     splitEdgesBatch(mesh, selected, target_field_);
+    stats_.size_stage_split_accepted += selected.size();
     total += static_cast<int>(selected.size());
   }
   return total;
@@ -2223,13 +2265,8 @@ bool AdaIsoRemesher::splitAcceptedByAngleGuard(
   if (!before.valid || !after.valid) {
     return false;
   }
-  if (after.min_angle_degrees + kMinAngleTolDegrees < before.min_angle_degrees) {
-    return false;
-  }
-  if (before.max_angle_degrees <= 90.0 + kMinAngleTolDegrees) {
-    return after.max_angle_degrees <= 90.0 + kMinAngleTolDegrees;
-  }
-  return after.max_angle_degrees <= before.max_angle_degrees + kMinAngleTolDegrees;
+  (void)before;
+  return after.min_angle_degrees + kMinAngleTolDegrees >= config_.split_min_angle_floor_degrees;
 }
 
 std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m) {
@@ -2326,6 +2363,7 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
         candidates.emplace_back(metric_length, length, a, b);
       }
     }
+    stats_.size_stage_short_edge_candidates += candidates.size();
     if (candidates.empty()) {
       break;
     }
@@ -2371,7 +2409,13 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     if (selected.empty()) {
       break;
     }
-    total += collapseEdgesBatch(mesh, selected, feature_strengths);
+    const int accepted = collapseEdgesBatch(mesh, selected, feature_strengths);
+    stats_.size_stage_collapse_accepted += static_cast<std::size_t>(accepted);
+    stats_.size_stage_collapse_rejected +=
+        candidates.size() > static_cast<std::size_t>(accepted)
+            ? candidates.size() - static_cast<std::size_t>(accepted)
+            : 0;
+    total += accepted;
   }
   return total;
 }

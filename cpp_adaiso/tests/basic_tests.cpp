@@ -715,6 +715,27 @@ void testCurvatureModeParsing() {
   assert(threw);
 }
 
+void testStageAPolicyParsing() {
+  assert(adaiso::parseStageAPolicy("split_collapse_no_guard") ==
+         adaiso::StageAPolicy::SplitCollapseNoGuard);
+  assert(adaiso::parseStageAPolicy("split-collapse-weak-guard") ==
+         adaiso::StageAPolicy::SplitCollapseWeakGuard);
+  assert(adaiso::parseStageAPolicy("COLLAPSE_SPLIT_WEAK_GUARD") ==
+         adaiso::StageAPolicy::CollapseSplitWeakGuard);
+  assert(adaiso::toString(adaiso::StageAPolicy::SplitCollapseNoGuard) == "split_collapse_no_guard");
+  assert(adaiso::toString(adaiso::StageAPolicy::SplitCollapseWeakGuard) == "split_collapse_weak_guard");
+  assert(adaiso::toString(adaiso::StageAPolicy::CollapseSplitWeakGuard) == "collapse_split_weak_guard");
+  assert(adaiso::AdaIsoConfig{}.stage_a_policy == adaiso::StageAPolicy::SplitCollapseNoGuard);
+
+  bool threw = false;
+  try {
+    (void)adaiso::parseStageAPolicy("strong-guard");
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+}
+
 void testHysteresisFactorOverrides() {
   {
     adaiso::AdaIsoConfig config;
@@ -785,6 +806,14 @@ void testRemeshSmoke() {
   assert(!iterations.empty());
   assert(remesher.stats().size_stage_iterations >= 1);
   assert(remesher.stats().size_stage_iterations <= config.global_iterations);
+  assert(remesher.stats().size_stage_split_accepted ==
+         static_cast<std::size_t>(remesher.stats().size_stage_splits));
+  assert(remesher.stats().size_stage_collapse_accepted ==
+         static_cast<std::size_t>(remesher.stats().size_stage_collapses));
+  assert(std::isfinite(remesher.stats().size_stage_final_violation));
+  assert(std::isfinite(remesher.stats().size_stage_final_min_angle_degrees));
+  assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_10_pct));
+  assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_20_pct));
   assert(remesher.stats().quality_stage_iterations >= 1);
   assert(remesher.stats().quality_stage_iterations <= config.global_iterations);
   for (const auto& iteration : iterations) {
@@ -1033,8 +1062,8 @@ void testStageMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
-      dir / "size_iter001_after_collapse.ply",
       dir / "size_iter001_after_split.ply",
+      dir / "size_iter001_after_collapse.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
   };
@@ -1063,8 +1092,8 @@ void testAllStageMeshExport() {
   output.validate();
 
   const std::vector<std::filesystem::path> expected = {
-      dir / "size_iter001_after_collapse.ply",
       dir / "size_iter001_after_split.ply",
+      dir / "size_iter001_after_collapse.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
   };
@@ -1200,6 +1229,21 @@ void testTargetFieldConfigValidation() {
     config.min_angle_floor_degrees = std::numeric_limits<double>::infinity();
     assert_invalid_config(config);
   }
+  {
+    adaiso::AdaIsoConfig config;
+    config.split_min_angle_floor_degrees = -0.1;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.split_min_angle_floor_degrees = 60.1;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.split_min_angle_floor_degrees = std::numeric_limits<double>::infinity();
+    assert_invalid_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -1317,6 +1361,58 @@ void testTargetMetricSplitPlacement() {
       }
     }
     assert(midpoint_found);
+  }
+}
+
+void testWeakSplitAngleGuard() {
+  const adaiso::Mesh input = makeEquilateralTriangle();
+  input.validate();
+
+  {
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Code;
+    config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+    config.target_error_delta = 1e-8;
+    config.global_iterations = 1;
+    config.max_split_passes = 1;
+    config.max_collapse_passes = 0;
+    config.max_flip_passes = 0;
+    config.preprocess = false;
+    config.tangent_lambda = 0.0;
+    config.enable_relocation_mls = false;
+    config.verbose = false;
+
+    adaiso::AdaIsoRemesher remesher(config);
+    const adaiso::Mesh output = remesher.remesh(input);
+    output.validate();
+    assert(remesher.stats().size_stage_long_edge_candidates > 0);
+    assert(remesher.stats().size_stage_split_accepted == 1);
+    assert(remesher.stats().size_stage_split_rejected_by_angle == 0);
+    assert(output.vertexCount() == input.vertexCount() + 1);
+  }
+
+  {
+    adaiso::AdaIsoConfig config;
+    config.variant = adaiso::Variant::Code;
+    config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+    config.target_error_delta = 1e-8;
+    config.global_iterations = 1;
+    config.max_split_passes = 1;
+    config.max_collapse_passes = 0;
+    config.max_flip_passes = 0;
+    config.preprocess = false;
+    config.tangent_lambda = 0.0;
+    config.enable_relocation_mls = false;
+    config.split_min_angle_floor_degrees = 60.0;
+    config.verbose = false;
+
+    adaiso::AdaIsoRemesher remesher(config);
+    const adaiso::Mesh output = remesher.remesh(input);
+    output.validate();
+    assert(remesher.stats().size_stage_long_edge_candidates > 0);
+    assert(remesher.stats().size_stage_split_accepted == 0);
+    assert(remesher.stats().size_stage_split_rejected_by_angle > 0);
+    assert(output.vertexCount() == input.vertexCount());
   }
 }
 
@@ -1443,6 +1539,7 @@ int main() {
   testTargetErrorCurvatureSizing();
   testEdgeRatioStats();
   testCurvatureModeParsing();
+  testStageAPolicyParsing();
   testHysteresisFactorOverrides();
   testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();
@@ -1454,6 +1551,7 @@ int main() {
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
   testTargetMetricSplitPlacement();
+  testWeakSplitAngleGuard();
   testFeatureAwareCollapsePlacement();
   testRemeshEdgeCases();
   testAreaSampledChamferDistance();

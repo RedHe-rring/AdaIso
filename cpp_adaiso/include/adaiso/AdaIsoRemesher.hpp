@@ -23,6 +23,12 @@ enum class CurvatureMode {
   PrincipalMax,
 };
 
+enum class StageAPolicy {
+  SplitCollapseNoGuard,
+  SplitCollapseWeakGuard,
+  CollapseSplitWeakGuard,
+};
+
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
   double std_ratio = 0.0;
@@ -82,6 +88,8 @@ struct AdaIsoConfig {
   double target_h_max_factor = 5.0;
   double auto_delta_quantile = 0.5;
   double min_angle_floor_degrees = 10.0;
+  double split_min_angle_floor_degrees = 1.0;
+  StageAPolicy stage_a_policy = StageAPolicy::SplitCollapseNoGuard;
   bool verbose = true;
 
   [[nodiscard]] double splitFactor() const;
@@ -117,6 +125,16 @@ struct AdaIsoStats {
   int size_stage_iterations = 0;
   int size_stage_splits = 0;
   int size_stage_collapses = 0;
+  std::size_t size_stage_long_edge_candidates = 0;
+  std::size_t size_stage_split_accepted = 0;
+  std::size_t size_stage_split_rejected_by_angle = 0;
+  std::size_t size_stage_short_edge_candidates = 0;
+  std::size_t size_stage_collapse_accepted = 0;
+  std::size_t size_stage_collapse_rejected = 0;
+  double size_stage_final_violation = 0.0;
+  double size_stage_final_min_angle_degrees = 0.0;
+  double size_stage_final_angle_lt_10_pct = 0.0;
+  double size_stage_final_angle_lt_20_pct = 0.0;
   int quality_stage_iterations = 0;
   int quality_stage_flips = 0;
   int quality_stage_relocations = 0;
@@ -241,6 +259,8 @@ class AdaIsoRemesher {
 [[nodiscard]] std::string toString(Variant variant);
 [[nodiscard]] CurvatureMode parseCurvatureMode(const std::string& value);
 [[nodiscard]] std::string toString(CurvatureMode mode);
+[[nodiscard]] StageAPolicy parseStageAPolicy(const std::string& value);
+[[nodiscard]] std::string toString(StageAPolicy policy);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,
