@@ -131,6 +131,14 @@ struct AdaIsoStats {
   std::size_t size_stage_short_edge_candidates = 0;
   std::size_t size_stage_collapse_accepted = 0;
   std::size_t size_stage_collapse_rejected = 0;
+  std::size_t size_stage_collapse_rejected_by_boundary = 0;
+  std::size_t size_stage_collapse_rejected_by_non_manifold = 0;
+  std::size_t size_stage_collapse_rejected_by_batch_conflict = 0;
+  std::size_t size_stage_collapse_rejected_by_link_condition = 0;
+  std::size_t size_stage_collapse_rejected_by_degenerate_patch = 0;
+  std::size_t size_stage_collapse_rejected_by_target_length = 0;
+  std::size_t size_stage_collapse_rejected_by_angle = 0;
+  std::size_t size_stage_collapse_rejected_by_batch_duplicate = 0;
   double size_stage_final_violation = 0.0;
   double size_stage_final_min_angle_degrees = 0.0;
   double size_stage_final_angle_lt_10_pct = 0.0;
@@ -171,6 +179,15 @@ class AdaIsoRemesher {
     Smooth
   };
 
+  enum class CollapseRejectReason {
+    None,
+    NonManifold,
+    LinkCondition,
+    DegeneratePatch,
+    TargetLength,
+    Angle
+  };
+
   [[nodiscard]] Mesh subRemesh(Mesh mesh) const;
   void buildTargetLengths(const Mesh& mesh);
   [[nodiscard]] std::vector<double> computeCsf(const Mesh& mesh);
@@ -206,7 +223,7 @@ class AdaIsoRemesher {
       int b) const;
   void splitOneEdge(Mesh& mesh, int a, int b) const;
   [[nodiscard]] int collapseShortEdges(Mesh& mesh);
-  [[nodiscard]] bool collapseValid(
+  [[nodiscard]] CollapseRejectReason collapseRejectReason(
       const Mesh& mesh,
       int a,
       int b,

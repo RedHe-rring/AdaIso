@@ -810,6 +810,19 @@ void testRemeshSmoke() {
          static_cast<std::size_t>(remesher.stats().size_stage_splits));
   assert(remesher.stats().size_stage_collapse_accepted ==
          static_cast<std::size_t>(remesher.stats().size_stage_collapses));
+  const std::size_t collapse_reject_reasons =
+      remesher.stats().size_stage_collapse_rejected_by_boundary +
+      remesher.stats().size_stage_collapse_rejected_by_non_manifold +
+      remesher.stats().size_stage_collapse_rejected_by_batch_conflict +
+      remesher.stats().size_stage_collapse_rejected_by_link_condition +
+      remesher.stats().size_stage_collapse_rejected_by_degenerate_patch +
+      remesher.stats().size_stage_collapse_rejected_by_target_length +
+      remesher.stats().size_stage_collapse_rejected_by_angle +
+      remesher.stats().size_stage_collapse_rejected_by_batch_duplicate;
+  assert(collapse_reject_reasons == remesher.stats().size_stage_collapse_rejected);
+  assert(remesher.stats().size_stage_collapse_accepted +
+             remesher.stats().size_stage_collapse_rejected ==
+         remesher.stats().size_stage_short_edge_candidates);
   assert(std::isfinite(remesher.stats().size_stage_final_violation));
   assert(std::isfinite(remesher.stats().size_stage_final_min_angle_degrees));
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_10_pct));

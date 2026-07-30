@@ -275,6 +275,22 @@ std::string buildSummaryJson(
   out << "    \"size_stage_short_edge_candidates\": " << stats.size_stage_short_edge_candidates << ",\n";
   out << "    \"size_stage_collapse_accepted\": " << stats.size_stage_collapse_accepted << ",\n";
   out << "    \"size_stage_collapse_rejected\": " << stats.size_stage_collapse_rejected << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_boundary\": "
+      << stats.size_stage_collapse_rejected_by_boundary << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_non_manifold\": "
+      << stats.size_stage_collapse_rejected_by_non_manifold << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_batch_conflict\": "
+      << stats.size_stage_collapse_rejected_by_batch_conflict << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_link_condition\": "
+      << stats.size_stage_collapse_rejected_by_link_condition << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_degenerate_patch\": "
+      << stats.size_stage_collapse_rejected_by_degenerate_patch << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_target_length\": "
+      << stats.size_stage_collapse_rejected_by_target_length << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_angle\": "
+      << stats.size_stage_collapse_rejected_by_angle << ",\n";
+  out << "    \"size_stage_collapse_rejected_by_batch_duplicate\": "
+      << stats.size_stage_collapse_rejected_by_batch_duplicate << ",\n";
   out << "    \"size_stage_final_violation\": " << stats.size_stage_final_violation << ",\n";
   out << "    \"size_stage_final_min_angle_degrees\": " << stats.size_stage_final_min_angle_degrees << ",\n";
   out << "    \"size_stage_final_angle_lt_10_pct\": " << stats.size_stage_final_angle_lt_10_pct << ",\n";

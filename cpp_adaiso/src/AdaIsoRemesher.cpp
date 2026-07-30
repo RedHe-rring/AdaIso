@@ -2344,6 +2344,29 @@ void AdaIsoRemesher::splitOneEdge(Mesh& mesh, int a, int b) const {
 
 int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
   int total = 0;
+  auto record_reject = [this](CollapseRejectReason reason) {
+    ++stats_.size_stage_collapse_rejected;
+    switch (reason) {
+      case CollapseRejectReason::None:
+        break;
+      case CollapseRejectReason::NonManifold:
+        ++stats_.size_stage_collapse_rejected_by_non_manifold;
+        break;
+      case CollapseRejectReason::LinkCondition:
+        ++stats_.size_stage_collapse_rejected_by_link_condition;
+        break;
+      case CollapseRejectReason::DegeneratePatch:
+        ++stats_.size_stage_collapse_rejected_by_degenerate_patch;
+        break;
+      case CollapseRejectReason::TargetLength:
+        ++stats_.size_stage_collapse_rejected_by_target_length;
+        break;
+      case CollapseRejectReason::Angle:
+        ++stats_.size_stage_collapse_rejected_by_angle;
+        break;
+    }
+  };
+
   for (int pass = 0; pass < config_.max_collapse_passes; ++pass) {
     const auto boundary = boundaryVertices(mesh);
     const auto e2f = edgeFaces(mesh);
@@ -2354,9 +2377,6 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     for (const auto& item : e2f) {
       const int a = item.first.first;
       const int b = item.first.second;
-      if (boundary.find(a) != boundary.end() || boundary.find(b) != boundary.end()) {
-        continue;
-      }
       const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
       const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
       if (metric_length < config_.collapseFactor()) {
@@ -2380,8 +2400,14 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     for (const auto& [ratio, old_length, a, b] : candidates) {
       (void)ratio;
       (void)old_length;
+      if (boundary.find(a) != boundary.end() || boundary.find(b) != boundary.end()) {
+        ++stats_.size_stage_collapse_rejected;
+        ++stats_.size_stage_collapse_rejected_by_boundary;
+        continue;
+      }
       auto it = e2f.find(makeEdge(a, b));
       if (it != e2f.end() && it->second.size() > 2) {
+        record_reject(CollapseRejectReason::NonManifold);
         continue;
       }
       std::unordered_set<int> footprint;
@@ -2398,9 +2424,14 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
         }
       }
       if (conflicts) {
+        ++stats_.size_stage_collapse_rejected;
+        ++stats_.size_stage_collapse_rejected_by_batch_conflict;
         continue;
       }
-      if (!collapseValid(mesh, a, b, neigh, e2f, vf, feature_strengths)) {
+      const CollapseRejectReason reason =
+          collapseRejectReason(mesh, a, b, neigh, e2f, vf, feature_strengths);
+      if (reason != CollapseRejectReason::None) {
+        record_reject(reason);
         continue;
       }
       selected.push_back(makeEdge(a, b));
@@ -2411,16 +2442,17 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
     }
     const int accepted = collapseEdgesBatch(mesh, selected, feature_strengths);
     stats_.size_stage_collapse_accepted += static_cast<std::size_t>(accepted);
-    stats_.size_stage_collapse_rejected +=
-        candidates.size() > static_cast<std::size_t>(accepted)
-            ? candidates.size() - static_cast<std::size_t>(accepted)
-            : 0;
+    if (selected.size() > static_cast<std::size_t>(accepted)) {
+      const std::size_t duplicate_rejects = selected.size() - static_cast<std::size_t>(accepted);
+      stats_.size_stage_collapse_rejected += duplicate_rejects;
+      stats_.size_stage_collapse_rejected_by_batch_duplicate += duplicate_rejects;
+    }
     total += accepted;
   }
   return total;
 }
 
-bool AdaIsoRemesher::collapseValid(
+AdaIsoRemesher::CollapseRejectReason AdaIsoRemesher::collapseRejectReason(
     const Mesh& mesh,
     int a,
     int b,
@@ -2429,9 +2461,12 @@ bool AdaIsoRemesher::collapseValid(
     const std::vector<std::vector<int>>& vf,
     const std::vector<double>& feature_strengths) const {
   const Eigen::Vector3d candidate = collapsePoint(mesh, a, b, feature_strengths);
+  if (!candidate.allFinite()) {
+    return CollapseRejectReason::TargetLength;
+  }
   const auto incident_it = e2f.find(makeEdge(a, b));
   if (incident_it == e2f.end()) {
-    return false;
+    return CollapseRejectReason::NonManifold;
   }
 
   std::unordered_set<int> opposite;
@@ -2452,7 +2487,7 @@ bool AdaIsoRemesher::collapseValid(
     }
   }
   if (!unorderedSetsEqual(link_intersection, opposite)) {
-    return false;
+    return CollapseRejectReason::LinkCondition;
   }
 
   std::unordered_set<int> related = neigh[static_cast<std::size_t>(a)];
@@ -2460,9 +2495,12 @@ bool AdaIsoRemesher::collapseValid(
   related.erase(a);
   related.erase(b);
   if (related.size() < 3) {
-    return false;
+    return CollapseRejectReason::DegeneratePatch;
   }
   const double candidate_target = targetAt(candidate);
+  if (!std::isfinite(candidate_target)) {
+    return CollapseRejectReason::TargetLength;
+  }
   for (int n : related) {
     const double length = (candidate - mesh.vertices[static_cast<std::size_t>(n)]).norm();
     const double metric_length = targetMetricLength(
@@ -2470,7 +2508,7 @@ bool AdaIsoRemesher::collapseValid(
         candidate_target,
         targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
     if (!std::isfinite(metric_length) || metric_length > config_.splitFactor()) {
-      return false;
+      return CollapseRejectReason::TargetLength;
     }
   }
 
@@ -2506,15 +2544,19 @@ bool AdaIsoRemesher::collapseValid(
         true);
 
     if (!before.valid || !after.valid ||
-        !minAngleSafetyAccepted(
+        !std::isfinite(before.min_angle_degrees) ||
+        !std::isfinite(after.min_angle_degrees)) {
+      return CollapseRejectReason::DegeneratePatch;
+    }
+    if (!minAngleSafetyAccepted(
             before.min_angle_degrees,
             after.min_angle_degrees,
             config_.min_angle_floor_degrees)) {
-      return false;
+      return CollapseRejectReason::Angle;
     }
   }
 
-  return true;
+  return CollapseRejectReason::None;
 }
 
 Eigen::Vector3d AdaIsoRemesher::collapsePoint(

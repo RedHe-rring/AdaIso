@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.3.3
+
+Behavior update:
+Adds collapse rejection reason diagnostics for the staged size-field fitting
+phase.
+
+- Collapse now reports why short-edge candidates were rejected, split into
+  boundary, non-manifold, batch conflict, link condition, degenerate patch,
+  target length, angle, and batch duplicate categories.
+- The v5.3.3 diagnostics do not change collapse acceptance rules; they only
+  make Stage A recovery failures measurable in summary JSON.
+- Project version metadata updated to `5.3.3`.
+
 ## 5.3.2
 
 Behavior update:
