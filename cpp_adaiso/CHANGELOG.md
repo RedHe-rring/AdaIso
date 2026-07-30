@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.2.1
+
+Behavior update:
+Replaces mandatory minimum-angle improvement with a minimum-angle safety
+constraint for local operation acceptance.
+
+- Collapse, flip, and relocation now reject candidates only when they would
+  create a local minimum angle below `min(before_min_angle, angle_floor)`.
+- Flip no longer accepts an operation solely because it improves minimum angle;
+  target-metric violation and valence remain the deciding objectives after the
+  angle safety check.
+- Relocation now allows non-degrading smoothing candidates instead of requiring
+  strict one-ring minimum-angle improvement.
+
 ## 5.2.0
 
 Behavior update:

@@ -428,15 +428,12 @@ int valenceObjective(
          std::abs(current(d) + dd - target(d));
 }
 
-bool minAngleCollapseAccepted(double before_min_angle, double after_min_angle, double floor_degrees) {
+bool minAngleSafetyAccepted(double before_min_angle, double after_min_angle, double floor_degrees) {
   if (!std::isfinite(before_min_angle) || !std::isfinite(after_min_angle)) {
     return false;
   }
-  if (before_min_angle < floor_degrees) {
-    return after_min_angle > before_min_angle + kMinAngleTolDegrees;
-  }
-  return after_min_angle + kMinAngleTolDegrees >= floor_degrees &&
-         after_min_angle + kMinAngleTolDegrees >= before_min_angle;
+  const double required_min_angle = std::min(before_min_angle, floor_degrees);
+  return after_min_angle + kMinAngleTolDegrees >= required_min_angle;
 }
 
 double minQuality(const Mesh& mesh) {
@@ -2276,7 +2273,7 @@ bool AdaIsoRemesher::collapseValid(
         true);
 
     if (!before.valid || !after.valid ||
-        !minAngleCollapseAccepted(
+        !minAngleSafetyAccepted(
             before.min_angle_degrees,
             after.min_angle_degrees,
             config_.min_angle_floor_degrees)) {
@@ -2480,10 +2477,10 @@ bool AdaIsoRemesher::flipAcceptedByAngleMetric(
   if (!before.valid || !after.valid) {
     return false;
   }
-  if (after.min_angle_degrees > before.min_angle_degrees + kMinAngleTolDegrees) {
-    return true;
-  }
-  if (after.min_angle_degrees + kMinAngleTolDegrees < before.min_angle_degrees) {
+  if (!minAngleSafetyAccepted(
+          before.min_angle_degrees,
+          after.min_angle_degrees,
+          config_.min_angle_floor_degrees)) {
     return false;
   }
   if (after.target_metric_violation + kMetricViolationTol < before.target_metric_violation) {
@@ -2655,7 +2652,10 @@ bool AdaIsoRemesher::relocationAcceptedByAngleMetric(
   if (after.target_metric_violation > before.target_metric_violation + kMetricViolationTol) {
     return false;
   }
-  return after.min_angle_degrees > before.min_angle_degrees + kMinAngleTolDegrees;
+  return minAngleSafetyAccepted(
+      before.min_angle_degrees,
+      after.min_angle_degrees,
+      config_.min_angle_floor_degrees);
 }
 
 std::vector<Eigen::Vector3d> AdaIsoRemesher::mlsProject(
