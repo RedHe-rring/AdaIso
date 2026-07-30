@@ -456,8 +456,7 @@ void testTargetErrorCurvatureSizing() {
   const adaiso::Mesh triangle = makeSingleTriangle();
   const double mean_length = adaiso::meanEdgeLength(triangle);
   const double bbox_diagonal = std::sqrt(2.0);
-  const double delta = 0.01;
-  const double h_ref_factor = 0.6;
+  const double delta = 0.1;
   const double h_max_factor = 3.0;
   const auto varying = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
@@ -465,20 +464,25 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
-      h_ref_factor,
       h_max_factor,
-      adaiso::TargetErrorCurvatureReference::Max);
+      0.5);
   assert(varying.target_lengths.size() == triangle.vertexCount());
   assert(varying.target_lengths[0] > varying.target_lengths[1]);
   assert(varying.target_lengths[1] > varying.target_lengths[2]);
+  assert(varying.local_edge_medians.size() == triangle.vertexCount());
+  assert(varying.local_deltas.size() == triangle.vertexCount());
   assert(std::isfinite(varying.estimated_faces));
   assert(varying.estimated_faces > 0.0);
-  assertNear(varying.h_min, std::sqrt(6.0 * delta / 16.0 - 3.0 * delta * delta));
+  assertNear(varying.h_min, 0.25 * mean_length);
   assertNear(varying.h_max, h_max_factor * mean_length);
-  assertNear(varying.kappa_ref, 16.0);
   assertNear(varying.kappa_max, 16.0);
+  assertNear(varying.auto_delta_quantile, 0.5);
+  assertNear(varying.h_min_safe_factor, 0.25);
   assertNear(varying.target_error_delta, delta);
   assertNear(varying.target_error_bbox_ratio, delta / bbox_diagonal);
+  assertNear(varying.target_lengths[0], std::sqrt(6.0 * delta / 1.0 - 3.0 * delta * delta));
+  assertNear(varying.target_lengths[1], std::sqrt(6.0 * delta / 4.0 - 3.0 * delta * delta));
+  assertNear(varying.target_lengths[2], 0.25 * mean_length);
   assertNear(
       adaiso::detail::estimateTargetFaceCount(triangle, varying.target_lengths),
       varying.estimated_faces,
@@ -490,9 +494,8 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
-      h_ref_factor,
       h_max_factor,
-      adaiso::TargetErrorCurvatureReference::Max);
+      0.5);
   assert(constant.target_lengths.size() == triangle.vertexCount());
   assertNear(constant.target_lengths[0], constant.target_lengths[1], 1e-12);
   assertNear(constant.target_lengths[1], constant.target_lengths[2], 1e-12);
@@ -505,41 +508,25 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       0.0,
-      h_ref_factor,
       h_max_factor,
-      adaiso::TargetErrorCurvatureReference::Max);
-  const double h_ref = h_ref_factor * mean_length;
-  const double expected_auto_delta = 1.0 - std::sqrt(1.0 - h_ref * h_ref / 3.0);
+      0.5);
+  const double diagonal_median = (1.0 + std::sqrt(2.0)) * 0.5;
+  const double expected_auto_delta = diagonal_median * diagonal_median / 6.0;
   assertNear(automatic.target_error_delta, expected_auto_delta);
-  assertNear(automatic.h_min, h_ref, 1e-12);
+  assertNear(automatic.local_edge_medians[0], 1.0);
+  assertNear(automatic.local_edge_medians[1], diagonal_median);
+  assertNear(automatic.local_edge_medians[2], diagonal_median);
 
-  const auto p95_reference = adaiso::detail::targetErrorCurvatureLengths(
+  const auto q95 = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
-      {0.1, 0.4, 1.0},
+      {1.0, 1.0, 1.0},
       mean_length,
       bbox_diagonal,
       0.0,
-      h_ref_factor,
       h_max_factor,
-      adaiso::TargetErrorCurvatureReference::P95);
-  assertNear(p95_reference.kappa_ref, 0.94);
-  assertNear(p95_reference.kappa_max, 1.0);
-  const double expected_p95_delta =
-      (1.0 - std::sqrt(1.0 - (0.94 * 0.94 * h_ref * h_ref) / 3.0)) / 0.94;
-  assertNear(p95_reference.target_error_delta, expected_p95_delta);
-  assertNear(p95_reference.h_min, h_ref, 1e-12);
-
-  const auto p99_reference = adaiso::detail::targetErrorCurvatureLengths(
-      triangle,
-      {1.0, 4.0, 100.0},
-      mean_length,
-      bbox_diagonal,
-      delta,
-      h_ref_factor,
-      h_max_factor,
-      adaiso::TargetErrorCurvatureReference::P99);
-  assertNear(p99_reference.kappa_ref, 98.08);
-  assertNear(p99_reference.kappa_max, 100.0);
+      0.95);
+  assertNear(q95.target_error_delta, expected_auto_delta);
+  assertNear(q95.auto_delta_quantile, 0.95);
 
   const auto flat = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
@@ -547,12 +534,11 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
-      h_ref_factor,
       h_max_factor,
-      adaiso::TargetErrorCurvatureReference::Max);
+      0.5);
   assert(flat.flat_fallback);
   assert(flat.target_lengths.size() == triangle.vertexCount());
-  assertNear(flat.h_min, flat.h_max);
+  assertNear(flat.h_min, 0.25 * mean_length);
   assertNear(flat.target_lengths[0], flat.h_max);
   assertNear(flat.target_lengths[1], flat.h_max);
   assertNear(flat.target_lengths[2], flat.h_max);
@@ -574,9 +560,8 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         1.0,
         0.01,
-        0.5,
         5.0,
-        adaiso::TargetErrorCurvatureReference::Max);
+        0.5);
   });
   const auto nonfinite = adaiso::detail::targetErrorCurvatureLengths(
       triangle,
@@ -584,9 +569,8 @@ void testTargetErrorCurvatureSizing() {
       mean_length,
       bbox_diagonal,
       delta,
-      h_ref_factor,
       h_max_factor,
-      adaiso::TargetErrorCurvatureReference::Max);
+      0.5);
   assertFiniteValues(nonfinite.target_lengths);
   expect_throw([] {
     (void)adaiso::detail::targetErrorCurvatureLengths(
@@ -595,9 +579,8 @@ void testTargetErrorCurvatureSizing() {
         0.0,
         1.0,
         0.01,
-        0.5,
         5.0,
-        adaiso::TargetErrorCurvatureReference::Max);
+        0.5);
   });
   expect_throw([] {
     (void)adaiso::detail::targetErrorCurvatureLengths(
@@ -606,9 +589,8 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         0.0,
         0.01,
-        0.5,
         5.0,
-        adaiso::TargetErrorCurvatureReference::Max);
+        0.5);
   });
   expect_throw([] {
     (void)adaiso::detail::targetErrorCurvatureLengths(
@@ -616,10 +598,19 @@ void testTargetErrorCurvatureSizing() {
         {1.0, 2.0, 3.0},
         1.0,
         1.0,
-        3.0,
-        0.5,
+        0.01,
         5.0,
-        adaiso::TargetErrorCurvatureReference::Max);
+        -0.1);
+  });
+  expect_throw([] {
+    (void)adaiso::detail::targetErrorCurvatureLengths(
+        makeSingleTriangle(),
+        {1.0, 2.0, 3.0},
+        1.0,
+        1.0,
+        0.01,
+        5.0,
+        1.1);
   });
   expect_throw([] {
     (void)adaiso::detail::targetErrorCurvatureLengths(
@@ -629,19 +620,7 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         0.01,
         0.0,
-        5.0,
-        adaiso::TargetErrorCurvatureReference::Max);
-  });
-  expect_throw([] {
-    (void)adaiso::detail::targetErrorCurvatureLengths(
-        makeSingleTriangle(),
-        {1.0, 2.0, 3.0},
-        1.0,
-        1.0,
-        0.01,
-        0.5,
-        0.0,
-        adaiso::TargetErrorCurvatureReference::Max);
+        0.5);
   });
   expect_throw([] {
     adaiso::Mesh empty;
@@ -651,9 +630,8 @@ void testTargetErrorCurvatureSizing() {
         1.0,
         1.0,
         0.01,
-        0.5,
         5.0,
-        adaiso::TargetErrorCurvatureReference::Max);
+        0.5);
   });
 }
 
@@ -721,29 +699,6 @@ void testCurvatureModeParsing() {
   bool threw = false;
   try {
     (void)adaiso::parseCurvatureMode("gaussian");
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  assert(threw);
-}
-
-void testTargetErrorCurvatureReferenceParsing() {
-  assert(
-      adaiso::parseTargetErrorCurvatureReference("max") ==
-      adaiso::TargetErrorCurvatureReference::Max);
-  assert(
-      adaiso::parseTargetErrorCurvatureReference("P99") ==
-      adaiso::TargetErrorCurvatureReference::P99);
-  assert(
-      adaiso::parseTargetErrorCurvatureReference("p95") ==
-      adaiso::TargetErrorCurvatureReference::P95);
-  assert(adaiso::toString(adaiso::TargetErrorCurvatureReference::Max) == "max");
-  assert(adaiso::toString(adaiso::TargetErrorCurvatureReference::P99) == "p99");
-  assert(adaiso::toString(adaiso::TargetErrorCurvatureReference::P95) == "p95");
-
-  bool threw = false;
-  try {
-    (void)adaiso::parseTargetErrorCurvatureReference("median");
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -857,6 +812,7 @@ void testTargetFieldDiagnosticExport() {
       dir / "csf_curvature_heat_shared.ply",
       dir / "raw_curvature_heat_independent.ply",
       dir / "csf_curvature_heat_independent.ply",
+      dir / "local_delta_heat.ply",
       dir / "target_h_heat.ply",
       dir / "target_h_heat_observed.ply",
       dir / "output_target_h_samebar.ply",
@@ -875,7 +831,7 @@ void testTargetFieldDiagnosticExport() {
     std::ifstream vertices(dir / "vertices.csv");
     std::string header;
     std::getline(vertices, header);
-    assert(header == "vertex_id,x,y,z,raw_curvature,csf_curvature,target_h");
+    assert(header == "vertex_id,x,y,z,raw_curvature,csf_curvature,local_edge_median,local_delta,target_h");
 
     std::ifstream edges(dir / "edges.csv");
     std::getline(edges, header);
@@ -898,8 +854,13 @@ void testTargetFieldDiagnosticExport() {
       field_stats_text += line;
       field_stats_text += '\n';
     }
-    assert(field_stats_text.find("\"kappa_reference\": \"max\"") != std::string::npos);
-    assert(field_stats_text.find("\"kappa_ref\"") != std::string::npos);
+    assert(field_stats_text.find("\"auto_delta_source\": \"input_resolution_csf_curvature\"") != std::string::npos);
+    assert(field_stats_text.find("\"auto_delta_quantile\"") != std::string::npos);
+    assert(field_stats_text.find("\"h_min_safe_factor\"") != std::string::npos);
+    assert(field_stats_text.find("\"local_delta_min\"") != std::string::npos);
+    assert(field_stats_text.find("\"local_delta_q50\"") != std::string::npos);
+    assert(field_stats_text.find("\"local_delta_q95\"") != std::string::npos);
+    assert(field_stats_text.find("\"local_delta_max\"") != std::string::npos);
     assert(field_stats_text.find("\"kappa_max\"") != std::string::npos);
   }
 
@@ -915,12 +876,14 @@ void testTargetFieldDiagnosticExport() {
     assert(color_scales_text.find("\"csf_curvature_shared\"") != std::string::npos);
     assert(color_scales_text.find("\"raw_curvature_independent\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_independent\"") != std::string::npos);
+    assert(color_scales_text.find("\"local_delta\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h_observed\"") != std::string::npos);
     assert(color_scales_text.find("\"raw_curvature_heat_shared.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_heat_shared.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"raw_curvature_heat_independent.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"csf_curvature_heat_independent.ply\"") != std::string::npos);
+    assert(color_scales_text.find("\"local_delta_heat.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h_heat.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"target_h_heat_observed.ply\"") != std::string::npos);
     assert(color_scales_text.find("\"inverted\": true") != std::string::npos);
@@ -949,7 +912,7 @@ void testTargetFieldDiagnosticExport() {
     while (std::getline(vertices, line)) {
       std::stringstream row(line);
       std::string cell;
-      for (int column = 0; column < 6; ++column) {
+      for (int column = 0; column < 8; ++column) {
         std::getline(row, cell, ',');
       }
       std::getline(row, cell, ',');
@@ -1183,12 +1146,17 @@ void testTargetFieldConfigValidation() {
   }
   {
     adaiso::AdaIsoConfig config;
-    config.target_error_h_ref_factor = 0.0;
+    config.auto_delta_quantile = -0.1;
     assert_invalid_config(config);
   }
   {
     adaiso::AdaIsoConfig config;
-    config.target_error_h_ref_factor = std::numeric_limits<double>::infinity();
+    config.auto_delta_quantile = 1.1;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.auto_delta_quantile = std::numeric_limits<double>::infinity();
     assert_invalid_config(config);
   }
 }
@@ -1428,7 +1396,6 @@ int main() {
   testTargetErrorCurvatureSizing();
   testEdgeRatioStats();
   testCurvatureModeParsing();
-  testTargetErrorCurvatureReferenceParsing();
   testHysteresisFactorOverrides();
   testRobustMeanCurvatureRemeshInitialization();
   testRemeshSmoke();

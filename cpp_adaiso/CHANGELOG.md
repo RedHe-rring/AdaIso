@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.1.5
+
+Behavior update:
+Replaces the previous `kappa_ref + h_ref_factor` auto-delta sizing with an
+input-resolution-aware CSF curvature sizing field.
+
+- Auto delta now comes from an area-weighted quantile of per-vertex local
+  tolerances estimated from CSF curvature and incident-edge median length.
+- Added `--auto-delta-quantile` and `AdaIsoConfig::auto_delta_quantile`.
+- Removed `--target-error-h-ref-factor`, `--auto-delta-kappa-ref`, and the
+  corresponding `AdaIsoConfig`/diagnostic fields.
+- Target-field diagnostics now export `local_edge_median`, `local_delta`, and
+  `local_delta_heat.ply`.
+
 ## 5.1.4
 
 Feature update:

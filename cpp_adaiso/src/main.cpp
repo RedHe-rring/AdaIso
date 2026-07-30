@@ -24,9 +24,8 @@ void printUsage(std::ostream& out) {
       << "  --variant <code|paper>     Default: code\n"
       << "  --curvature-mode <normal-angle|robust-mean|principal-max> Default: principal-max\n"
       << "  --csf-alpha <value>        Screened CSF smoothing strength. Default: 2.0\n"
-      << "  --target-error-delta <v>   Absolute error tolerance. Default: auto from kappa_max and mean edge\n"
-      << "  --target-error-h-ref-factor <v> Auto delta reference h as a multiple of mean edge. Default: 0.5\n"
-      << "  --auto-delta-kappa-ref <max|p99|p95> Curvature reference for auto delta. Default: max\n"
+      << "  --target-error-delta <v>   Absolute error tolerance. Default: auto from input resolution and CSF curvature\n"
+      << "  --auto-delta-quantile <v>  Area-weighted local delta quantile in [0, 1]. Default: 0.5\n"
       << "  --target-h-max-factor <v>  h_max as a multiple of mean edge length. Default: 5.0\n"
       << "  --export-target-field <dir> Export target-field CSV/PLY diagnostics\n"
       << "  --export-iteration-meshes <dir> Export per-iteration remesh snapshots\n"
@@ -90,6 +89,14 @@ double parsePositiveDouble(const std::string& value, const std::string& option) 
   const double parsed = std::stod(value);
   if (!std::isfinite(parsed) || parsed <= 0.0) {
     throw std::runtime_error(option + " must be finite and positive");
+  }
+  return parsed;
+}
+
+double parseUnitIntervalDouble(const std::string& value, const std::string& option) {
+  const double parsed = std::stod(value);
+  if (!std::isfinite(parsed) || parsed < 0.0 || parsed > 1.0) {
+    throw std::runtime_error(option + " must be finite and in [0, 1]");
   }
   return parsed;
 }
@@ -205,15 +212,15 @@ std::string buildSummaryJson(
   out << "    \"target_lookup\": \"surface_barycentric\",\n";
   out << "    \"csf_alpha\": " << config.csf_smoothing_alpha << ",\n";
   out << "    \"target_error_delta\": " << stats.target_error_delta << ",\n";
-  out << "    \"target_error_h_ref_factor\": " << config.target_error_h_ref_factor << ",\n";
+  out << "    \"auto_delta_source\": \"input_resolution_csf_curvature\",\n";
+  out << "    \"auto_delta_quantile\": " << config.auto_delta_quantile << ",\n";
+  out << "    \"h_min_safe_factor\": " << stats.target_h_min_safe_factor << ",\n";
   out << "    \"target_error_bbox_ratio\": " << stats.target_error_bbox_ratio << ",\n";
   out << "    \"bbox_diagonal\": " << stats.bbox_diagonal << ",\n";
   out << "    \"h_min\": " << stats.target_h_min << ",\n";
   out << "    \"h_max\": " << stats.target_h_max << ",\n";
   out << "    \"h_max_factor\": " << config.target_h_max_factor << ",\n";
   out << "    \"estimated_faces\": " << stats.target_estimated_faces << ",\n";
-  out << "    \"kappa_reference\": \"" << adaiso::toString(config.target_error_curvature_reference) << "\",\n";
-  out << "    \"kappa_ref\": " << stats.target_kappa_ref << ",\n";
   out << "    \"kappa_max\": " << stats.target_kappa_max << ",\n";
   out << "    \"flat_fallback\": " << (stats.target_flat_fallback ? "true" : "false") << ",\n";
   if (!config.target_field_export_dir.empty()) {
@@ -307,11 +314,8 @@ int main(int argc, char** argv) {
         config.csf_smoothing_alpha = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--target-error-delta") {
         config.target_error_delta = std::stod(requireValue(i, argc, argv, arg));
-      } else if (arg == "--target-error-h-ref-factor") {
-        config.target_error_h_ref_factor = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
-      } else if (arg == "--auto-delta-kappa-ref") {
-        config.target_error_curvature_reference =
-            adaiso::parseTargetErrorCurvatureReference(requireValue(i, argc, argv, arg));
+      } else if (arg == "--auto-delta-quantile") {
+        config.auto_delta_quantile = parseUnitIntervalDouble(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--target-h-max-factor") {
         config.target_h_max_factor = parsePositiveDouble(requireValue(i, argc, argv, arg), arg);
       } else if (arg == "--export-target-field") {
@@ -373,8 +377,10 @@ int main(int argc, char** argv) {
     if (config.target_h_max_factor <= 0.0 || !std::isfinite(config.target_h_max_factor)) {
       throw std::runtime_error("--target-h-max-factor must be finite and positive");
     }
-    if (config.target_error_h_ref_factor <= 0.0 || !std::isfinite(config.target_error_h_ref_factor)) {
-      throw std::runtime_error("--target-error-h-ref-factor must be finite and positive");
+    if (!std::isfinite(config.auto_delta_quantile) ||
+        config.auto_delta_quantile < 0.0 ||
+        config.auto_delta_quantile > 1.0) {
+      throw std::runtime_error("--auto-delta-quantile must be finite and in [0, 1]");
     }
     if (config.split_factor_override < 0.0 || !std::isfinite(config.split_factor_override)) {
       throw std::runtime_error("--split-factor must be finite and non-negative");

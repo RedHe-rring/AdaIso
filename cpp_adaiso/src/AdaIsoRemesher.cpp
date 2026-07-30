@@ -64,6 +64,7 @@ constexpr double kRobustMeanAreaFloorFactor = 1e-8;
 constexpr double kRelocationFeatureEps = 1e-12;
 constexpr double kRelocationZeta = 0.5;
 constexpr double kTargetKappaMin = 1e-12;
+constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
@@ -297,40 +298,70 @@ double boundingBoxDiagonal(const Mesh& mesh) {
   return (hi - lo).norm();
 }
 
-double maxCurvatureDefaultDelta(double kappa_max, double mean_edge_length, double h_ref_factor) {
-  if (!std::isfinite(kappa_max) || kappa_max <= kTargetKappaMin ||
-      !std::isfinite(mean_edge_length) || mean_edge_length <= 0.0 ||
-      !std::isfinite(h_ref_factor) || h_ref_factor <= 0.0) {
-    return 0.0;
+std::vector<double> incidentMedianEdgeLengths(const Mesh& mesh) {
+  std::vector<std::vector<double>> incident_lengths(mesh.vertexCount());
+  for (const Edge& edge : uniqueEdges(mesh)) {
+    const auto a = static_cast<std::size_t>(edge.first);
+    const auto b = static_cast<std::size_t>(edge.second);
+    const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
+    if (!std::isfinite(length) || length <= 0.0) {
+      throw std::runtime_error("target error sizing requires positive finite incident edge lengths");
+    }
+    incident_lengths[a].push_back(length);
+    incident_lengths[b].push_back(length);
   }
-  const double h_ref = h_ref_factor * mean_edge_length;
-  const double max_valid_h = 0.99 * std::sqrt(3.0) / kappa_max;
-  const double h = std::min(h_ref, max_valid_h);
-  const double discriminant = 1.0 - (kappa_max * kappa_max * h * h) / 3.0;
-  if (!std::isfinite(discriminant) || discriminant < 0.0) {
-    return kappa_max * h * h / 6.0;
+
+  std::vector<double> medians(mesh.vertexCount(), 0.0);
+  for (std::size_t i = 0; i < incident_lengths.size(); ++i) {
+    auto& values = incident_lengths[i];
+    if (values.empty()) {
+      throw std::runtime_error("target error sizing found an isolated vertex without incident edges");
+    }
+    std::sort(values.begin(), values.end());
+    medians[i] = quantileOfSorted(values, 0.5);
   }
-  const double delta = (1.0 - std::sqrt(discriminant)) / kappa_max;
-  return std::isfinite(delta) && delta > 0.0 ? delta : 0.0;
+  return medians;
 }
 
-double referenceCurvature(
-    const std::vector<double>& safe_kappa,
-    double observed_max_kappa,
-    TargetErrorCurvatureReference reference) {
-  if (observed_max_kappa <= kTargetKappaMin) {
-    return observed_max_kappa;
+double areaWeightedQuantile(
+    const std::vector<double>& values,
+    const std::vector<double>& weights,
+    double q) {
+  if (values.size() != weights.size()) {
+    throw std::runtime_error("weighted quantile size mismatch");
   }
-  if (reference == TargetErrorCurvatureReference::Max) {
-    return observed_max_kappa;
+  if (!std::isfinite(q) || q < 0.0 || q > 1.0) {
+    throw std::runtime_error("weighted quantile must be finite and in [0, 1]");
   }
 
-  std::vector<double> sorted = safe_kappa;
-  std::sort(sorted.begin(), sorted.end());
-  const double quantile =
-      reference == TargetErrorCurvatureReference::P99 ? 0.99 : 0.95;
-  const double value = quantileOfSorted(sorted, quantile);
-  return std::isfinite(value) && value > kTargetKappaMin ? value : kTargetKappaMin;
+  std::vector<std::pair<double, double>> items;
+  items.reserve(values.size());
+  double total_weight = 0.0;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const double value = values[i];
+    const double weight = weights[i];
+    if (!std::isfinite(value) || !std::isfinite(weight) || weight <= 0.0) {
+      continue;
+    }
+    items.emplace_back(value, weight);
+    total_weight += weight;
+  }
+  if (items.empty() || !std::isfinite(total_weight) || total_weight <= 0.0) {
+    return 0.0;
+  }
+
+  std::sort(items.begin(), items.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.first < rhs.first;
+  });
+  const double threshold = q * total_weight;
+  double cumulative = 0.0;
+  for (const auto& item : items) {
+    cumulative += item.second;
+    if (cumulative + kEps >= threshold) {
+      return item.first;
+    }
+  }
+  return items.back().first;
 }
 
 Eigen::Vector3d barycentricOnTriangle(
@@ -382,6 +413,8 @@ struct TargetFieldStageData {
   std::vector<double> raw_curvature;
   std::vector<double> csf_curvature;
   std::vector<double> target_lengths;
+  std::vector<double> local_edge_medians;
+  std::vector<double> local_deltas;
   double base_length = 0.0;
   double min_length = 0.0;
   double max_length = 0.0;
@@ -389,8 +422,8 @@ struct TargetFieldStageData {
   double target_error_bbox_ratio = 0.0;
   double bbox_diagonal = 0.0;
   double h_max_factor = 5.0;
-  TargetErrorCurvatureReference kappa_reference = TargetErrorCurvatureReference::Max;
-  double kappa_ref = 0.0;
+  double auto_delta_quantile = 0.5;
+  double h_min_safe_factor = kTargetHMinSafeFactor;
   double kappa_max = 0.0;
   double estimated_faces = 0.0;
   bool flat_fallback = false;
@@ -777,13 +810,15 @@ void writeVerticesCsv(
     const Mesh& mesh,
     const TargetFieldStageData& data) {
   auto out = openOutputFile(path);
-  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,target_h\n";
+  out << "vertex_id,x,y,z,raw_curvature,csf_curvature,local_edge_median,local_delta,target_h\n";
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     const auto& p = mesh.vertices[i];
     out << i << ','
         << p[0] << ',' << p[1] << ',' << p[2] << ','
         << data.raw_curvature[i] << ','
         << data.csf_curvature[i] << ','
+        << data.local_edge_medians[i] << ','
+        << data.local_deltas[i] << ','
         << data.target_lengths[i] << '\n';
   }
 }
@@ -833,6 +868,15 @@ std::string targetFieldStatsJson(
   }
   std::sort(gradients.begin(), gradients.end());
 
+  std::vector<double> local_deltas;
+  local_deltas.reserve(data.local_deltas.size());
+  for (double value : data.local_deltas) {
+    if (std::isfinite(value)) {
+      local_deltas.push_back(value);
+    }
+  }
+  std::sort(local_deltas.begin(), local_deltas.end());
+
   double observed_min = std::numeric_limits<double>::infinity();
   double observed_max = -std::numeric_limits<double>::infinity();
   for (double value : data.target_lengths) {
@@ -848,13 +892,18 @@ std::string targetFieldStatsJson(
   out << std::setprecision(17);
   out << "{\n";
   out << "  \"base_length\": " << data.base_length << ",\n";
+  out << "  \"auto_delta_source\": \"input_resolution_csf_curvature\",\n";
+  out << "  \"auto_delta_quantile\": " << data.auto_delta_quantile << ",\n";
+  out << "  \"h_min_safe_factor\": " << data.h_min_safe_factor << ",\n";
   out << "  \"target_error_delta\": " << data.target_error_delta << ",\n";
   out << "  \"target_error_bbox_ratio\": " << data.target_error_bbox_ratio << ",\n";
   out << "  \"bbox_diagonal\": " << data.bbox_diagonal << ",\n";
   out << "  \"h_max_factor\": " << data.h_max_factor << ",\n";
-  out << "  \"kappa_reference\": \"" << toString(data.kappa_reference) << "\",\n";
-  out << "  \"kappa_ref\": " << data.kappa_ref << ",\n";
   out << "  \"kappa_max\": " << data.kappa_max << ",\n";
+  out << "  \"local_delta_min\": " << (local_deltas.empty() ? 0.0 : local_deltas.front()) << ",\n";
+  out << "  \"local_delta_q50\": " << quantileOfSorted(local_deltas, 0.5) << ",\n";
+  out << "  \"local_delta_q95\": " << quantileOfSorted(local_deltas, 0.95) << ",\n";
+  out << "  \"local_delta_max\": " << (local_deltas.empty() ? 0.0 : local_deltas.back()) << ",\n";
   out << "  \"h_min\": " << data.min_length << ",\n";
   out << "  \"h_max\": " << data.max_length << ",\n";
   out << "  \"estimated_faces\": " << data.estimated_faces << ",\n";
@@ -881,6 +930,8 @@ std::string colorScalesJson(
     double raw_curvature_max,
     double csf_curvature_min,
     double csf_curvature_max,
+    double local_delta_min,
+    double local_delta_max,
     double target_h_min,
     double target_h_max,
     double observed_target_h_min,
@@ -915,6 +966,12 @@ std::string colorScalesJson(
   out << "      \"min\": " << csf_curvature_min << ",\n";
   out << "      \"max\": " << csf_curvature_max << "\n";
   out << "    },\n";
+  out << "    \"local_delta\": {\n";
+  out << "      \"file\": \"local_delta_heat.ply\",\n";
+  out << "      \"field\": \"local_delta\",\n";
+  out << "      \"min\": " << local_delta_min << ",\n";
+  out << "      \"max\": " << local_delta_max << "\n";
+  out << "    },\n";
   out << "    \"target_h\": {\n";
   out << "      \"file\": \"target_h_heat.ply\",\n";
   out << "      \"field\": \"target_h\",\n";
@@ -943,7 +1000,9 @@ void writeTargetFieldDiagnostics(
   }
   const std::size_t n = mesh.vertices.size();
   if (data.raw_curvature.size() != n || data.csf_curvature.size() != n ||
-      data.target_lengths.size() != n) {
+      data.target_lengths.size() != n ||
+      data.local_edge_medians.size() != n ||
+      data.local_deltas.size() != n) {
     throw std::runtime_error("target diagnostic field size mismatch");
   }
   std::filesystem::create_directories(out_dir);
@@ -968,6 +1027,7 @@ void writeTargetFieldDiagnostics(
 
   const auto [raw_min, raw_max] = scalarRange(data.raw_curvature);
   const auto [csf_min, csf_max] = scalarRange(data.csf_curvature);
+  const auto [local_delta_min, local_delta_max] = scalarRange(data.local_deltas);
   const auto [target_h_observed_min, target_h_observed_max] = scalarRange(data.target_lengths);
   const double curvature_min = std::min(raw_min, csf_min);
   const double curvature_max = std::max(raw_max, csf_max);
@@ -980,6 +1040,8 @@ void writeTargetFieldDiagnostics(
           raw_max,
           csf_min,
           csf_max,
+          local_delta_min,
+          local_delta_max,
           data.min_length,
           data.max_length,
           target_h_observed_min,
@@ -1008,6 +1070,12 @@ void writeTargetFieldDiagnostics(
       data.csf_curvature,
       csf_min,
       csf_max);
+  writeVertexHeatPly(
+      out_dir / "local_delta_heat.ply",
+      mesh,
+      data.local_deltas,
+      local_delta_min,
+      local_delta_max);
   writeVertexHeatPly(
       out_dir / "target_h_heat.ply",
       mesh,
@@ -1067,9 +1135,8 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
     double mean_edge_length,
     double bbox_diagonal,
     double target_error_delta,
-    double target_error_h_ref_factor,
     double target_h_max_factor,
-    TargetErrorCurvatureReference curvature_reference) {
+    double auto_delta_quantile) {
   mesh.validate();
   if (mesh.vertices.empty() || mesh.faces.empty()) {
     throw std::runtime_error("target error sizing requires a non-empty mesh");
@@ -1086,11 +1153,11 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   if (!std::isfinite(target_error_delta) || target_error_delta < 0.0) {
     throw std::runtime_error("target error delta must be finite and non-negative");
   }
-  if (!std::isfinite(target_error_h_ref_factor) || target_error_h_ref_factor <= 0.0) {
-    throw std::runtime_error("target error h ref factor must be finite and positive");
-  }
   if (!std::isfinite(target_h_max_factor) || target_h_max_factor <= 0.0) {
     throw std::runtime_error("target h max factor must be finite and positive");
+  }
+  if (!std::isfinite(auto_delta_quantile) || auto_delta_quantile < 0.0 || auto_delta_quantile > 1.0) {
+    throw std::runtime_error("auto delta quantile must be finite and in [0, 1]");
   }
 
   std::vector<double> safe_kappa(diffused_curvature.size(), kTargetKappaMin);
@@ -1107,14 +1174,23 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   result.h_max = target_h_max_factor * mean_edge_length;
   result.bbox_diagonal = bbox_diagonal;
   result.kappa_max = observed_max_kappa;
-  result.kappa_ref = referenceCurvature(safe_kappa, observed_max_kappa, curvature_reference);
+  result.auto_delta_quantile = auto_delta_quantile;
+  result.h_min_safe_factor = kTargetHMinSafeFactor;
   if (!std::isfinite(result.h_max) || result.h_max <= 0.0) {
     throw std::runtime_error("target error sizing produced an invalid h_max");
   }
 
+  result.local_edge_medians = incidentMedianEdgeLengths(mesh);
+  result.local_deltas.reserve(safe_kappa.size());
+  for (std::size_t i = 0; i < safe_kappa.size(); ++i) {
+    const double local_length = result.local_edge_medians[i];
+    const double local_delta = safe_kappa[i] * local_length * local_length / 6.0;
+    result.local_deltas.push_back(std::isfinite(local_delta) && local_delta > 0.0 ? local_delta : 0.0);
+  }
+
   if (target_error_delta == 0.0) {
     target_error_delta =
-        maxCurvatureDefaultDelta(result.kappa_ref, mean_edge_length, target_error_h_ref_factor);
+        areaWeightedQuantile(result.local_deltas, barycentricVertexAreas(mesh), auto_delta_quantile);
   }
   if (!std::isfinite(target_error_delta) || target_error_delta <= 0.0) {
     target_error_delta = kTargetKappaMin * mean_edge_length * mean_edge_length / 6.0;
@@ -1122,24 +1198,16 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   result.target_error_delta = target_error_delta;
   result.target_error_bbox_ratio = target_error_delta / bbox_diagonal;
 
-  if (result.kappa_ref <= kTargetKappaMin) {
+  result.h_min = kTargetHMinSafeFactor * mean_edge_length;
+  if (!std::isfinite(result.h_min) || result.h_min <= 0.0) {
+    throw std::runtime_error("target error sizing produced an invalid h_min");
+  }
+
+  if (observed_max_kappa <= kTargetKappaMin) {
     result.flat_fallback = true;
-    result.h_min = result.h_max;
     result.target_lengths.assign(diffused_curvature.size(), result.h_max);
     result.estimated_faces = estimateTargetFaceCount(mesh, result.target_lengths);
     return result;
-  }
-
-  const double h_min_squared =
-      6.0 * target_error_delta / result.kappa_ref -
-      3.0 * target_error_delta * target_error_delta;
-  if (!std::isfinite(h_min_squared) || h_min_squared <= 0.0) {
-    throw std::runtime_error("target error delta is too large for the reference curvature");
-  }
-
-  result.h_min = std::sqrt(h_min_squared);
-  if (!std::isfinite(result.h_min) || result.h_min <= 0.0) {
-    throw std::runtime_error("target error sizing produced an invalid h_min");
   }
 
   if (result.h_min > result.h_max) {
@@ -1147,7 +1215,11 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
   }
   result.target_lengths.reserve(safe_kappa.size());
   for (double kappa : safe_kappa) {
-    const double h = result.h_min * std::sqrt(result.kappa_ref / kappa);
+    const double h_squared = 6.0 * target_error_delta / kappa - 3.0 * target_error_delta * target_error_delta;
+    double h = result.h_max;
+    if (std::isfinite(h_squared) && h_squared > 0.0) {
+      h = std::sqrt(h_squared);
+    }
     result.target_lengths.push_back(std::clamp(h, result.h_min, result.h_max));
   }
   result.estimated_faces = estimateTargetFaceCount(mesh, result.target_lengths);
@@ -1485,35 +1557,6 @@ std::string toString(CurvatureMode mode) {
   return "unknown";
 }
 
-TargetErrorCurvatureReference parseTargetErrorCurvatureReference(const std::string& value) {
-  std::string lower = value;
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (lower == "max") {
-    return TargetErrorCurvatureReference::Max;
-  }
-  if (lower == "p99") {
-    return TargetErrorCurvatureReference::P99;
-  }
-  if (lower == "p95") {
-    return TargetErrorCurvatureReference::P95;
-  }
-  throw std::runtime_error("unknown auto-delta kappa reference: " + value);
-}
-
-std::string toString(TargetErrorCurvatureReference reference) {
-  switch (reference) {
-    case TargetErrorCurvatureReference::Max:
-      return "max";
-    case TargetErrorCurvatureReference::P99:
-      return "p99";
-    case TargetErrorCurvatureReference::P95:
-      return "p95";
-  }
-  return "unknown";
-}
-
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
@@ -1536,9 +1579,10 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   if (config_.target_h_max_factor <= 0.0 || !std::isfinite(config_.target_h_max_factor)) {
     throw std::runtime_error("target h max factor must be finite and positive");
   }
-  if (config_.target_error_h_ref_factor <= 0.0 ||
-      !std::isfinite(config_.target_error_h_ref_factor)) {
-    throw std::runtime_error("target error h ref factor must be finite and positive");
+  if (!std::isfinite(config_.auto_delta_quantile) ||
+      config_.auto_delta_quantile < 0.0 ||
+      config_.auto_delta_quantile > 1.0) {
+    throw std::runtime_error("auto delta quantile must be finite and in [0, 1]");
   }
 
   if (config_.target_error_delta < 0.0 || !std::isfinite(config_.target_error_delta)) {
@@ -1683,9 +1727,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
       base_len,
       bbox_diag,
       config_.target_error_delta,
-      config_.target_error_h_ref_factor,
       config_.target_h_max_factor,
-      config_.target_error_curvature_reference);
+      config_.auto_delta_quantile);
 
   if (!config_.target_field_export_dir.empty()) {
     writeTargetFieldDiagnostics(
@@ -1694,6 +1737,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
         {raw_curvature,
          curvature,
          sizing.target_lengths,
+         sizing.local_edge_medians,
+         sizing.local_deltas,
          base_len,
          sizing.h_min,
          sizing.h_max,
@@ -1701,8 +1746,8 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
          sizing.target_error_bbox_ratio,
          sizing.bbox_diagonal,
          config_.target_h_max_factor,
-         config_.target_error_curvature_reference,
-         sizing.kappa_ref,
+         config_.auto_delta_quantile,
+         sizing.h_min_safe_factor,
          sizing.kappa_max,
          sizing.estimated_faces,
          sizing.flat_fallback});
@@ -1717,8 +1762,9 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
   stats_.target_h_min = sizing.h_min;
   stats_.target_h_max = sizing.h_max;
   stats_.target_estimated_faces = sizing.estimated_faces;
-  stats_.target_kappa_ref = sizing.kappa_ref;
   stats_.target_kappa_max = sizing.kappa_max;
+  stats_.target_auto_delta_quantile = sizing.auto_delta_quantile;
+  stats_.target_h_min_safe_factor = sizing.h_min_safe_factor;
   stats_.target_flat_fallback = sizing.flat_fallback;
 
   if (config_.verbose && !sizing.target_lengths.empty()) {
@@ -1727,8 +1773,7 @@ void AdaIsoRemesher::buildTargetLengths(const Mesh& mesh) {
               << ", delta=" << sizing.target_error_delta
               << ", delta/bbox=" << sizing.target_error_bbox_ratio
               << ", estimated_faces=" << sizing.estimated_faces
-              << ", kappa_reference=" << toString(config_.target_error_curvature_reference)
-              << ", kappa_ref=" << sizing.kappa_ref
+              << ", auto_delta_quantile=" << sizing.auto_delta_quantile
               << ", kappa_max=" << sizing.kappa_max
               << ", min=" << *min_it
               << ", max=" << *max_it << "\n";
@@ -2191,7 +2236,6 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
       if (!flipImprovesValence(valence, boundary, a, b, c, d)) {
         continue;
       }
-
       const Eigen::Vector3d ref_normal = safeFaceNormal(mesh.vertices, tri1) + safeFaceNormal(mesh.vertices, tri2);
       Eigen::Vector3i new1 = orientTriangle(Eigen::Vector3i(c, d, b), mesh.vertices, ref_normal);
       Eigen::Vector3i new2 = orientTriangle(Eigen::Vector3i(d, c, a), mesh.vertices, ref_normal);
