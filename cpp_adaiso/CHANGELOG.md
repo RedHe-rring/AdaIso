@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.3.6
+
+Behavior update:
+Adds one conflict-region collapse mini-round inside each Stage A collapse pass.
+
+- Collapse still uses the v5.3.5 energy-only acceptance rule; split, Stage B,
+  and the public CLI are unchanged.
+- After a normal collapse batch, candidates skipped by batch conflict seed one
+  local retry round that rebuilds topology and re-evaluates current short
+  edges adjacent to the conflict region.
+- Summary JSON reports conflict retry mini-rounds, retry candidates, retry
+  accepted collapses, and retry rejected candidates.
+
 ## 5.3.5
 
 Behavior update:

@@ -139,6 +139,10 @@ struct AdaIsoStats {
   std::size_t size_stage_collapse_rejected_by_target_length = 0;
   std::size_t size_stage_collapse_rejected_by_angle = 0;
   std::size_t size_stage_collapse_rejected_by_batch_duplicate = 0;
+  std::size_t size_stage_collapse_conflict_mini_rounds = 0;
+  std::size_t size_stage_collapse_conflict_retry_candidates = 0;
+  std::size_t size_stage_collapse_conflict_retry_accepted = 0;
+  std::size_t size_stage_collapse_conflict_retry_rejected = 0;
   double size_stage_final_violation = 0.0;
   double size_stage_final_min_angle_degrees = 0.0;
   double size_stage_final_angle_lt_10_pct = 0.0;

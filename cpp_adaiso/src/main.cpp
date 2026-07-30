@@ -291,6 +291,14 @@ std::string buildSummaryJson(
       << stats.size_stage_collapse_rejected_by_angle << ",\n";
   out << "    \"size_stage_collapse_rejected_by_batch_duplicate\": "
       << stats.size_stage_collapse_rejected_by_batch_duplicate << ",\n";
+  out << "    \"size_stage_collapse_conflict_mini_rounds\": "
+      << stats.size_stage_collapse_conflict_mini_rounds << ",\n";
+  out << "    \"size_stage_collapse_conflict_retry_candidates\": "
+      << stats.size_stage_collapse_conflict_retry_candidates << ",\n";
+  out << "    \"size_stage_collapse_conflict_retry_accepted\": "
+      << stats.size_stage_collapse_conflict_retry_accepted << ",\n";
+  out << "    \"size_stage_collapse_conflict_retry_rejected\": "
+      << stats.size_stage_collapse_conflict_retry_rejected << ",\n";
   out << "    \"size_stage_final_violation\": " << stats.size_stage_final_violation << ",\n";
   out << "    \"size_stage_final_min_angle_degrees\": " << stats.size_stage_final_min_angle_degrees << ",\n";
   out << "    \"size_stage_final_angle_lt_10_pct\": " << stats.size_stage_final_angle_lt_10_pct << ",\n";

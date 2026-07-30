@@ -823,6 +823,9 @@ void testRemeshSmoke() {
   assert(remesher.stats().size_stage_collapse_accepted +
              remesher.stats().size_stage_collapse_rejected ==
          remesher.stats().size_stage_short_edge_candidates);
+  assert(remesher.stats().size_stage_collapse_conflict_retry_accepted +
+             remesher.stats().size_stage_collapse_conflict_retry_rejected ==
+         remesher.stats().size_stage_collapse_conflict_retry_candidates);
   assert(std::isfinite(remesher.stats().size_stage_final_violation));
   assert(std::isfinite(remesher.stats().size_stage_final_min_angle_degrees));
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_10_pct));
@@ -1325,6 +1328,9 @@ void testCollapseTargetEnergyAcceptanceDiagnostics() {
   assert(collapse_reject_reasons == stats.size_stage_collapse_rejected);
   assert(stats.size_stage_collapse_accepted + stats.size_stage_collapse_rejected ==
          stats.size_stage_short_edge_candidates);
+  assert(stats.size_stage_collapse_conflict_retry_accepted +
+             stats.size_stage_collapse_conflict_retry_rejected ==
+         stats.size_stage_collapse_conflict_retry_candidates);
 }
 
 void testTargetMetricSplitPlacement() {

@@ -68,6 +68,7 @@ constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 constexpr double kMinAngleTolDegrees = 1e-8;
 constexpr double kMetricViolationTol = 1e-8;
+constexpr int kCollapseConflictMiniRounds = 2;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -2346,9 +2347,19 @@ void AdaIsoRemesher::splitOneEdge(Mesh& mesh, int a, int b) const {
 }
 
 int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
+  struct CollapseCandidate {
+    double ratio = 0.0;
+    double length = 0.0;
+    int a = 0;
+    int b = 0;
+  };
+
   int total = 0;
-  auto record_reject = [this](CollapseRejectReason reason) {
+  auto record_reject = [this](CollapseRejectReason reason, bool retry_round) {
     ++stats_.size_stage_collapse_rejected;
+    if (retry_round) {
+      ++stats_.size_stage_collapse_conflict_retry_rejected;
+    }
     switch (reason) {
       case CollapseRejectReason::None:
         break;
@@ -2369,88 +2380,143 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
         break;
     }
   };
+  auto record_boundary_reject = [this](bool retry_round) {
+    ++stats_.size_stage_collapse_rejected;
+    ++stats_.size_stage_collapse_rejected_by_boundary;
+    if (retry_round) {
+      ++stats_.size_stage_collapse_conflict_retry_rejected;
+    }
+  };
+  auto record_conflict_reject = [this](bool retry_round) {
+    ++stats_.size_stage_collapse_rejected;
+    ++stats_.size_stage_collapse_rejected_by_batch_conflict;
+    if (retry_round) {
+      ++stats_.size_stage_collapse_conflict_retry_rejected;
+    }
+  };
+  auto record_duplicate_rejects = [this](std::size_t count, bool retry_round) {
+    stats_.size_stage_collapse_rejected += count;
+    stats_.size_stage_collapse_rejected_by_batch_duplicate += count;
+    if (retry_round) {
+      stats_.size_stage_collapse_conflict_retry_rejected += count;
+    }
+  };
 
   for (int pass = 0; pass < config_.max_collapse_passes; ++pass) {
-    const auto boundary = boundaryVertices(mesh);
-    const auto e2f = edgeFaces(mesh);
-    const auto neigh = vertexNeighbors(mesh);
-    const auto vf = vertexFaces(mesh);
-    const auto feature_strengths = computeVertexFeatureStrengths(mesh);
-    std::vector<std::tuple<double, double, int, int>> candidates;
-    for (const auto& item : e2f) {
-      const int a = item.first.first;
-      const int b = item.first.second;
-      const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
-      const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
-      if (metric_length < config_.collapseFactor()) {
-        candidates.emplace_back(metric_length, length, a, b);
-      }
-    }
-    stats_.size_stage_short_edge_candidates += candidates.size();
-    if (candidates.empty()) {
-      break;
-    }
-    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
-      if (std::get<0>(lhs) != std::get<0>(rhs)) {
-        return std::get<0>(lhs) < std::get<0>(rhs);
-      }
-      return std::get<1>(lhs) < std::get<1>(rhs);
-    });
+    std::unordered_set<int> conflict_seed_vertices;
+    bool pass_had_candidates = false;
+    bool pass_accepted = false;
 
-    std::vector<Edge> selected;
-    selected.reserve(candidates.size());
-    std::unordered_set<int> blocked_vertices;
-    for (const auto& [ratio, old_length, a, b] : candidates) {
-      (void)ratio;
-      (void)old_length;
-      if (boundary.find(a) != boundary.end() || boundary.find(b) != boundary.end()) {
-        ++stats_.size_stage_collapse_rejected;
-        ++stats_.size_stage_collapse_rejected_by_boundary;
-        continue;
+    for (int mini_round = 0; mini_round < kCollapseConflictMiniRounds; ++mini_round) {
+      const bool retry_round = mini_round > 0;
+      if (retry_round && conflict_seed_vertices.empty()) {
+        break;
       }
-      auto it = e2f.find(makeEdge(a, b));
-      if (it != e2f.end() && it->second.size() > 2) {
-        record_reject(CollapseRejectReason::NonManifold);
-        continue;
+      if (retry_round) {
+        ++stats_.size_stage_collapse_conflict_mini_rounds;
       }
-      std::unordered_set<int> footprint;
-      footprint.insert(a);
-      footprint.insert(b);
-      footprint.insert(neigh[static_cast<std::size_t>(a)].begin(), neigh[static_cast<std::size_t>(a)].end());
-      footprint.insert(neigh[static_cast<std::size_t>(b)].begin(), neigh[static_cast<std::size_t>(b)].end());
 
-      bool conflicts = false;
-      for (int v : footprint) {
-        if (blocked_vertices.find(v) != blocked_vertices.end()) {
-          conflicts = true;
-          break;
+      const auto boundary = boundaryVertices(mesh);
+      const auto e2f = edgeFaces(mesh);
+      const auto neigh = vertexNeighbors(mesh);
+      const auto vf = vertexFaces(mesh);
+      const auto feature_strengths = computeVertexFeatureStrengths(mesh);
+      std::vector<CollapseCandidate> candidates;
+      for (const auto& item : e2f) {
+        const int a = item.first.first;
+        const int b = item.first.second;
+        if (retry_round &&
+            conflict_seed_vertices.find(a) == conflict_seed_vertices.end() &&
+            conflict_seed_vertices.find(b) == conflict_seed_vertices.end()) {
+          continue;
+        }
+        const double length = (mesh.vertices[a] - mesh.vertices[b]).norm();
+        const double metric_length = edgeTargetMetricLength(mesh, target_field_, a, b);
+        if (metric_length < config_.collapseFactor()) {
+          candidates.push_back({metric_length, length, a, b});
         }
       }
-      if (conflicts) {
-        ++stats_.size_stage_collapse_rejected;
-        ++stats_.size_stage_collapse_rejected_by_batch_conflict;
+      stats_.size_stage_short_edge_candidates += candidates.size();
+      if (retry_round) {
+        stats_.size_stage_collapse_conflict_retry_candidates += candidates.size();
+      }
+      if (candidates.empty()) {
+        if (!retry_round) {
+          pass_had_candidates = false;
+        }
+        break;
+      }
+      pass_had_candidates = true;
+      std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.ratio != rhs.ratio) {
+          return lhs.ratio < rhs.ratio;
+        }
+        return lhs.length < rhs.length;
+      });
+
+      std::vector<Edge> selected;
+      selected.reserve(candidates.size());
+      std::unordered_set<int> blocked_vertices;
+      std::unordered_set<int> next_conflict_seed_vertices;
+      for (const auto& candidate : candidates) {
+        const int a = candidate.a;
+        const int b = candidate.b;
+        if (boundary.find(a) != boundary.end() || boundary.find(b) != boundary.end()) {
+          record_boundary_reject(retry_round);
+          continue;
+        }
+        auto it = e2f.find(makeEdge(a, b));
+        if (it != e2f.end() && it->second.size() > 2) {
+          record_reject(CollapseRejectReason::NonManifold, retry_round);
+          continue;
+        }
+        std::unordered_set<int> footprint;
+        footprint.insert(a);
+        footprint.insert(b);
+        footprint.insert(neigh[static_cast<std::size_t>(a)].begin(), neigh[static_cast<std::size_t>(a)].end());
+        footprint.insert(neigh[static_cast<std::size_t>(b)].begin(), neigh[static_cast<std::size_t>(b)].end());
+
+        bool conflicts = false;
+        for (int v : footprint) {
+          if (blocked_vertices.find(v) != blocked_vertices.end()) {
+            conflicts = true;
+            break;
+          }
+        }
+        if (conflicts) {
+          record_conflict_reject(retry_round);
+          next_conflict_seed_vertices.insert(footprint.begin(), footprint.end());
+          continue;
+        }
+        const CollapseRejectReason reason =
+            collapseRejectReason(mesh, a, b, neigh, e2f, vf, feature_strengths);
+        if (reason != CollapseRejectReason::None) {
+          record_reject(reason, retry_round);
+          continue;
+        }
+        selected.push_back(makeEdge(a, b));
+        blocked_vertices.insert(footprint.begin(), footprint.end());
+      }
+
+      conflict_seed_vertices = std::move(next_conflict_seed_vertices);
+      if (selected.empty()) {
         continue;
       }
-      const CollapseRejectReason reason =
-          collapseRejectReason(mesh, a, b, neigh, e2f, vf, feature_strengths);
-      if (reason != CollapseRejectReason::None) {
-        record_reject(reason);
-        continue;
+      const int accepted = collapseEdgesBatch(mesh, selected, feature_strengths);
+      stats_.size_stage_collapse_accepted += static_cast<std::size_t>(accepted);
+      if (retry_round) {
+        stats_.size_stage_collapse_conflict_retry_accepted += static_cast<std::size_t>(accepted);
       }
-      selected.push_back(makeEdge(a, b));
-      blocked_vertices.insert(footprint.begin(), footprint.end());
+      if (selected.size() > static_cast<std::size_t>(accepted)) {
+        record_duplicate_rejects(selected.size() - static_cast<std::size_t>(accepted), retry_round);
+      }
+      total += accepted;
+      pass_accepted = pass_accepted || accepted > 0;
     }
-    if (selected.empty()) {
+
+    if (!pass_had_candidates || !pass_accepted) {
       break;
     }
-    const int accepted = collapseEdgesBatch(mesh, selected, feature_strengths);
-    stats_.size_stage_collapse_accepted += static_cast<std::size_t>(accepted);
-    if (selected.size() > static_cast<std::size_t>(accepted)) {
-      const std::size_t duplicate_rejects = selected.size() - static_cast<std::size_t>(accepted);
-      stats_.size_stage_collapse_rejected += duplicate_rejects;
-      stats_.size_stage_collapse_rejected_by_batch_duplicate += duplicate_rejects;
-    }
-    total += accepted;
   }
   return total;
 }
