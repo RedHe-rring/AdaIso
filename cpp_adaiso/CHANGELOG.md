@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.2.0
+
+Behavior update:
+Adds minimum-angle-first acceptance checks for local remeshing operations.
+
+- Replaced collapse-only `min_quality_after_collapse` with the internal
+  `AdaIsoConfig::min_angle_floor_degrees` safety floor.
+- Collapse now compares local minimum angle before and after a candidate
+  operation instead of only checking a triangle-quality floor.
+- Flip now treats minimum-angle improvement as the primary acceptance objective;
+  target-metric violation and valence are only secondary tie-breaks.
+- Tangent smoothing and MLS relocation now rollback candidates that do not
+  improve one-ring minimum angle or that worsen local target-metric violation.
+- Mesh summaries and iteration summaries now report `min_angle_degrees`,
+  `angle_lt_10_pct`, and `angle_lt_20_pct`.
+
 ## 5.1.5
 
 Behavior update:

@@ -148,6 +148,9 @@ std::string iterationsToJson(const std::vector<adaiso::AdaIsoStats::IterationSta
     out << pad2 << "  \"faces\": " << item.faces << ",\n";
     out << pad2 << "  \"qavg\": " << item.qavg << ",\n";
     out << pad2 << "  \"qmin\": " << item.qmin << ",\n";
+    out << pad2 << "  \"min_angle_degrees\": " << item.min_angle_degrees << ",\n";
+    out << pad2 << "  \"angle_lt_10_pct\": " << item.angle_lt_10_pct << ",\n";
+    out << pad2 << "  \"angle_lt_20_pct\": " << item.angle_lt_20_pct << ",\n";
     out << pad2 << "  \"mean_ratio\": " << item.mean_ratio << ",\n";
     out << pad2 << "  \"std_ratio\": " << item.std_ratio << ",\n";
     out << pad2 << "  \"p05_ratio\": " << item.p05_ratio << ",\n";
@@ -241,6 +244,7 @@ std::string buildSummaryJson(
   out << "    \"collapse_factor\": " << config.collapseFactor() << ",\n";
   out << "    \"tangent_lambda\": " << config.tangent_lambda << ",\n";
   out << "    \"max_flip_dihedral_degrees\": " << config.max_flip_dihedral_degrees << ",\n";
+  out << "    \"min_angle_floor_degrees\": " << config.min_angle_floor_degrees << ",\n";
   out << "    \"feature_aware_collapse\": " << (config.feature_aware_collapse ? "true" : "false") << ",\n";
   out << "    \"collapse_feature_omega\": " << config.collapse_feature_omega << ",\n";
   out << "    \"relocation_mls\": " << (config.enable_relocation_mls ? "true" : "false") << ",\n";
@@ -381,6 +385,11 @@ int main(int argc, char** argv) {
         config.auto_delta_quantile < 0.0 ||
         config.auto_delta_quantile > 1.0) {
       throw std::runtime_error("--auto-delta-quantile must be finite and in [0, 1]");
+    }
+    if (!std::isfinite(config.min_angle_floor_degrees) ||
+        config.min_angle_floor_degrees < 0.0 ||
+        config.min_angle_floor_degrees > 60.0) {
+      throw std::runtime_error("min angle floor must be finite and in [0, 60]");
     }
     if (config.split_factor_override < 0.0 || !std::isfinite(config.split_factor_override)) {
       throw std::runtime_error("--split-factor must be finite and non-negative");

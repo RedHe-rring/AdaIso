@@ -66,6 +66,8 @@ constexpr double kRelocationZeta = 0.5;
 constexpr double kTargetKappaMin = 1e-12;
 constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
+constexpr double kMinAngleTolDegrees = 1e-8;
+constexpr double kMetricViolationTol = 1e-8;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -256,6 +258,185 @@ double edgeTargetMetricLength(const Mesh& mesh, const TargetLengthField& target_
       length,
       target_field.valueAt(mesh.vertices[ai]),
       target_field.valueAt(mesh.vertices[bi]));
+}
+
+double innerAngleDegrees(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
+  const Eigen::Vector3d u = q - p;
+  const Eigen::Vector3d v = r - p;
+  const double denom = u.norm() * v.norm();
+  if (denom <= kEps || !std::isfinite(denom)) {
+    return 0.0;
+  }
+  return std::acos(std::clamp(u.dot(v) / denom, -1.0, 1.0)) * 180.0 / kPi;
+}
+
+double minInnerAngleDegrees(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c) {
+  return std::min({
+      innerAngleDegrees(a, b, c),
+      innerAngleDegrees(b, c, a),
+      innerAngleDegrees(c, a, b),
+  });
+}
+
+struct LocalPatchMetrics {
+  bool valid = false;
+  double min_angle_degrees = 0.0;
+  double target_metric_violation = 0.0;
+};
+
+int remappedVertex(const std::unordered_map<int, int>& replacements, int vertex) {
+  const auto it = replacements.find(vertex);
+  return it == replacements.end() ? vertex : it->second;
+}
+
+Eigen::Vector3d localPatchPoint(
+    const Mesh& mesh,
+    const std::unordered_map<int, Eigen::Vector3d>& overrides,
+    int vertex) {
+  const auto it = overrides.find(vertex);
+  if (it != overrides.end()) {
+    return it->second;
+  }
+  return mesh.vertices[static_cast<std::size_t>(vertex)];
+}
+
+double localEdgeMetricViolation(
+    const TargetLengthField& target_field,
+    const Eigen::Vector3d& a,
+    const Eigen::Vector3d& b,
+    double collapse_factor,
+    double split_factor) {
+  const double ratio = targetMetricLength(
+      (a - b).norm(),
+      target_field.valueAt(a),
+      target_field.valueAt(b));
+  if (!std::isfinite(ratio)) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return std::max(0.0, collapse_factor - ratio) + std::max(0.0, ratio - split_factor);
+}
+
+LocalPatchMetrics evaluateLocalPatch(
+    const Mesh& mesh,
+    const TargetLengthField& target_field,
+    const std::vector<Eigen::Vector3i>& faces,
+    const std::unordered_map<int, int>& replacements,
+    const std::unordered_map<int, Eigen::Vector3d>& overrides,
+    double collapse_factor,
+    double split_factor,
+    bool skip_collapsed_faces) {
+  LocalPatchMetrics metrics;
+  metrics.valid = true;
+  metrics.min_angle_degrees = std::numeric_limits<double>::infinity();
+
+  bool checked_face = false;
+  std::unordered_set<Edge, EdgeHash> checked_edges;
+  for (const auto& face : faces) {
+    const int v0 = remappedVertex(replacements, face[0]);
+    const int v1 = remappedVertex(replacements, face[1]);
+    const int v2 = remappedVertex(replacements, face[2]);
+    if (v0 == v1 || v1 == v2 || v2 == v0) {
+      if (skip_collapsed_faces) {
+        continue;
+      }
+      metrics.valid = false;
+      return metrics;
+    }
+
+    const Eigen::Vector3d p0 = localPatchPoint(mesh, overrides, v0);
+    const Eigen::Vector3d p1 = localPatchPoint(mesh, overrides, v1);
+    const Eigen::Vector3d p2 = localPatchPoint(mesh, overrides, v2);
+    const double area = triangleArea(p0, p1, p2);
+    if (!std::isfinite(area) || area <= kEps) {
+      metrics.valid = false;
+      return metrics;
+    }
+
+    checked_face = true;
+    metrics.min_angle_degrees =
+        std::min(metrics.min_angle_degrees, minInnerAngleDegrees(p0, p1, p2));
+
+    const std::array<std::pair<int, int>, 3> edges = {
+        std::make_pair(v0, v1),
+        std::make_pair(v1, v2),
+        std::make_pair(v2, v0),
+    };
+    for (const auto& item : edges) {
+      const Edge edge = makeEdge(item.first, item.second);
+      if (!checked_edges.insert(edge).second) {
+        continue;
+      }
+      const double violation = localEdgeMetricViolation(
+          target_field,
+          localPatchPoint(mesh, overrides, edge.first),
+          localPatchPoint(mesh, overrides, edge.second),
+          collapse_factor,
+          split_factor);
+      if (!std::isfinite(violation)) {
+        metrics.valid = false;
+        return metrics;
+      }
+      metrics.target_metric_violation += violation;
+    }
+  }
+
+  if (!checked_face) {
+    metrics.valid = false;
+    metrics.min_angle_degrees = 0.0;
+  }
+  return metrics;
+}
+
+LocalPatchMetrics evaluateLocalPatch(
+    const Mesh& mesh,
+    const TargetLengthField& target_field,
+    const std::vector<Eigen::Vector3i>& faces,
+    double collapse_factor,
+    double split_factor) {
+  return evaluateLocalPatch(
+      mesh,
+      target_field,
+      faces,
+      {},
+      {},
+      collapse_factor,
+      split_factor,
+      false);
+}
+
+int valenceObjective(
+    const std::vector<int>& valence,
+    const std::unordered_set<int>& boundary,
+    int a,
+    int b,
+    int c,
+    int d,
+    bool after_flip) {
+  auto target = [&](int v) {
+    return boundary.find(v) == boundary.end() ? 6 : 4;
+  };
+  auto current = [&](int v) {
+    return valence[static_cast<std::size_t>(v)];
+  };
+  const int da = after_flip ? -1 : 0;
+  const int db = after_flip ? -1 : 0;
+  const int dc = after_flip ? 1 : 0;
+  const int dd = after_flip ? 1 : 0;
+  return std::abs(current(a) + da - target(a)) +
+         std::abs(current(b) + db - target(b)) +
+         std::abs(current(c) + dc - target(c)) +
+         std::abs(current(d) + dd - target(d));
+}
+
+bool minAngleCollapseAccepted(double before_min_angle, double after_min_angle, double floor_degrees) {
+  if (!std::isfinite(before_min_angle) || !std::isfinite(after_min_angle)) {
+    return false;
+  }
+  if (before_min_angle < floor_degrees) {
+    return after_min_angle > before_min_angle + kMinAngleTolDegrees;
+  }
+  return after_min_angle + kMinAngleTolDegrees >= floor_degrees &&
+         after_min_angle + kMinAngleTolDegrees >= before_min_angle;
 }
 
 double minQuality(const Mesh& mesh) {
@@ -1584,6 +1765,11 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
       config_.auto_delta_quantile > 1.0) {
     throw std::runtime_error("auto delta quantile must be finite and in [0, 1]");
   }
+  if (!std::isfinite(config_.min_angle_floor_degrees) ||
+      config_.min_angle_floor_degrees < 0.0 ||
+      config_.min_angle_floor_degrees > 60.0) {
+    throw std::runtime_error("min angle floor must be finite and in [0, 60]");
+  }
 
   if (config_.target_error_delta < 0.0 || !std::isfinite(config_.target_error_delta)) {
     throw std::runtime_error("target error delta must be finite and non-negative");
@@ -1661,6 +1847,9 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
         mesh.faceCount(),
         iteration_summary.qavg,
         iteration_summary.qmin,
+        iteration_summary.min_angle_degrees,
+        iteration_summary.angle_lt_10_pct,
+        iteration_summary.angle_lt_20_pct,
         ratio_stats.mean_ratio,
         ratio_stats.std_ratio,
         ratio_stats.p05_ratio,
@@ -1669,6 +1858,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     if (config_.verbose) {
       std::cerr << "  split=" << split_count << ", collapse=" << collapse_count << ", flip=" << flip_count
                 << ", violation=" << ratio_stats.violation_rate
+                << ", min_angle=" << iteration_summary.min_angle_degrees
                 << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
     }
   }
@@ -2054,46 +2244,42 @@ bool AdaIsoRemesher::collapseValid(
     }
   }
 
-  if (config_.min_quality_after_collapse > 0.0) {
+  {
     const int keep = std::min(a, b);
     const int remove = std::max(a, b);
 
-    std::unordered_set<int> affected;
-    affected.insert(vf[static_cast<std::size_t>(a)].begin(), vf[static_cast<std::size_t>(a)].end());
-    affected.insert(vf[static_cast<std::size_t>(b)].begin(), vf[static_cast<std::size_t>(b)].end());
+    std::unordered_set<int> affected_ids;
+    affected_ids.insert(vf[static_cast<std::size_t>(a)].begin(), vf[static_cast<std::size_t>(a)].end());
+    affected_ids.insert(vf[static_cast<std::size_t>(b)].begin(), vf[static_cast<std::size_t>(b)].end());
 
-    std::size_t surviving_faces = mesh.faceCount();
-    double local_min_quality = std::numeric_limits<double>::infinity();
-    bool checked_any = false;
-
-    auto pointAt = [&](int v) -> Eigen::Vector3d {
-      return v == keep ? candidate : mesh.vertices[static_cast<std::size_t>(v)];
-    };
-
-    for (int fi : affected) {
-      Eigen::Vector3i face = mesh.faces[static_cast<std::size_t>(fi)];
-      for (int k = 0; k < 3; ++k) {
-        if (face[k] == remove) {
-          face[k] = keep;
-        }
-      }
-      if (face[0] == face[1] || face[1] == face[2] || face[2] == face[0]) {
-        --surviving_faces;
-        continue;
-      }
-      const Eigen::Vector3d p0 = pointAt(face[0]);
-      const Eigen::Vector3d p1 = pointAt(face[1]);
-      const Eigen::Vector3d p2 = pointAt(face[2]);
-      if (triangleArea(p0, p1, p2) <= 1e-14) {
-        --surviving_faces;
-        continue;
-      }
-      local_min_quality = std::min(local_min_quality, triangleQuality(p0, p1, p2));
-      checked_any = true;
+    std::vector<Eigen::Vector3i> affected_faces;
+    affected_faces.reserve(affected_ids.size());
+    for (int fi : affected_ids) {
+      affected_faces.push_back(mesh.faces[static_cast<std::size_t>(fi)]);
     }
 
-    if (surviving_faces == 0 ||
-        (checked_any && local_min_quality < config_.min_quality_after_collapse)) {
+    const LocalPatchMetrics before = evaluateLocalPatch(
+        mesh,
+        target_field_,
+        affected_faces,
+        config_.collapseFactor(),
+        config_.splitFactor());
+
+    const LocalPatchMetrics after = evaluateLocalPatch(
+        mesh,
+        target_field_,
+        affected_faces,
+        {{remove, keep}},
+        {{keep, candidate}},
+        config_.collapseFactor(),
+        config_.splitFactor(),
+        true);
+
+    if (!before.valid || !after.valid ||
+        !minAngleCollapseAccepted(
+            before.min_angle_degrees,
+            after.min_angle_degrees,
+            config_.min_angle_floor_degrees)) {
       return false;
     }
   }
@@ -2233,9 +2419,6 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
           metric_length > config_.splitFactor()) {
         continue;
       }
-      if (!flipImprovesValence(valence, boundary, a, b, c, d)) {
-        continue;
-      }
       const Eigen::Vector3d ref_normal = safeFaceNormal(mesh.vertices, tri1) + safeFaceNormal(mesh.vertices, tri2);
       Eigen::Vector3i new1 = orientTriangle(Eigen::Vector3i(c, d, b), mesh.vertices, ref_normal);
       Eigen::Vector3i new2 = orientTriangle(Eigen::Vector3i(d, c, a), mesh.vertices, ref_normal);
@@ -2248,11 +2431,18 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
           continue;
         }
       }
+      if (!flipAcceptedByAngleMetric(mesh, valence, boundary, tri1, tri2, new1, new2, a, b, c, d)) {
+        continue;
+      }
 
       mesh.faces[static_cast<std::size_t>(f1)] = new1;
       mesh.faces[static_cast<std::size_t>(f2)] = new2;
       current_edges.erase(makeEdge(a, b));
       current_edges.insert(makeEdge(c, d));
+      --valence[static_cast<std::size_t>(a)];
+      --valence[static_cast<std::size_t>(b)];
+      ++valence[static_cast<std::size_t>(c)];
+      ++valence[static_cast<std::size_t>(d)];
       ++flipped;
       ++total;
     }
@@ -2263,25 +2453,47 @@ int AdaIsoRemesher::flipEdges(Mesh& mesh) {
   return total;
 }
 
-bool AdaIsoRemesher::flipImprovesValence(
+bool AdaIsoRemesher::flipAcceptedByAngleMetric(
+    const Mesh& mesh,
     const std::vector<int>& valence,
     const std::unordered_set<int>& boundary,
+    const Eigen::Vector3i& old1,
+    const Eigen::Vector3i& old2,
+    const Eigen::Vector3i& new1,
+    const Eigen::Vector3i& new2,
     int a,
     int b,
     int c,
     int d) const {
-  auto target = [&](int v) {
-    return boundary.find(v) == boundary.end() ? 6 : 4;
-  };
-  const int before = std::abs(valence[static_cast<std::size_t>(a)] - target(a)) +
-                     std::abs(valence[static_cast<std::size_t>(b)] - target(b)) +
-                     std::abs(valence[static_cast<std::size_t>(c)] - target(c)) +
-                     std::abs(valence[static_cast<std::size_t>(d)] - target(d));
-  const int after = std::abs(valence[static_cast<std::size_t>(a)] - 1 - target(a)) +
-                    std::abs(valence[static_cast<std::size_t>(b)] - 1 - target(b)) +
-                    std::abs(valence[static_cast<std::size_t>(c)] + 1 - target(c)) +
-                    std::abs(valence[static_cast<std::size_t>(d)] + 1 - target(d));
-  return after < before;
+  const LocalPatchMetrics before = evaluateLocalPatch(
+      mesh,
+      target_field_,
+      {old1, old2},
+      config_.collapseFactor(),
+      config_.splitFactor());
+  const LocalPatchMetrics after = evaluateLocalPatch(
+      mesh,
+      target_field_,
+      {new1, new2},
+      config_.collapseFactor(),
+      config_.splitFactor());
+  if (!before.valid || !after.valid) {
+    return false;
+  }
+  if (after.min_angle_degrees > before.min_angle_degrees + kMinAngleTolDegrees) {
+    return true;
+  }
+  if (after.min_angle_degrees + kMinAngleTolDegrees < before.min_angle_degrees) {
+    return false;
+  }
+  if (after.target_metric_violation + kMetricViolationTol < before.target_metric_violation) {
+    return true;
+  }
+  if (std::abs(after.target_metric_violation - before.target_metric_violation) <= kMetricViolationTol) {
+    return valenceObjective(valence, boundary, a, b, c, d, true) <
+           valenceObjective(valence, boundary, a, b, c, d, false);
+  }
+  return false;
 }
 
 std::vector<AdaIsoRemesher::VertexRelocationClass> AdaIsoRemesher::classifyVerticesForRelocation(
@@ -2349,8 +2561,11 @@ void AdaIsoRemesher::relocateVertices(Mesh& mesh, const Mesh& original_for_proje
     return;
   }
 
+  const auto vf = vertexFaces(mesh);
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    if (classes[i] == VertexRelocationClass::Smooth && finiteVector(projected[i])) {
+    if (classes[i] == VertexRelocationClass::Smooth &&
+        finiteVector(projected[i]) &&
+        relocationAcceptedByAngleMetric(mesh, vf, static_cast<int>(i), projected[i])) {
       mesh.vertices[i] = projected[i];
     }
   }
@@ -2360,7 +2575,6 @@ void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexReloca
   const auto vf = vertexFaces(mesh);
   const auto normals = vertexNormals(mesh);
   const auto areas = faceAreas(mesh);
-  auto new_vertices = mesh.vertices;
 
   for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
     if (i >= classes.size() || classes[i] != VertexRelocationClass::Smooth || vf[i].empty()) {
@@ -2397,12 +2611,51 @@ void AdaIsoRemesher::tangentSmoothing(Mesh& mesh, const std::vector<VertexReloca
     const Eigen::Vector3d normal = normals[i];
     const Eigen::Vector3d tangent = disp - disp.dot(normal) * normal;
     const Eigen::Vector3d candidate = mesh.vertices[i] + config_.tangent_lambda * tangent;
-    if (finiteVector(candidate)) {
-      new_vertices[i] = candidate;
+    if (finiteVector(candidate) &&
+        relocationAcceptedByAngleMetric(mesh, vf, static_cast<int>(i), candidate)) {
+      mesh.vertices[i] = candidate;
     }
   }
+}
 
-  mesh.vertices = std::move(new_vertices);
+bool AdaIsoRemesher::relocationAcceptedByAngleMetric(
+    const Mesh& mesh,
+    const std::vector<std::vector<int>>& vf,
+    int vertex,
+    const Eigen::Vector3d& candidate) const {
+  if (vertex < 0 || static_cast<std::size_t>(vertex) >= vf.size() || vf[static_cast<std::size_t>(vertex)].empty() ||
+      !finiteVector(candidate)) {
+    return false;
+  }
+
+  std::vector<Eigen::Vector3i> faces;
+  faces.reserve(vf[static_cast<std::size_t>(vertex)].size());
+  for (int fi : vf[static_cast<std::size_t>(vertex)]) {
+    faces.push_back(mesh.faces[static_cast<std::size_t>(fi)]);
+  }
+
+  const LocalPatchMetrics before = evaluateLocalPatch(
+      mesh,
+      target_field_,
+      faces,
+      config_.collapseFactor(),
+      config_.splitFactor());
+  const LocalPatchMetrics after = evaluateLocalPatch(
+      mesh,
+      target_field_,
+      faces,
+      {},
+      {{vertex, candidate}},
+      config_.collapseFactor(),
+      config_.splitFactor(),
+      false);
+  if (!before.valid || !after.valid) {
+    return false;
+  }
+  if (after.target_metric_violation > before.target_metric_violation + kMetricViolationTol) {
+    return false;
+  }
+  return after.min_angle_degrees > before.min_angle_degrees + kMinAngleTolDegrees;
 }
 
 std::vector<Eigen::Vector3d> AdaIsoRemesher::mlsProject(

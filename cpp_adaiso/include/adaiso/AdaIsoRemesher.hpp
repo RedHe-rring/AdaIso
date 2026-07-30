@@ -81,7 +81,7 @@ struct AdaIsoConfig {
   double collapse_factor_override = 0.0;
   double target_h_max_factor = 5.0;
   double auto_delta_quantile = 0.5;
-  double min_quality_after_collapse = 0.05;
+  double min_angle_floor_degrees = 10.0;
   bool verbose = true;
 
   [[nodiscard]] double splitFactor() const;
@@ -99,6 +99,9 @@ struct AdaIsoStats {
     std::size_t faces = 0;
     double qavg = 0.0;
     double qmin = 0.0;
+    double min_angle_degrees = 0.0;
+    double angle_lt_10_pct = 0.0;
+    double angle_lt_20_pct = 0.0;
     double mean_ratio = 0.0;
     double std_ratio = 0.0;
     double p05_ratio = 0.0;
@@ -171,9 +174,14 @@ class AdaIsoRemesher {
       const std::vector<Edge>& selected,
       const std::vector<double>& feature_strengths) const;
   [[nodiscard]] int flipEdges(Mesh& mesh);
-  [[nodiscard]] bool flipImprovesValence(
+  [[nodiscard]] bool flipAcceptedByAngleMetric(
+      const Mesh& mesh,
       const std::vector<int>& valence,
       const std::unordered_set<int>& boundary,
+      const Eigen::Vector3i& old1,
+      const Eigen::Vector3i& old2,
+      const Eigen::Vector3i& new1,
+      const Eigen::Vector3i& new2,
       int a,
       int b,
       int c,
@@ -181,6 +189,11 @@ class AdaIsoRemesher {
   [[nodiscard]] std::vector<VertexRelocationClass> classifyVerticesForRelocation(const Mesh& mesh) const;
   void relocateVertices(Mesh& mesh, const Mesh& original_for_projection);
   void tangentSmoothing(Mesh& mesh, const std::vector<VertexRelocationClass>& classes);
+  [[nodiscard]] bool relocationAcceptedByAngleMetric(
+      const Mesh& mesh,
+      const std::vector<std::vector<int>>& vf,
+      int vertex,
+      const Eigen::Vector3d& candidate) const;
   [[nodiscard]] std::vector<Eigen::Vector3d> mlsProject(
       const std::vector<Eigen::Vector3d>& points,
       const Mesh& original) const;

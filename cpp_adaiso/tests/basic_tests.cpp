@@ -213,7 +213,7 @@ adaiso::Mesh runOneCollapse(const adaiso::Mesh& input, bool feature_aware, doubl
   config.preprocess = false;
   config.tangent_lambda = 0.0;
   config.enable_relocation_mls = false;
-  config.min_quality_after_collapse = 0.0;
+  config.min_angle_floor_degrees = 0.0;
   config.feature_aware_collapse = feature_aware;
   config.collapse_feature_omega = omega;
   config.verbose = false;
@@ -288,6 +288,13 @@ void testGeometryAndMetrics() {
   assert(summary.faces == 6);
   assert(summary.qavg > 0.0);
   assert(summary.qmin > 0.0);
+  assert(summary.min_angle_degrees > 0.0);
+  assert(summary.angle_lt_10_pct >= 0.0 && summary.angle_lt_10_pct <= 100.0);
+  assert(summary.angle_lt_20_pct >= 0.0 && summary.angle_lt_20_pct <= 100.0);
+  const std::string summary_json = adaiso::summaryToJson(summary);
+  assert(summary_json.find("\"min_angle_degrees\"") != std::string::npos);
+  assert(summary_json.find("\"angle_lt_10_pct\"") != std::string::npos);
+  assert(summary_json.find("\"angle_lt_20_pct\"") != std::string::npos);
   assert(adaiso::boundaryVertices(mesh).empty());
 }
 
@@ -766,6 +773,9 @@ void testRemeshSmoke() {
   const auto output_summary = adaiso::summarizeMesh(output);
   assert(output_summary.qmin > 0.0);
   assert(output_summary.qmin + 1e-12 >= std::min(0.01, input_summary.qmin));
+  assert(std::isfinite(output_summary.min_angle_degrees));
+  assert(std::isfinite(output_summary.angle_lt_10_pct));
+  assert(std::isfinite(output_summary.angle_lt_20_pct));
   assert(remesher.stats().csf_solver_success);
   assert(remesher.stats().csf_residual_scaled < adaiso::detail::kResidualThreshold);
   const auto& iterations = remesher.stats().iterations;
@@ -779,6 +789,9 @@ void testRemeshSmoke() {
     assert(iterations[i].faces > 0);
     assert(std::isfinite(iterations[i].qavg));
     assert(std::isfinite(iterations[i].qmin));
+    assert(std::isfinite(iterations[i].min_angle_degrees));
+    assert(std::isfinite(iterations[i].angle_lt_10_pct));
+    assert(std::isfinite(iterations[i].angle_lt_20_pct));
     assert(std::isfinite(iterations[i].mean_ratio));
     assert(std::isfinite(iterations[i].std_ratio));
     assert(std::isfinite(iterations[i].p05_ratio));
@@ -1159,6 +1172,21 @@ void testTargetFieldConfigValidation() {
     config.auto_delta_quantile = std::numeric_limits<double>::infinity();
     assert_invalid_config(config);
   }
+  {
+    adaiso::AdaIsoConfig config;
+    config.min_angle_floor_degrees = -0.1;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.min_angle_floor_degrees = 60.1;
+    assert_invalid_config(config);
+  }
+  {
+    adaiso::AdaIsoConfig config;
+    config.min_angle_floor_degrees = std::numeric_limits<double>::infinity();
+    assert_invalid_config(config);
+  }
 }
 
 void testBatchCollapsePassCollapsesMultipleComponents() {
@@ -1176,7 +1204,7 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
   config.preprocess = false;
   config.tangent_lambda = 0.0;
   config.enable_relocation_mls = false;
-  config.min_quality_after_collapse = 0.0;
+  config.min_angle_floor_degrees = 0.0;
   config.verbose = false;
 
   adaiso::AdaIsoRemesher remesher(config);

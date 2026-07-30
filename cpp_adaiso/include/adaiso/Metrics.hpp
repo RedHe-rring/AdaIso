@@ -12,6 +12,9 @@ struct MeshSummary {
   std::size_t faces = 0;
   double qavg = 0.0;
   double qmin = 0.0;
+  double min_angle_degrees = 0.0;
+  double angle_lt_10_pct = 0.0;
+  double angle_lt_20_pct = 0.0;
 };
 
 struct ChamferDistanceSummary {

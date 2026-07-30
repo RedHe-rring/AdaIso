@@ -6,6 +6,7 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iomanip>
 #include <numeric>
@@ -15,6 +16,8 @@
 
 namespace adaiso {
 namespace {
+
+constexpr double kPi = 3.141592653589793238462643383279502884;
 
 struct AreaFace {
   int face_index = 0;
@@ -62,6 +65,16 @@ Eigen::Vector3d sampleTriangle(const Mesh& mesh, int face_index, double u, doubl
   const Eigen::Vector3d& b = mesh.vertices[static_cast<std::size_t>(face[1])];
   const Eigen::Vector3d& c = mesh.vertices[static_cast<std::size_t>(face[2])];
   return a + u * (b - a) + v * (c - a);
+}
+
+double innerAngleDegrees(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
+  const Eigen::Vector3d u = q - p;
+  const Eigen::Vector3d v = r - p;
+  const double denom = u.norm() * v.norm();
+  if (denom <= 1e-14 || !std::isfinite(denom)) {
+    return 0.0;
+  }
+  return std::acos(std::clamp(u.dot(v) / denom, -1.0, 1.0)) * 180.0 / kPi;
 }
 
 std::vector<Eigen::Vector3d> sampleMeshByArea(const Mesh& mesh, std::size_t samples) {
@@ -119,6 +132,39 @@ MeshSummary summarizeMesh(const Mesh& mesh) {
   }
   summary.qavg = sum / static_cast<double>(qualities.size());
   summary.qmin = *std::min_element(qualities.begin(), qualities.end());
+
+  double min_angle = std::numeric_limits<double>::infinity();
+  std::size_t angle_count = 0;
+  std::size_t angle_lt_10 = 0;
+  std::size_t angle_lt_20 = 0;
+  for (const auto& face : mesh.faces) {
+    const Eigen::Vector3d& a = mesh.vertices[static_cast<std::size_t>(face[0])];
+    const Eigen::Vector3d& b = mesh.vertices[static_cast<std::size_t>(face[1])];
+    const Eigen::Vector3d& c = mesh.vertices[static_cast<std::size_t>(face[2])];
+    const std::array<double, 3> angles = {
+        innerAngleDegrees(a, b, c),
+        innerAngleDegrees(b, c, a),
+        innerAngleDegrees(c, a, b),
+    };
+    for (double angle : angles) {
+      if (!std::isfinite(angle)) {
+        continue;
+      }
+      min_angle = std::min(min_angle, angle);
+      ++angle_count;
+      if (angle < 10.0) {
+        ++angle_lt_10;
+      }
+      if (angle < 20.0) {
+        ++angle_lt_20;
+      }
+    }
+  }
+  if (angle_count > 0) {
+    summary.min_angle_degrees = min_angle;
+    summary.angle_lt_10_pct = 100.0 * static_cast<double>(angle_lt_10) / static_cast<double>(angle_count);
+    summary.angle_lt_20_pct = 100.0 * static_cast<double>(angle_lt_20) / static_cast<double>(angle_count);
+  }
   return summary;
 }
 
@@ -131,7 +177,10 @@ std::string summaryToJson(const MeshSummary& summary, int indent) {
   out << pad2 << "\"vertices\": " << summary.vertices << ",\n";
   out << pad2 << "\"faces\": " << summary.faces << ",\n";
   out << pad2 << "\"qavg\": " << summary.qavg << ",\n";
-  out << pad2 << "\"qmin\": " << summary.qmin << "\n";
+  out << pad2 << "\"qmin\": " << summary.qmin << ",\n";
+  out << pad2 << "\"min_angle_degrees\": " << summary.min_angle_degrees << ",\n";
+  out << pad2 << "\"angle_lt_10_pct\": " << summary.angle_lt_10_pct << ",\n";
+  out << pad2 << "\"angle_lt_20_pct\": " << summary.angle_lt_20_pct << "\n";
   out << pad << "}";
   return out.str();
 }
