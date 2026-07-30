@@ -1285,6 +1285,48 @@ void testBatchCollapsePassCollapsesMultipleComponents() {
   assert(remesher.stats().csf_solver_success);
 }
 
+void testCollapseTargetEnergyAcceptanceDiagnostics() {
+  const adaiso::Mesh input = makeFeatureCollapseMesh();
+  input.validate();
+
+  adaiso::AdaIsoConfig config;
+  config.variant = adaiso::Variant::Code;
+  config.curvature_mode = adaiso::CurvatureMode::RobustMean;
+  config.target_error_delta = 0.01;
+  config.global_iterations = 1;
+  config.max_split_passes = 0;
+  config.max_collapse_passes = 1;
+  config.max_flip_passes = 0;
+  config.preprocess = false;
+  config.tangent_lambda = 0.0;
+  config.enable_relocation_mls = false;
+  config.min_angle_floor_degrees = 0.0;
+  config.split_factor_override = 0.85;
+  config.collapse_factor_override = 0.8;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(input);
+  output.validate();
+
+  const auto& stats = remesher.stats();
+  assert(stats.size_stage_collapses > 0);
+  assert(stats.size_stage_collapse_accepted == static_cast<std::size_t>(stats.size_stage_collapses));
+
+  const std::size_t collapse_reject_reasons =
+      stats.size_stage_collapse_rejected_by_boundary +
+      stats.size_stage_collapse_rejected_by_non_manifold +
+      stats.size_stage_collapse_rejected_by_batch_conflict +
+      stats.size_stage_collapse_rejected_by_link_condition +
+      stats.size_stage_collapse_rejected_by_degenerate_patch +
+      stats.size_stage_collapse_rejected_by_target_length +
+      stats.size_stage_collapse_rejected_by_angle +
+      stats.size_stage_collapse_rejected_by_batch_duplicate;
+  assert(collapse_reject_reasons == stats.size_stage_collapse_rejected);
+  assert(stats.size_stage_collapse_accepted + stats.size_stage_collapse_rejected ==
+         stats.size_stage_short_edge_candidates);
+}
+
 void testTargetMetricSplitPlacement() {
   {
     const adaiso::Mesh input = makeTargetMetricSplitTriangle();
@@ -1563,6 +1605,7 @@ int main() {
   testRelocationKeepsBoundaryVerticesFixed();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();
+  testCollapseTargetEnergyAcceptanceDiagnostics();
   testTargetMetricSplitPlacement();
   testWeakSplitAngleGuard();
   testFeatureAwareCollapsePlacement();

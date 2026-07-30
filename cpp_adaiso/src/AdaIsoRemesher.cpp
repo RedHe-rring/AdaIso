@@ -68,6 +68,7 @@ constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 constexpr double kMinAngleTolDegrees = 1e-8;
 constexpr double kMetricViolationTol = 1e-8;
+constexpr double kCollapseTargetLengthSlack = 0.05;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -326,6 +327,7 @@ struct LocalPatchMetrics {
   bool valid = false;
   double min_angle_degrees = 0.0;
   double target_metric_violation = 0.0;
+  double max_target_metric_ratio = 0.0;
 };
 
 int remappedVertex(const std::unordered_map<int, int>& replacements, int vertex) {
@@ -344,16 +346,17 @@ Eigen::Vector3d localPatchPoint(
   return mesh.vertices[static_cast<std::size_t>(vertex)];
 }
 
-double localEdgeMetricViolation(
+double localEdgeTargetRatio(
     const TargetLengthField& target_field,
     const Eigen::Vector3d& a,
-    const Eigen::Vector3d& b,
-    double collapse_factor,
-    double split_factor) {
-  const double ratio = targetMetricLength(
+    const Eigen::Vector3d& b) {
+  return targetMetricLength(
       (a - b).norm(),
       target_field.valueAt(a),
       target_field.valueAt(b));
+}
+
+double localEdgeMetricViolation(double ratio, double collapse_factor, double split_factor) {
   if (!std::isfinite(ratio)) {
     return std::numeric_limits<double>::infinity();
   }
@@ -410,12 +413,15 @@ LocalPatchMetrics evaluateLocalPatch(
       if (!checked_edges.insert(edge).second) {
         continue;
       }
-      const double violation = localEdgeMetricViolation(
-          target_field,
-          localPatchPoint(mesh, overrides, edge.first),
-          localPatchPoint(mesh, overrides, edge.second),
-          collapse_factor,
-          split_factor);
+      const Eigen::Vector3d edge_start = localPatchPoint(mesh, overrides, edge.first);
+      const Eigen::Vector3d edge_end = localPatchPoint(mesh, overrides, edge.second);
+      const double ratio = localEdgeTargetRatio(target_field, edge_start, edge_end);
+      if (!std::isfinite(ratio)) {
+        metrics.valid = false;
+        return metrics;
+      }
+      metrics.max_target_metric_ratio = std::max(metrics.max_target_metric_ratio, ratio);
+      const double violation = localEdgeMetricViolation(ratio, collapse_factor, split_factor);
       if (!std::isfinite(violation)) {
         metrics.valid = false;
         return metrics;
@@ -2497,21 +2503,6 @@ AdaIsoRemesher::CollapseRejectReason AdaIsoRemesher::collapseRejectReason(
   if (related.size() < 3) {
     return CollapseRejectReason::DegeneratePatch;
   }
-  const double candidate_target = targetAt(candidate);
-  if (!std::isfinite(candidate_target)) {
-    return CollapseRejectReason::TargetLength;
-  }
-  for (int n : related) {
-    const double length = (candidate - mesh.vertices[static_cast<std::size_t>(n)]).norm();
-    const double metric_length = targetMetricLength(
-        length,
-        candidate_target,
-        targetAt(mesh.vertices[static_cast<std::size_t>(n)]));
-    if (!std::isfinite(metric_length) || metric_length > config_.splitFactor()) {
-      return CollapseRejectReason::TargetLength;
-    }
-  }
-
   {
     const int keep = std::min(a, b);
     const int remove = std::max(a, b);
@@ -2545,8 +2536,20 @@ AdaIsoRemesher::CollapseRejectReason AdaIsoRemesher::collapseRejectReason(
 
     if (!before.valid || !after.valid ||
         !std::isfinite(before.min_angle_degrees) ||
-        !std::isfinite(after.min_angle_degrees)) {
+        !std::isfinite(after.min_angle_degrees) ||
+        !std::isfinite(before.target_metric_violation) ||
+        !std::isfinite(after.target_metric_violation) ||
+        !std::isfinite(before.max_target_metric_ratio) ||
+        !std::isfinite(after.max_target_metric_ratio)) {
       return CollapseRejectReason::DegeneratePatch;
+    }
+    if (after.target_metric_violation > before.target_metric_violation - kMetricViolationTol) {
+      return CollapseRejectReason::TargetLength;
+    }
+    const double max_allowed_ratio =
+        std::max(before.max_target_metric_ratio, config_.splitFactor()) + kCollapseTargetLengthSlack;
+    if (after.max_target_metric_ratio > max_allowed_ratio) {
+      return CollapseRejectReason::TargetLength;
     }
     if (!minAngleSafetyAccepted(
             before.min_angle_degrees,

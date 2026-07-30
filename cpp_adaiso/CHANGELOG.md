@@ -1,5 +1,20 @@
 # Changelog
 
+## 5.3.4
+
+Behavior update:
+Replaces the collapse target-length hard cap with a local target-energy
+acceptance rule.
+
+- Collapse candidates now compare local target-metric violation before and
+  after the operation instead of rejecting any candidate that creates one edge
+  above the split threshold.
+- A small internal max-ratio slack prevents collapse from creating much longer
+  local edges while still allowing the split/collapse pair to reduce local size
+  field error.
+- Stage A policy, batch selection, CLI options, and collapse rejection
+  diagnostics are otherwise unchanged.
+
 ## 5.3.3
 
 Behavior update:
