@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.3.5
+
+Behavior update:
+Removes the collapse max-ratio slack constraint added in v5.3.4.
+
+- Collapse now uses local target-metric violation decrease as its only
+  size-field acceptance condition.
+- Angle safety, Stage A ordering, batch selection, CLI options, and rejection
+  diagnostics remain unchanged.
+- `size_stage_collapse_rejected_by_target_length` now means the collapse did
+  not reduce local target-metric violation.
+
 ## 5.3.4
 
 Behavior update:

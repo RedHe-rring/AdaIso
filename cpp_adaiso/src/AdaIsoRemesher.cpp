@@ -68,7 +68,6 @@ constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 constexpr double kMinAngleTolDegrees = 1e-8;
 constexpr double kMetricViolationTol = 1e-8;
-constexpr double kCollapseTargetLengthSlack = 0.05;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
 
@@ -327,7 +326,6 @@ struct LocalPatchMetrics {
   bool valid = false;
   double min_angle_degrees = 0.0;
   double target_metric_violation = 0.0;
-  double max_target_metric_ratio = 0.0;
 };
 
 int remappedVertex(const std::unordered_map<int, int>& replacements, int vertex) {
@@ -420,7 +418,6 @@ LocalPatchMetrics evaluateLocalPatch(
         metrics.valid = false;
         return metrics;
       }
-      metrics.max_target_metric_ratio = std::max(metrics.max_target_metric_ratio, ratio);
       const double violation = localEdgeMetricViolation(ratio, collapse_factor, split_factor);
       if (!std::isfinite(violation)) {
         metrics.valid = false;
@@ -2538,17 +2535,10 @@ AdaIsoRemesher::CollapseRejectReason AdaIsoRemesher::collapseRejectReason(
         !std::isfinite(before.min_angle_degrees) ||
         !std::isfinite(after.min_angle_degrees) ||
         !std::isfinite(before.target_metric_violation) ||
-        !std::isfinite(after.target_metric_violation) ||
-        !std::isfinite(before.max_target_metric_ratio) ||
-        !std::isfinite(after.max_target_metric_ratio)) {
+        !std::isfinite(after.target_metric_violation)) {
       return CollapseRejectReason::DegeneratePatch;
     }
     if (after.target_metric_violation > before.target_metric_violation - kMetricViolationTol) {
-      return CollapseRejectReason::TargetLength;
-    }
-    const double max_allowed_ratio =
-        std::max(before.max_target_metric_ratio, config_.splitFactor()) + kCollapseTargetLengthSlack;
-    if (after.max_target_metric_ratio > max_allowed_ratio) {
       return CollapseRejectReason::TargetLength;
     }
     if (!minAngleSafetyAccepted(

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(cpp_adaiso VERSION 5.3.4 LANGUAGES CXX)
+project(cpp_adaiso VERSION 5.3.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
