@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.3.10
+
+Diagnostic update:
+Adds Stage A geometry-error decomposition outputs.
+
+- Stage mesh export now writes `size_before_projection.ply` after Stage A
+  split/collapse and before the final global projection.
+- `size_after_projection.ply` remains the final global projection output before
+  Stage B and is written only when Stage A projection is enabled.
+- Added a T21/T36 diagnostic script to evaluate RMSE/CD at Stage A before
+  projection, Stage A after projection, and final output.
+
 ## 5.3.9
 
 Behavior update:

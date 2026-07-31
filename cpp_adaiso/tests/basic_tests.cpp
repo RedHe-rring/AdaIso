@@ -1137,6 +1137,7 @@ void testStageMeshExport() {
   const std::vector<std::filesystem::path> expected = {
       dir / "size_iter001_after_split.ply",
       dir / "size_iter001_after_collapse.ply",
+      dir / "size_before_projection.ply",
       dir / "size_after_projection.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
@@ -1175,6 +1176,7 @@ void testAllStageMeshExport() {
   const std::vector<std::filesystem::path> expected = {
       dir / "size_iter001_after_split.ply",
       dir / "size_iter001_after_collapse.ply",
+      dir / "size_before_projection.ply",
       dir / "size_after_projection.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
@@ -1194,6 +1196,30 @@ void testAllStageMeshExport() {
   }
 
   assert(!std::filesystem::exists(dir / "iter001_after_split.ply"));
+  std::filesystem::remove_all(dir);
+}
+
+void testStageMeshExportWithoutStageAProjection() {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "adaiso_stage_mesh_export_no_projection";
+  std::filesystem::remove_all(dir);
+
+  adaiso::AdaIsoConfig config;
+  config.global_iterations = 1;
+  config.verbose = false;
+  config.stage_mesh_export_dir = dir.string();
+  config.stage_a_projection = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(makePyramid());
+  output.validate();
+
+  const auto before = dir / "size_before_projection.ply";
+  assert(std::filesystem::exists(before));
+  assert(std::filesystem::file_size(before) > 0);
+  adaiso::loadMesh(before).validate();
+  assert(!std::filesystem::exists(dir / "size_after_projection.ply"));
+
   std::filesystem::remove_all(dir);
 }
 
@@ -1698,6 +1724,7 @@ int main() {
   testIterationMeshExport();
   testStageMeshExport();
   testAllStageMeshExport();
+  testStageMeshExportWithoutStageAProjection();
   testStageAProjectionFinalOnlyMode();
   testRelocationKeepsBoundaryVerticesFixed();
   testTargetFieldConfigValidation();

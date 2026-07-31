@@ -2006,6 +2006,12 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
 
   const ReferenceSurfaceProjector stage_a_projector(original_for_projection);
   runSizeFieldFittingStage(mesh, stage_a_projector);
+  if (!config_.stage_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.stage_mesh_export_dir) / "size_before_projection.ply", mesh);
+  }
+  if (!config_.all_stage_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_before_projection.ply", mesh);
+  }
   if (config_.stage_a_projection) {
     (void)runStageAProjection(mesh, stage_a_projector, nullptr, true);
   }
