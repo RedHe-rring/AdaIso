@@ -67,7 +67,7 @@ constexpr double kTargetKappaMin = 1e-12;
 constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 constexpr double kMinAngleTolDegrees = 1e-8;
-constexpr double kMetricViolationTol = 1e-8;
+constexpr double kTargetLogEnergyTol = 1e-8;
 constexpr int kCollapseConflictMiniRounds = 2;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
@@ -327,6 +327,7 @@ struct LocalPatchMetrics {
   bool valid = false;
   double min_angle_degrees = 0.0;
   double target_metric_violation = 0.0;
+  double target_log_energy = 0.0;
 };
 
 int remappedVertex(const std::unordered_map<int, int>& replacements, int vertex) {
@@ -362,6 +363,14 @@ double localEdgeMetricViolation(double ratio, double collapse_factor, double spl
   return std::max(0.0, collapse_factor - ratio) + std::max(0.0, ratio - split_factor);
 }
 
+double localEdgeTargetLogEnergy(double ratio) {
+  if (!std::isfinite(ratio) || ratio <= 0.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  const double log_ratio = std::log(ratio);
+  return log_ratio * log_ratio;
+}
+
 LocalPatchMetrics evaluateLocalPatch(
     const Mesh& mesh,
     const TargetLengthField& target_field,
@@ -376,6 +385,7 @@ LocalPatchMetrics evaluateLocalPatch(
   metrics.min_angle_degrees = std::numeric_limits<double>::infinity();
 
   bool checked_face = false;
+  std::size_t checked_edge_count = 0;
   std::unordered_set<Edge, EdgeHash> checked_edges;
   for (const auto& face : faces) {
     const int v0 = remappedVertex(replacements, face[0]);
@@ -424,13 +434,23 @@ LocalPatchMetrics evaluateLocalPatch(
         metrics.valid = false;
         return metrics;
       }
+      const double log_energy = localEdgeTargetLogEnergy(ratio);
+      if (!std::isfinite(log_energy)) {
+        metrics.valid = false;
+        return metrics;
+      }
       metrics.target_metric_violation += violation;
+      metrics.target_log_energy += log_energy;
+      ++checked_edge_count;
     }
   }
 
-  if (!checked_face) {
+  if (!checked_face || checked_edge_count == 0) {
     metrics.valid = false;
     metrics.min_angle_degrees = 0.0;
+    metrics.target_log_energy = 0.0;
+  } else {
+    metrics.target_log_energy /= static_cast<double>(checked_edge_count);
   }
   return metrics;
 }
@@ -1560,17 +1580,26 @@ EdgeRatioStats computeEdgeRatioStats(
   std::vector<double> ratios;
   ratios.reserve(edges.size());
   int violations = 0;
+  int short_violations = 0;
+  int long_violations = 0;
+  double target_log_energy_sum = 0.0;
   for (const auto& edge : edges) {
     const int a = edge.first;
     const int b = edge.second;
     const double ratio = edgeTargetMetricLength(mesh, target_field, a, b);
-    if (!std::isfinite(ratio)) {
+    if (!std::isfinite(ratio) || ratio <= 0.0) {
       continue;
     }
     ratios.push_back(ratio);
-    if (ratio < collapse_factor || ratio > split_factor) {
+    if (ratio < collapse_factor) {
       ++violations;
+      ++short_violations;
+    } else if (ratio > split_factor) {
+      ++violations;
+      ++long_violations;
     }
+    const double log_ratio = std::log(ratio);
+    target_log_energy_sum += log_ratio * log_ratio;
   }
 
   if (ratios.empty()) {
@@ -1589,6 +1618,9 @@ EdgeRatioStats computeEdgeRatioStats(
   stats.p05_ratio = quantileOfSorted(ratios, 0.05);
   stats.p95_ratio = quantileOfSorted(ratios, 0.95);
   stats.violation_rate = static_cast<double>(violations) / static_cast<double>(ratios.size());
+  stats.short_violation_rate = static_cast<double>(short_violations) / static_cast<double>(ratios.size());
+  stats.long_violation_rate = static_cast<double>(long_violations) / static_cast<double>(ratios.size());
+  stats.target_log_energy = target_log_energy_sum / static_cast<double>(ratios.size());
   return stats;
 }
 
@@ -1615,6 +1647,9 @@ void writeOutputTargetDiagnostics(
   std::vector<double> ratios;
   const auto edges = uniqueEdges(mesh);
   ratios.reserve(edges.size());
+  int short_violations = 0;
+  int long_violations = 0;
+  double target_log_energy_sum = 0.0;
 
   auto edge_csv = openOutputFile(out_dir / "output_edge_ratios.csv");
   edge_csv << "i,j,edge_length,target_i,target_j,target_min,target_max,metric_length\n";
@@ -1633,7 +1668,7 @@ void writeOutputTargetDiagnostics(
       continue;
     }
     const double ratio = targetMetricLength(edge_length, target_i, target_j);
-    if (!std::isfinite(ratio)) {
+    if (!std::isfinite(ratio) || ratio <= 0.0) {
       continue;
     }
     edge_csv << a << ',' << b << ','
@@ -1644,6 +1679,13 @@ void writeOutputTargetDiagnostics(
              << target_max << ','
              << ratio << '\n';
     ratios.push_back(ratio);
+    if (ratio < collapse_factor) {
+      ++short_violations;
+    } else if (ratio > split_factor) {
+      ++long_violations;
+    }
+    const double log_ratio = std::log(ratio);
+    target_log_energy_sum += log_ratio * log_ratio;
     vertex_min_ratio[ai] = std::min(vertex_min_ratio[ai], ratio);
     vertex_min_ratio[bi] = std::min(vertex_min_ratio[bi], ratio);
     vertex_max_ratio[ai] = std::max(vertex_max_ratio[ai], ratio);
@@ -1722,7 +1764,13 @@ void writeOutputTargetDiagnostics(
   stats << "    \"p95_ratio\": " << quantileOfSorted(ratios, 0.95) << ",\n";
   stats << "    \"p99_ratio\": " << quantileOfSorted(ratios, 0.99) << ",\n";
   stats << "    \"violation_rate\": "
-        << (ratios.empty() ? 0.0 : static_cast<double>(violations) / static_cast<double>(ratios.size())) << "\n";
+        << (ratios.empty() ? 0.0 : static_cast<double>(violations) / static_cast<double>(ratios.size())) << ",\n";
+  stats << "    \"short_violation_rate\": "
+        << (ratios.empty() ? 0.0 : static_cast<double>(short_violations) / static_cast<double>(ratios.size())) << ",\n";
+  stats << "    \"long_violation_rate\": "
+        << (ratios.empty() ? 0.0 : static_cast<double>(long_violations) / static_cast<double>(ratios.size())) << ",\n";
+  stats << "    \"target_log_energy\": "
+        << (ratios.empty() ? 0.0 : target_log_energy_sum / static_cast<double>(ratios.size())) << "\n";
   stats << "  }\n";
   stats << "}\n";
   writeTextFile(out_dir / "output_visualization_stats.json", stats.str());
@@ -1946,6 +1994,9 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
   const MeshSummary size_summary = summarizeMesh(mesh);
   const EdgeRatioStats size_ratio_stats = edgeRatioStats(mesh);
   stats_.size_stage_final_violation = size_ratio_stats.violation_rate;
+  stats_.size_stage_final_short_violation = size_ratio_stats.short_violation_rate;
+  stats_.size_stage_final_long_violation = size_ratio_stats.long_violation_rate;
+  stats_.size_stage_final_target_log_energy = size_ratio_stats.target_log_energy;
   stats_.size_stage_final_min_angle_degrees = size_summary.min_angle_degrees;
   stats_.size_stage_final_angle_lt_10_pct = size_summary.angle_lt_10_pct;
   stats_.size_stage_final_angle_lt_20_pct = size_summary.angle_lt_20_pct;
@@ -2003,13 +2054,17 @@ void AdaIsoRemesher::recordIterationStats(
       ratio_stats.std_ratio,
       ratio_stats.p05_ratio,
       ratio_stats.p95_ratio,
-      ratio_stats.violation_rate});
+      ratio_stats.violation_rate,
+      ratio_stats.short_violation_rate,
+      ratio_stats.long_violation_rate,
+      ratio_stats.target_log_energy});
   if (config_.verbose) {
     std::cerr << "  split=" << split_count
               << ", collapse=" << collapse_count
               << ", flip=" << flip_count
               << ", relocate=" << relocation_count
               << ", violation=" << ratio_stats.violation_rate
+              << ", size_energy=" << ratio_stats.target_log_energy
               << ", min_angle=" << iteration_summary.min_angle_degrees
               << ", mesh=" << mesh.vertexCount() << "v/" << mesh.faceCount() << "f\n";
   }
@@ -2601,10 +2656,12 @@ AdaIsoRemesher::CollapseRejectReason AdaIsoRemesher::collapseRejectReason(
         !std::isfinite(before.min_angle_degrees) ||
         !std::isfinite(after.min_angle_degrees) ||
         !std::isfinite(before.target_metric_violation) ||
-        !std::isfinite(after.target_metric_violation)) {
+        !std::isfinite(after.target_metric_violation) ||
+        !std::isfinite(before.target_log_energy) ||
+        !std::isfinite(after.target_log_energy)) {
       return CollapseRejectReason::DegeneratePatch;
     }
-    if (after.target_metric_violation > before.target_metric_violation - kMetricViolationTol) {
+    if (after.target_log_energy >= before.target_log_energy - kTargetLogEnergyTol) {
       return CollapseRejectReason::TargetLength;
     }
     if (!minAngleSafetyAccepted(
@@ -2817,7 +2874,9 @@ bool AdaIsoRemesher::flipAcceptedByAngleMetric(
           config_.min_angle_floor_degrees)) {
     return false;
   }
-  if (after.target_metric_violation > before.target_metric_violation + kMetricViolationTol) {
+  if (!std::isfinite(before.target_log_energy) ||
+      !std::isfinite(after.target_log_energy) ||
+      after.target_log_energy > before.target_log_energy + kTargetLogEnergyTol) {
     return false;
   }
   if (before.min_angle_degrees < config_.min_angle_floor_degrees) {
@@ -2826,10 +2885,10 @@ bool AdaIsoRemesher::flipAcceptedByAngleMetric(
   if (after.min_angle_degrees > before.min_angle_degrees + kMinAngleTolDegrees) {
     return true;
   }
-  if (after.target_metric_violation + kMetricViolationTol < before.target_metric_violation) {
+  if (after.target_log_energy + kTargetLogEnergyTol < before.target_log_energy) {
     return true;
   }
-  if (std::abs(after.target_metric_violation - before.target_metric_violation) <= kMetricViolationTol) {
+  if (std::abs(after.target_log_energy - before.target_log_energy) <= kTargetLogEnergyTol) {
     return valenceObjective(valence, boundary, a, b, c, d, true) <
            valenceObjective(valence, boundary, a, b, c, d, false);
   }
@@ -2999,7 +3058,9 @@ bool AdaIsoRemesher::relocationAcceptedByAngleMetric(
   if (!before.valid || !after.valid) {
     return false;
   }
-  if (after.target_metric_violation > before.target_metric_violation + kMetricViolationTol) {
+  if (!std::isfinite(before.target_log_energy) ||
+      !std::isfinite(after.target_log_energy) ||
+      after.target_log_energy > before.target_log_energy + kTargetLogEnergyTol) {
     return false;
   }
   return minAngleQualityAccepted(

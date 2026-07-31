@@ -158,7 +158,10 @@ std::string iterationsToJson(const std::vector<adaiso::AdaIsoStats::IterationSta
     out << pad2 << "  \"std_ratio\": " << item.std_ratio << ",\n";
     out << pad2 << "  \"p05_ratio\": " << item.p05_ratio << ",\n";
     out << pad2 << "  \"p95_ratio\": " << item.p95_ratio << ",\n";
-    out << pad2 << "  \"violation_rate\": " << item.violation_rate << "\n";
+    out << pad2 << "  \"violation_rate\": " << item.violation_rate << ",\n";
+    out << pad2 << "  \"short_violation_rate\": " << item.short_violation_rate << ",\n";
+    out << pad2 << "  \"long_violation_rate\": " << item.long_violation_rate << ",\n";
+    out << pad2 << "  \"target_log_energy\": " << item.target_log_energy << "\n";
     out << pad2 << "}";
     if (i + 1 < iterations.size()) {
       out << ",";
@@ -300,6 +303,9 @@ std::string buildSummaryJson(
   out << "    \"size_stage_collapse_conflict_retry_rejected\": "
       << stats.size_stage_collapse_conflict_retry_rejected << ",\n";
   out << "    \"size_stage_final_violation\": " << stats.size_stage_final_violation << ",\n";
+  out << "    \"size_stage_final_short_violation\": " << stats.size_stage_final_short_violation << ",\n";
+  out << "    \"size_stage_final_long_violation\": " << stats.size_stage_final_long_violation << ",\n";
+  out << "    \"size_stage_final_target_log_energy\": " << stats.size_stage_final_target_log_energy << ",\n";
   out << "    \"size_stage_final_min_angle_degrees\": " << stats.size_stage_final_min_angle_degrees << ",\n";
   out << "    \"size_stage_final_angle_lt_10_pct\": " << stats.size_stage_final_angle_lt_10_pct << ",\n";
   out << "    \"size_stage_final_angle_lt_20_pct\": " << stats.size_stage_final_angle_lt_20_pct << ",\n";

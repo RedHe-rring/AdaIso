@@ -1,5 +1,20 @@
 # Changelog
 
+## 5.3.7
+
+Behavior update:
+Uses a continuous target-field distance energy for local size-field decisions.
+
+- Edge-ratio diagnostics now report short/long violation rates and
+  `target_log_energy = mean(log(target_metric_edge_length)^2)`.
+- Stage A collapse now accepts candidates only when local target log energy
+  decreases; split candidate collection still uses the existing long-edge
+  threshold.
+- Stage B flip and relocation keep their quality objectives, but their
+  size-field protection now uses target log energy instead of hinge violation.
+- Summary JSON reports Stage A final short violation, long violation, and
+  target log energy.
+
 ## 5.3.6
 
 Behavior update:

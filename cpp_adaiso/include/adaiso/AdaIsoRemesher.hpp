@@ -35,6 +35,9 @@ struct EdgeRatioStats {
   double p05_ratio = 0.0;
   double p95_ratio = 0.0;
   double violation_rate = 0.0;
+  double short_violation_rate = 0.0;
+  double long_violation_rate = 0.0;
+  double target_log_energy = 0.0;
 };
 
 struct TargetLengthFieldImpl;
@@ -117,6 +120,9 @@ struct AdaIsoStats {
     double p05_ratio = 0.0;
     double p95_ratio = 0.0;
     double violation_rate = 0.0;
+    double short_violation_rate = 0.0;
+    double long_violation_rate = 0.0;
+    double target_log_energy = 0.0;
   };
 
   std::size_t vertices = 0;
@@ -144,6 +150,9 @@ struct AdaIsoStats {
   std::size_t size_stage_collapse_conflict_retry_accepted = 0;
   std::size_t size_stage_collapse_conflict_retry_rejected = 0;
   double size_stage_final_violation = 0.0;
+  double size_stage_final_short_violation = 0.0;
+  double size_stage_final_long_violation = 0.0;
+  double size_stage_final_target_log_energy = 0.0;
   double size_stage_final_min_angle_degrees = 0.0;
   double size_stage_final_angle_lt_10_pct = 0.0;
   double size_stage_final_angle_lt_20_pct = 0.0;

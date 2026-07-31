@@ -668,6 +668,9 @@ void testEdgeRatioStats() {
     assertNear(stats.p05_ratio, 1.0);
     assertNear(stats.p95_ratio, 0.1 + 0.9 * sqrt2);
     assertNear(stats.violation_rate, 1.0 / 3.0);
+    assertNear(stats.short_violation_rate, 0.0);
+    assertNear(stats.long_violation_rate, 1.0 / 3.0);
+    assertNear(stats.target_log_energy, std::log(sqrt2) * std::log(sqrt2) / 3.0);
   }
 
   {
@@ -695,6 +698,13 @@ void testEdgeRatioStats() {
     assertNear(stats.p05_ratio, 0.9 * equal_target_metric + 0.1 * varying_target_metric);
     assertNear(stats.p95_ratio, varying_target_metric);
     assertNear(stats.violation_rate, 1.0 / 3.0);
+    assertNear(stats.short_violation_rate, 1.0 / 3.0);
+    assertNear(stats.long_violation_rate, 0.0);
+    const double expected_log_energy =
+        (std::log(equal_target_metric) * std::log(equal_target_metric) +
+            2.0 * std::log(varying_target_metric) * std::log(varying_target_metric)) /
+        3.0;
+    assertNear(stats.target_log_energy, expected_log_energy);
   }
 }
 
@@ -827,6 +837,9 @@ void testRemeshSmoke() {
              remesher.stats().size_stage_collapse_conflict_retry_rejected ==
          remesher.stats().size_stage_collapse_conflict_retry_candidates);
   assert(std::isfinite(remesher.stats().size_stage_final_violation));
+  assert(std::isfinite(remesher.stats().size_stage_final_short_violation));
+  assert(std::isfinite(remesher.stats().size_stage_final_long_violation));
+  assert(std::isfinite(remesher.stats().size_stage_final_target_log_energy));
   assert(std::isfinite(remesher.stats().size_stage_final_min_angle_degrees));
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_10_pct));
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_20_pct));
@@ -859,7 +872,13 @@ void testRemeshSmoke() {
     assert(std::isfinite(iteration.p05_ratio));
     assert(std::isfinite(iteration.p95_ratio));
     assert(std::isfinite(iteration.violation_rate));
+    assert(std::isfinite(iteration.short_violation_rate));
+    assert(std::isfinite(iteration.long_violation_rate));
+    assert(std::isfinite(iteration.target_log_energy));
     assert(iteration.violation_rate >= 0.0 && iteration.violation_rate <= 1.0);
+    assert(iteration.short_violation_rate >= 0.0 && iteration.short_violation_rate <= 1.0);
+    assert(iteration.long_violation_rate >= 0.0 && iteration.long_violation_rate <= 1.0);
+    assert(iteration.target_log_energy >= 0.0);
   }
 }
 
@@ -977,6 +996,9 @@ void testTargetFieldDiagnosticExport() {
     assert(output_stats_text.find("\"output_edge_ratio_max_heat.ply\"") != std::string::npos);
     assert(output_stats_text.find("\"target_metric_edge_length\"") != std::string::npos);
     assert(output_stats_text.find("\"violation_rate\"") != std::string::npos);
+    assert(output_stats_text.find("\"short_violation_rate\"") != std::string::npos);
+    assert(output_stats_text.find("\"long_violation_rate\"") != std::string::npos);
+    assert(output_stats_text.find("\"target_log_energy\"") != std::string::npos);
   }
 
   {
