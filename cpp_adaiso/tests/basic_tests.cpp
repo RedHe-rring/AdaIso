@@ -736,6 +736,8 @@ void testStageAPolicyParsing() {
   assert(adaiso::toString(adaiso::StageAPolicy::SplitCollapseWeakGuard) == "split_collapse_weak_guard");
   assert(adaiso::toString(adaiso::StageAPolicy::CollapseSplitWeakGuard) == "collapse_split_weak_guard");
   assert(adaiso::AdaIsoConfig{}.stage_a_policy == adaiso::StageAPolicy::SplitCollapseNoGuard);
+  assert(!adaiso::AdaIsoConfig{}.feature_aware_collapse);
+  assert(adaiso::AdaIsoConfig{}.stage_a_projection);
 
   bool threw = false;
   try {
@@ -843,6 +845,10 @@ void testRemeshSmoke() {
   assert(std::isfinite(remesher.stats().size_stage_final_min_angle_degrees));
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_10_pct));
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_20_pct));
+  assert(remesher.stats().stage_a_projection_accepted <=
+         remesher.stats().stage_a_projection_candidates);
+  assert(std::isfinite(remesher.stats().stage_a_projection_mean_displacement));
+  assert(std::isfinite(remesher.stats().stage_a_projection_max_displacement));
   assert(remesher.stats().quality_stage_iterations >= 1);
   assert(remesher.stats().quality_stage_iterations <= config.global_iterations);
   for (const auto& iteration : iterations) {
@@ -1102,6 +1108,7 @@ void testStageMeshExport() {
   const std::vector<std::filesystem::path> expected = {
       dir / "size_iter001_after_split.ply",
       dir / "size_iter001_after_collapse.ply",
+      dir / "size_after_projection.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
   };
@@ -1132,6 +1139,7 @@ void testAllStageMeshExport() {
   const std::vector<std::filesystem::path> expected = {
       dir / "size_iter001_after_split.ply",
       dir / "size_iter001_after_collapse.ply",
+      dir / "size_after_projection.ply",
       dir / "quality_iter001_after_flip.ply",
       dir / "quality_iter001_after_smooth.ply",
   };

@@ -84,8 +84,9 @@ struct AdaIsoConfig {
   double mls_tolerance = 1e-4;
   bool avoid_obtuse_flip = true;
   double max_flip_dihedral_degrees = 45.0;
-  bool feature_aware_collapse = true;
+  bool feature_aware_collapse = false;
   double collapse_feature_omega = 0.15;
+  bool stage_a_projection = true;
   double split_factor_override = 0.0;
   double collapse_factor_override = 0.0;
   double target_h_max_factor = 5.0;
@@ -156,6 +157,13 @@ struct AdaIsoStats {
   double size_stage_final_min_angle_degrees = 0.0;
   double size_stage_final_angle_lt_10_pct = 0.0;
   double size_stage_final_angle_lt_20_pct = 0.0;
+  std::size_t stage_a_projection_candidates = 0;
+  std::size_t stage_a_projection_accepted = 0;
+  std::size_t stage_a_projection_rejected_by_invalid = 0;
+  std::size_t stage_a_projection_rejected_by_size_energy = 0;
+  std::size_t stage_a_projection_rejected_by_angle = 0;
+  double stage_a_projection_mean_displacement = 0.0;
+  double stage_a_projection_max_displacement = 0.0;
   int quality_stage_iterations = 0;
   int quality_stage_flips = 0;
   int quality_stage_relocations = 0;
@@ -210,6 +218,7 @@ class AdaIsoRemesher {
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
   void runSizeFieldFittingStage(Mesh& mesh);
+  [[nodiscard]] int runStageAProjection(Mesh& mesh, const Mesh& original_for_projection);
   void runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection);
   void recordIterationStats(
       const std::string& stage,
@@ -274,6 +283,13 @@ class AdaIsoRemesher {
       const std::vector<std::vector<int>>& vf,
       int vertex,
       const Eigen::Vector3d& candidate) const;
+  [[nodiscard]] bool stageAProjectionAccepted(
+      const Mesh& mesh,
+      const std::vector<std::vector<int>>& vf,
+      int vertex,
+      const Eigen::Vector3d& candidate,
+      bool& rejected_by_size_energy,
+      bool& rejected_by_angle) const;
   [[nodiscard]] std::vector<Eigen::Vector3d> mlsProject(
       const std::vector<Eigen::Vector3d>& points,
       const Mesh& original) const;

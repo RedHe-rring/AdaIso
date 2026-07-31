@@ -68,6 +68,8 @@ constexpr double kTargetHMinSafeFactor = 0.25;
 constexpr double kEquilateralAreaFactor = 0.43301270189221932338;
 constexpr double kMinAngleTolDegrees = 1e-8;
 constexpr double kTargetLogEnergyTol = 1e-8;
+constexpr double kStageAProjectionSizeEnergyTol = 1e-4;
+constexpr double kStageAProjectionMinDistanceEps = kEps;
 constexpr int kCollapseConflictMiniRounds = 2;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
@@ -328,6 +330,42 @@ struct LocalPatchMetrics {
   double min_angle_degrees = 0.0;
   double target_metric_violation = 0.0;
   double target_log_energy = 0.0;
+};
+
+Eigen::MatrixXd verticesToMatrix(const Mesh& mesh);
+Eigen::MatrixXi facesToMatrix(const Mesh& mesh);
+
+class ReferenceSurfaceProjector {
+ public:
+  explicit ReferenceSurfaceProjector(const Mesh& mesh)
+      : vertices_(verticesToMatrix(mesh)),
+        faces_(facesToMatrix(mesh)) {
+    if (mesh.vertices.empty() || mesh.faces.empty()) {
+      throw std::runtime_error("reference surface projector requires a non-empty mesh");
+    }
+    mesh.validate();
+    tree_.init(vertices_, faces_);
+  }
+
+  [[nodiscard]] bool closestPoint(const Eigen::Vector3d& point, Eigen::Vector3d& closest) const {
+    if (!finiteVector(point) || faces_.rows() == 0) {
+      return false;
+    }
+    const Eigen::RowVector3d query = point.transpose();
+    Eigen::RowVector3d closest_row = Eigen::RowVector3d::Zero();
+    int face_index = -1;
+    (void)tree_.squared_distance(vertices_, faces_, query, face_index, closest_row);
+    if (face_index < 0 || face_index >= faces_.rows()) {
+      return false;
+    }
+    closest = closest_row.transpose();
+    return finiteVector(closest);
+  }
+
+ private:
+  Eigen::MatrixXd vertices_;
+  Eigen::MatrixXi faces_;
+  SurfaceAabb tree_;
 };
 
 int remappedVertex(const std::unordered_map<int, int>& replacements, int vertex) {
@@ -1916,7 +1954,6 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   target_min_length_ = 0.0;
   target_max_length_ = 0.0;
   Mesh mesh = removeDegenerateFaces(input);
-  // TODO: 入口添加一个开关，用于输出mesh清理后的结果
 
 
   Mesh original_for_projection = mesh;
@@ -1940,6 +1977,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   }
 
   runSizeFieldFittingStage(mesh);
+  (void)runStageAProjection(mesh, original_for_projection);
   runQualityRepairStage(mesh, original_for_projection);
   mesh = removeDegenerateFaces(mesh);
 
@@ -2000,6 +2038,78 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
   stats_.size_stage_final_min_angle_degrees = size_summary.min_angle_degrees;
   stats_.size_stage_final_angle_lt_10_pct = size_summary.angle_lt_10_pct;
   stats_.size_stage_final_angle_lt_20_pct = size_summary.angle_lt_20_pct;
+}
+
+int AdaIsoRemesher::runStageAProjection(Mesh& mesh, const Mesh& original_for_projection) {
+  if (!config_.stage_a_projection) {
+    return 0;
+  }
+
+  ReferenceSurfaceProjector projector(original_for_projection);
+  const auto boundary = boundaryVertices(mesh);
+  const auto vf = vertexFaces(mesh);
+
+  int accepted = 0;
+  double displacement_sum = 0.0;
+  double displacement_max = 0.0;
+
+  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+    if (boundary.find(static_cast<int>(i)) != boundary.end()) {
+      continue;
+    }
+    if (i >= vf.size() || vf[i].empty()) {
+      ++stats_.stage_a_projection_rejected_by_invalid;
+      continue;
+    }
+
+    Eigen::Vector3d candidate = Eigen::Vector3d::Zero();
+    if (!projector.closestPoint(mesh.vertices[i], candidate)) {
+      ++stats_.stage_a_projection_rejected_by_invalid;
+      continue;
+    }
+    const double displacement = (candidate - mesh.vertices[i]).norm();
+    if (!std::isfinite(displacement) || displacement <= kStageAProjectionMinDistanceEps) {
+      continue;
+    }
+
+    ++stats_.stage_a_projection_candidates;
+    bool rejected_by_size_energy = false;
+    bool rejected_by_angle = false;
+    if (!stageAProjectionAccepted(
+            mesh,
+            vf,
+            static_cast<int>(i),
+            candidate,
+            rejected_by_size_energy,
+            rejected_by_angle)) {
+      if (rejected_by_size_energy) {
+        ++stats_.stage_a_projection_rejected_by_size_energy;
+      } else if (rejected_by_angle) {
+        ++stats_.stage_a_projection_rejected_by_angle;
+      } else {
+        ++stats_.stage_a_projection_rejected_by_invalid;
+      }
+      continue;
+    }
+
+    mesh.vertices[i] = candidate;
+    ++accepted;
+    ++stats_.stage_a_projection_accepted;
+    displacement_sum += displacement;
+    displacement_max = std::max(displacement_max, displacement);
+  }
+
+  stats_.stage_a_projection_mean_displacement =
+      accepted > 0 ? displacement_sum / static_cast<double>(accepted) : 0.0;
+  stats_.stage_a_projection_max_displacement = displacement_max;
+
+  if (!config_.stage_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.stage_mesh_export_dir) / "size_after_projection.ply", mesh);
+  }
+  if (!config_.all_stage_mesh_export_dir.empty()) {
+    writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_after_projection.ply", mesh);
+  }
+  return accepted;
 }
 
 void AdaIsoRemesher::runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection) {
@@ -3067,6 +3177,62 @@ bool AdaIsoRemesher::relocationAcceptedByAngleMetric(
       before.min_angle_degrees,
       after.min_angle_degrees,
       config_.min_angle_floor_degrees);
+}
+
+bool AdaIsoRemesher::stageAProjectionAccepted(
+    const Mesh& mesh,
+    const std::vector<std::vector<int>>& vf,
+    int vertex,
+    const Eigen::Vector3d& candidate,
+    bool& rejected_by_size_energy,
+    bool& rejected_by_angle) const {
+  rejected_by_size_energy = false;
+  rejected_by_angle = false;
+  if (vertex < 0 || static_cast<std::size_t>(vertex) >= vf.size() ||
+      vf[static_cast<std::size_t>(vertex)].empty() || !finiteVector(candidate)) {
+    return false;
+  }
+
+  std::vector<Eigen::Vector3i> faces;
+  faces.reserve(vf[static_cast<std::size_t>(vertex)].size());
+  for (int fi : vf[static_cast<std::size_t>(vertex)]) {
+    faces.push_back(mesh.faces[static_cast<std::size_t>(fi)]);
+  }
+
+  const LocalPatchMetrics before = evaluateLocalPatch(
+      mesh,
+      target_field_,
+      faces,
+      config_.collapseFactor(),
+      config_.splitFactor());
+  const LocalPatchMetrics after = evaluateLocalPatch(
+      mesh,
+      target_field_,
+      faces,
+      {},
+      {{vertex, candidate}},
+      config_.collapseFactor(),
+      config_.splitFactor(),
+      false);
+  if (!before.valid || !after.valid ||
+      !std::isfinite(before.target_log_energy) ||
+      !std::isfinite(after.target_log_energy) ||
+      !std::isfinite(before.min_angle_degrees) ||
+      !std::isfinite(after.min_angle_degrees)) {
+    return false;
+  }
+  if (after.target_log_energy > before.target_log_energy + kStageAProjectionSizeEnergyTol) {
+    rejected_by_size_energy = true;
+    return false;
+  }
+  if (!minAngleSafetyAccepted(
+          before.min_angle_degrees,
+          after.min_angle_degrees,
+          config_.min_angle_floor_degrees)) {
+    rejected_by_angle = true;
+    return false;
+  }
+  return true;
 }
 
 std::vector<Eigen::Vector3d> AdaIsoRemesher::mlsProject(

@@ -37,8 +37,9 @@ void printUsage(std::ostream& out) {
       << "  --split-factor <v>        Override split hysteresis factor. Default: variant value\n"
       << "  --collapse-factor <v>     Override collapse hysteresis factor. Default: 0.8\n"
       << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
-      << "  --feature-aware-collapse <0|1> Feature-aware collapse placement. Default: 1\n"
+      << "  --feature-aware-collapse <0|1> Feature-aware collapse placement. Default: 0\n"
       << "  --collapse-feature-omega <v> Feature similarity threshold for collapse. Default: 0.15\n"
+      << "  --stage-a-projection <0|1> Enable guarded closest-point projection after Stage A. Default: 1\n"
       << "  --relocation-mls <0|1>    Enable MLS projection inside relocation. Default: 0\n"
       << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
       << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
@@ -255,6 +256,7 @@ std::string buildSummaryJson(
   out << "    \"min_angle_floor_degrees\": " << config.min_angle_floor_degrees << ",\n";
   out << "    \"feature_aware_collapse\": " << (config.feature_aware_collapse ? "true" : "false") << ",\n";
   out << "    \"collapse_feature_omega\": " << config.collapse_feature_omega << ",\n";
+  out << "    \"stage_a_projection\": " << (config.stage_a_projection ? "true" : "false") << ",\n";
   out << "    \"relocation_mls\": " << (config.enable_relocation_mls ? "true" : "false") << ",\n";
   out << "    \"mls_k\": " << config.mls_k << ",\n";
   out << "    \"mls_iterations\": " << config.mls_iterations << "\n";
@@ -309,6 +311,18 @@ std::string buildSummaryJson(
   out << "    \"size_stage_final_min_angle_degrees\": " << stats.size_stage_final_min_angle_degrees << ",\n";
   out << "    \"size_stage_final_angle_lt_10_pct\": " << stats.size_stage_final_angle_lt_10_pct << ",\n";
   out << "    \"size_stage_final_angle_lt_20_pct\": " << stats.size_stage_final_angle_lt_20_pct << ",\n";
+  out << "    \"stage_a_projection_candidates\": " << stats.stage_a_projection_candidates << ",\n";
+  out << "    \"stage_a_projection_accepted\": " << stats.stage_a_projection_accepted << ",\n";
+  out << "    \"stage_a_projection_rejected_by_invalid\": "
+      << stats.stage_a_projection_rejected_by_invalid << ",\n";
+  out << "    \"stage_a_projection_rejected_by_size_energy\": "
+      << stats.stage_a_projection_rejected_by_size_energy << ",\n";
+  out << "    \"stage_a_projection_rejected_by_angle\": "
+      << stats.stage_a_projection_rejected_by_angle << ",\n";
+  out << "    \"stage_a_projection_mean_displacement\": "
+      << stats.stage_a_projection_mean_displacement << ",\n";
+  out << "    \"stage_a_projection_max_displacement\": "
+      << stats.stage_a_projection_max_displacement << ",\n";
   out << "    \"quality_stage_iterations\": " << stats.quality_stage_iterations << ",\n";
   out << "    \"quality_stage_flips\": " << stats.quality_stage_flips << ",\n";
   out << "    \"quality_stage_relocations\": " << stats.quality_stage_relocations << ",\n";
@@ -397,6 +411,8 @@ int main(int argc, char** argv) {
         config.feature_aware_collapse = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--collapse-feature-omega") {
         config.collapse_feature_omega = std::stod(requireValue(i, argc, argv, arg));
+      } else if (arg == "--stage-a-projection") {
+        config.stage_a_projection = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--relocation-mls") {
         config.enable_relocation_mls = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--gt") {

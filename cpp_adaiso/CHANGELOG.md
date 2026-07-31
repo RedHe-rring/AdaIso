@@ -1,5 +1,22 @@
 # Changelog
 
+## 5.3.8
+
+Behavior update:
+Adds a guarded closest-point projection after Stage A and makes collapse
+placement feature-agnostic by default.
+
+- `feature_aware_collapse` now defaults to `false`; the CLI override remains
+  available for compatibility and ablation.
+- Added `--stage-a-projection <0|1>` to run one guarded closest-point
+  projection pass after Stage A and before Stage B.
+- The projection candidate is the closest point on the original input triangle
+  surface, queried with an AABB; it is accepted only when the local patch stays
+  valid, target log energy does not increase beyond tolerance, and the local
+  minimum-angle safety bound is preserved.
+- Summary JSON reports Stage A projection candidates, accepted projections,
+  rejection reasons, and displacement statistics.
+
 ## 5.3.7
 
 Behavior update:
