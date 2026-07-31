@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.3.9
+
+Behavior update:
+Moves Stage A guarded closest-point projection into the Stage A iteration loop.
+
+- `stage_a_projection` remains enabled by default, and the new default
+  projection mode is `per_iteration_local`.
+- Added `--stage-a-projection-mode <final_only|per_iteration_local>` for
+  projection timing ablations.
+- Stage A now projects only vertices affected by the current split/collapse
+  iteration, then keeps one final global guarded projection before Stage B.
+- The closest-point AABB is built once from the original input surface and
+  reused by all Stage A projection passes.
+- Summary JSON reports local/final projection pass counts, candidates, and
+  accepted projections.
+
 ## 5.3.8
 
 Behavior update:

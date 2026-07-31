@@ -29,6 +29,11 @@ enum class StageAPolicy {
   CollapseSplitWeakGuard,
 };
 
+enum class StageAProjectionMode {
+  FinalOnly,
+  PerIterationLocal,
+};
+
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
   double std_ratio = 0.0;
@@ -41,6 +46,7 @@ struct EdgeRatioStats {
 };
 
 struct TargetLengthFieldImpl;
+class ReferenceSurfaceProjector;
 
 class TargetLengthField {
  public:
@@ -87,6 +93,7 @@ struct AdaIsoConfig {
   bool feature_aware_collapse = false;
   double collapse_feature_omega = 0.15;
   bool stage_a_projection = true;
+  StageAProjectionMode stage_a_projection_mode = StageAProjectionMode::PerIterationLocal;
   double split_factor_override = 0.0;
   double collapse_factor_override = 0.0;
   double target_h_max_factor = 5.0;
@@ -162,6 +169,13 @@ struct AdaIsoStats {
   std::size_t stage_a_projection_rejected_by_invalid = 0;
   std::size_t stage_a_projection_rejected_by_size_energy = 0;
   std::size_t stage_a_projection_rejected_by_angle = 0;
+  std::size_t stage_a_projection_passes = 0;
+  std::size_t stage_a_projection_local_passes = 0;
+  std::size_t stage_a_projection_final_passes = 0;
+  std::size_t stage_a_projection_local_candidates = 0;
+  std::size_t stage_a_projection_local_accepted = 0;
+  std::size_t stage_a_projection_final_candidates = 0;
+  std::size_t stage_a_projection_final_accepted = 0;
   double stage_a_projection_mean_displacement = 0.0;
   double stage_a_projection_max_displacement = 0.0;
   int quality_stage_iterations = 0;
@@ -217,8 +231,13 @@ class AdaIsoRemesher {
       const std::vector<double>& raw_curvature);
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
-  void runSizeFieldFittingStage(Mesh& mesh);
-  [[nodiscard]] int runStageAProjection(Mesh& mesh, const Mesh& original_for_projection);
+  void runSizeFieldFittingStage(Mesh& mesh, const ReferenceSurfaceProjector& projector);
+  void recordSizeStageFinalStats(const Mesh& mesh);
+  [[nodiscard]] int runStageAProjection(
+      Mesh& mesh,
+      const ReferenceSurfaceProjector& projector,
+      const std::unordered_set<int>* candidate_vertices,
+      bool final_pass);
   void runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection);
   void recordIterationStats(
       const std::string& stage,
@@ -237,14 +256,14 @@ class AdaIsoRemesher {
       const Mesh& mesh,
       const std::string& stage,
       int iteration) const;
-  [[nodiscard]] int splitLongEdges(Mesh& mesh);
+  [[nodiscard]] int splitLongEdges(Mesh& mesh, std::unordered_set<int>* affected_vertices = nullptr);
   [[nodiscard]] bool splitAcceptedByAngleGuard(
       const Mesh& mesh,
       const EdgeFaceMap& e2f,
       int a,
       int b) const;
   void splitOneEdge(Mesh& mesh, int a, int b) const;
-  [[nodiscard]] int collapseShortEdges(Mesh& mesh);
+  [[nodiscard]] int collapseShortEdges(Mesh& mesh, std::unordered_set<int>* affected_vertices = nullptr);
   [[nodiscard]] CollapseRejectReason collapseRejectReason(
       const Mesh& mesh,
       int a,
@@ -261,7 +280,8 @@ class AdaIsoRemesher {
   [[nodiscard]] int collapseEdgesBatch(
       Mesh& mesh,
       const std::vector<Edge>& selected,
-      const std::vector<double>& feature_strengths) const;
+      const std::vector<double>& feature_strengths,
+      std::unordered_set<int>* affected_vertices = nullptr) const;
   [[nodiscard]] int flipEdges(Mesh& mesh);
   [[nodiscard]] bool flipAcceptedByAngleMetric(
       const Mesh& mesh,
@@ -307,6 +327,8 @@ class AdaIsoRemesher {
 [[nodiscard]] std::string toString(CurvatureMode mode);
 [[nodiscard]] StageAPolicy parseStageAPolicy(const std::string& value);
 [[nodiscard]] std::string toString(StageAPolicy policy);
+[[nodiscard]] StageAProjectionMode parseStageAProjectionMode(const std::string& value);
+[[nodiscard]] std::string toString(StageAProjectionMode mode);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,

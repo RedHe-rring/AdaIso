@@ -738,10 +738,27 @@ void testStageAPolicyParsing() {
   assert(adaiso::AdaIsoConfig{}.stage_a_policy == adaiso::StageAPolicy::SplitCollapseNoGuard);
   assert(!adaiso::AdaIsoConfig{}.feature_aware_collapse);
   assert(adaiso::AdaIsoConfig{}.stage_a_projection);
+  assert(adaiso::AdaIsoConfig{}.stage_a_projection_mode ==
+         adaiso::StageAProjectionMode::PerIterationLocal);
+  assert(adaiso::parseStageAProjectionMode("final_only") ==
+         adaiso::StageAProjectionMode::FinalOnly);
+  assert(adaiso::parseStageAProjectionMode("PER-ITERATION-LOCAL") ==
+         adaiso::StageAProjectionMode::PerIterationLocal);
+  assert(adaiso::toString(adaiso::StageAProjectionMode::FinalOnly) == "final_only");
+  assert(adaiso::toString(adaiso::StageAProjectionMode::PerIterationLocal) ==
+         "per_iteration_local");
 
   bool threw = false;
   try {
     (void)adaiso::parseStageAPolicy("strong-guard");
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  try {
+    (void)adaiso::parseStageAProjectionMode("per-edge");
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -847,6 +864,18 @@ void testRemeshSmoke() {
   assert(std::isfinite(remesher.stats().size_stage_final_angle_lt_20_pct));
   assert(remesher.stats().stage_a_projection_accepted <=
          remesher.stats().stage_a_projection_candidates);
+  assert(remesher.stats().stage_a_projection_passes ==
+         remesher.stats().stage_a_projection_local_passes +
+             remesher.stats().stage_a_projection_final_passes);
+  assert(remesher.stats().stage_a_projection_candidates ==
+         remesher.stats().stage_a_projection_local_candidates +
+             remesher.stats().stage_a_projection_final_candidates);
+  assert(remesher.stats().stage_a_projection_accepted ==
+         remesher.stats().stage_a_projection_local_accepted +
+             remesher.stats().stage_a_projection_final_accepted);
+  assert(remesher.stats().stage_a_projection_final_passes == 1);
+  assert(remesher.stats().stage_a_projection_local_passes <=
+         static_cast<std::size_t>(remesher.stats().size_stage_iterations));
   assert(std::isfinite(remesher.stats().stage_a_projection_mean_displacement));
   assert(std::isfinite(remesher.stats().stage_a_projection_max_displacement));
   assert(remesher.stats().quality_stage_iterations >= 1);
@@ -1119,6 +1148,13 @@ void testStageMeshExport() {
     loaded.validate();
   }
 
+  if (remesher.stats().stage_a_projection_local_passes > 0) {
+    const auto local_projection = dir / "size_iter001_after_projection.ply";
+    assert(std::filesystem::exists(local_projection));
+    assert(std::filesystem::file_size(local_projection) > 0);
+    adaiso::loadMesh(local_projection).validate();
+  }
+
   std::filesystem::remove_all(dir);
 }
 
@@ -1150,8 +1186,32 @@ void testAllStageMeshExport() {
     loaded.validate();
   }
 
+  if (remesher.stats().stage_a_projection_local_passes > 0) {
+    const auto local_projection = dir / "size_iter001_after_projection.ply";
+    assert(std::filesystem::exists(local_projection));
+    assert(std::filesystem::file_size(local_projection) > 0);
+    adaiso::loadMesh(local_projection).validate();
+  }
+
   assert(!std::filesystem::exists(dir / "iter001_after_split.ply"));
   std::filesystem::remove_all(dir);
+}
+
+void testStageAProjectionFinalOnlyMode() {
+  adaiso::AdaIsoConfig config;
+  config.global_iterations = 1;
+  config.stage_a_projection_mode = adaiso::StageAProjectionMode::FinalOnly;
+  config.verbose = false;
+
+  adaiso::AdaIsoRemesher remesher(config);
+  const adaiso::Mesh output = remesher.remesh(makePyramid());
+  output.validate();
+
+  assert(remesher.stats().stage_a_projection_local_passes == 0);
+  assert(remesher.stats().stage_a_projection_final_passes == 1);
+  assert(remesher.stats().stage_a_projection_passes == 1);
+  assert(remesher.stats().stage_a_projection_local_candidates == 0);
+  assert(remesher.stats().stage_a_projection_local_accepted == 0);
 }
 
 void testRelocationKeepsBoundaryVerticesFixed() {
@@ -1638,6 +1698,7 @@ int main() {
   testIterationMeshExport();
   testStageMeshExport();
   testAllStageMeshExport();
+  testStageAProjectionFinalOnlyMode();
   testRelocationKeepsBoundaryVerticesFixed();
   testTargetFieldConfigValidation();
   testBatchCollapsePassCollapsesMultipleComponents();

@@ -39,7 +39,8 @@ void printUsage(std::ostream& out) {
       << "  --max-flip-dihedral-deg <v> Maximum allowed flip dihedral angle. Default: 45\n"
       << "  --feature-aware-collapse <0|1> Feature-aware collapse placement. Default: 0\n"
       << "  --collapse-feature-omega <v> Feature similarity threshold for collapse. Default: 0.15\n"
-      << "  --stage-a-projection <0|1> Enable guarded closest-point projection after Stage A. Default: 1\n"
+      << "  --stage-a-projection <0|1> Enable guarded closest-point projection in Stage A. Default: 1\n"
+      << "  --stage-a-projection-mode <name> Experimental: final_only|per_iteration_local. Default: per_iteration_local\n"
       << "  --relocation-mls <0|1>    Enable MLS projection inside relocation. Default: 0\n"
       << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
       << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
@@ -257,6 +258,7 @@ std::string buildSummaryJson(
   out << "    \"feature_aware_collapse\": " << (config.feature_aware_collapse ? "true" : "false") << ",\n";
   out << "    \"collapse_feature_omega\": " << config.collapse_feature_omega << ",\n";
   out << "    \"stage_a_projection\": " << (config.stage_a_projection ? "true" : "false") << ",\n";
+  out << "    \"stage_a_projection_mode\": \"" << adaiso::toString(config.stage_a_projection_mode) << "\",\n";
   out << "    \"relocation_mls\": " << (config.enable_relocation_mls ? "true" : "false") << ",\n";
   out << "    \"mls_k\": " << config.mls_k << ",\n";
   out << "    \"mls_iterations\": " << config.mls_iterations << "\n";
@@ -319,6 +321,17 @@ std::string buildSummaryJson(
       << stats.stage_a_projection_rejected_by_size_energy << ",\n";
   out << "    \"stage_a_projection_rejected_by_angle\": "
       << stats.stage_a_projection_rejected_by_angle << ",\n";
+  out << "    \"stage_a_projection_passes\": " << stats.stage_a_projection_passes << ",\n";
+  out << "    \"stage_a_projection_local_passes\": " << stats.stage_a_projection_local_passes << ",\n";
+  out << "    \"stage_a_projection_final_passes\": " << stats.stage_a_projection_final_passes << ",\n";
+  out << "    \"stage_a_projection_local_candidates\": "
+      << stats.stage_a_projection_local_candidates << ",\n";
+  out << "    \"stage_a_projection_local_accepted\": "
+      << stats.stage_a_projection_local_accepted << ",\n";
+  out << "    \"stage_a_projection_final_candidates\": "
+      << stats.stage_a_projection_final_candidates << ",\n";
+  out << "    \"stage_a_projection_final_accepted\": "
+      << stats.stage_a_projection_final_accepted << ",\n";
   out << "    \"stage_a_projection_mean_displacement\": "
       << stats.stage_a_projection_mean_displacement << ",\n";
   out << "    \"stage_a_projection_max_displacement\": "
@@ -413,6 +426,8 @@ int main(int argc, char** argv) {
         config.collapse_feature_omega = std::stod(requireValue(i, argc, argv, arg));
       } else if (arg == "--stage-a-projection") {
         config.stage_a_projection = parseBool(requireValue(i, argc, argv, arg));
+      } else if (arg == "--stage-a-projection-mode") {
+        config.stage_a_projection_mode = adaiso::parseStageAProjectionMode(requireValue(i, argc, argv, arg));
       } else if (arg == "--relocation-mls") {
         config.enable_relocation_mls = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--gt") {

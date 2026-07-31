@@ -335,39 +335,6 @@ struct LocalPatchMetrics {
 Eigen::MatrixXd verticesToMatrix(const Mesh& mesh);
 Eigen::MatrixXi facesToMatrix(const Mesh& mesh);
 
-class ReferenceSurfaceProjector {
- public:
-  explicit ReferenceSurfaceProjector(const Mesh& mesh)
-      : vertices_(verticesToMatrix(mesh)),
-        faces_(facesToMatrix(mesh)) {
-    if (mesh.vertices.empty() || mesh.faces.empty()) {
-      throw std::runtime_error("reference surface projector requires a non-empty mesh");
-    }
-    mesh.validate();
-    tree_.init(vertices_, faces_);
-  }
-
-  [[nodiscard]] bool closestPoint(const Eigen::Vector3d& point, Eigen::Vector3d& closest) const {
-    if (!finiteVector(point) || faces_.rows() == 0) {
-      return false;
-    }
-    const Eigen::RowVector3d query = point.transpose();
-    Eigen::RowVector3d closest_row = Eigen::RowVector3d::Zero();
-    int face_index = -1;
-    (void)tree_.squared_distance(vertices_, faces_, query, face_index, closest_row);
-    if (face_index < 0 || face_index >= faces_.rows()) {
-      return false;
-    }
-    closest = closest_row.transpose();
-    return finiteVector(closest);
-  }
-
- private:
-  Eigen::MatrixXd vertices_;
-  Eigen::MatrixXi faces_;
-  SurfaceAabb tree_;
-};
-
 int remappedVertex(const std::unordered_map<int, int>& replacements, int vertex) {
   const auto it = replacements.find(vertex);
   return it == replacements.end() ? vertex : it->second;
@@ -1523,7 +1490,44 @@ TargetErrorSizingResult targetErrorCurvatureLengths(
 }  // namespace detail
 
 std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a, int b, int m);
-void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges, const TargetLengthField& target_field);
+void splitEdgesBatch(
+    Mesh& mesh,
+    const std::vector<Edge>& edges,
+    const TargetLengthField& target_field,
+    std::unordered_set<int>* affected_vertices = nullptr);
+
+class ReferenceSurfaceProjector {
+ public:
+  explicit ReferenceSurfaceProjector(const Mesh& mesh)
+      : vertices_(verticesToMatrix(mesh)),
+        faces_(facesToMatrix(mesh)) {
+    if (mesh.vertices.empty() || mesh.faces.empty()) {
+      throw std::runtime_error("reference surface projector requires a non-empty mesh");
+    }
+    mesh.validate();
+    tree_.init(vertices_, faces_);
+  }
+
+  [[nodiscard]] bool closestPoint(const Eigen::Vector3d& point, Eigen::Vector3d& closest) const {
+    if (!finiteVector(point) || faces_.rows() == 0) {
+      return false;
+    }
+    const Eigen::RowVector3d query = point.transpose();
+    Eigen::RowVector3d closest_row = Eigen::RowVector3d::Zero();
+    int face_index = -1;
+    (void)tree_.squared_distance(vertices_, faces_, query, face_index, closest_row);
+    if (face_index < 0 || face_index >= faces_.rows()) {
+      return false;
+    }
+    closest = closest_row.transpose();
+    return finiteVector(closest);
+  }
+
+ private:
+  Eigen::MatrixXd vertices_;
+  Eigen::MatrixXi faces_;
+  SurfaceAabb tree_;
+};
 
 struct TargetLengthFieldImpl {
   Mesh mesh;
@@ -1908,6 +1912,30 @@ std::string toString(StageAPolicy policy) {
   return "unknown";
 }
 
+StageAProjectionMode parseStageAProjectionMode(const std::string& value) {
+  std::string lower = value;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lower == "final-only" || lower == "final_only") {
+    return StageAProjectionMode::FinalOnly;
+  }
+  if (lower == "per-iteration-local" || lower == "per_iteration_local") {
+    return StageAProjectionMode::PerIterationLocal;
+  }
+  throw std::runtime_error("unknown Stage A projection mode: " + value);
+}
+
+std::string toString(StageAProjectionMode mode) {
+  switch (mode) {
+    case StageAProjectionMode::FinalOnly:
+      return "final_only";
+    case StageAProjectionMode::PerIterationLocal:
+      return "per_iteration_local";
+  }
+  return "unknown";
+}
+
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
@@ -1976,8 +2004,12 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / "iter000.ply", mesh);
   }
 
-  runSizeFieldFittingStage(mesh);
-  (void)runStageAProjection(mesh, original_for_projection);
+  const ReferenceSurfaceProjector stage_a_projector(original_for_projection);
+  runSizeFieldFittingStage(mesh, stage_a_projector);
+  if (config_.stage_a_projection) {
+    (void)runStageAProjection(mesh, stage_a_projector, nullptr, true);
+  }
+  recordSizeStageFinalStats(mesh);
   runQualityRepairStage(mesh, original_for_projection);
   mesh = removeDegenerateFaces(mesh);
 
@@ -1996,7 +2028,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   return mesh;
 }
 
-void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
+void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh, const ReferenceSurfaceProjector& projector) {
   for (int it = 0; it < config_.global_iterations; ++it) {
     if (config_.verbose) {
       std::cerr << "size stage iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
@@ -2004,18 +2036,26 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
 
     int split_count = 0;
     int collapse_count = 0;
+    std::unordered_set<int> affected_vertices;
     if (config_.stage_a_policy == StageAPolicy::CollapseSplitWeakGuard) {
-      collapse_count = collapseShortEdges(mesh);
+      collapse_count = collapseShortEdges(mesh, &affected_vertices);
       mesh = removeDegenerateFaces(mesh);
       writeStageSnapshot(mesh, "size", it + 1, "collapse");
-      split_count = splitLongEdges(mesh);
+      split_count = splitLongEdges(mesh, &affected_vertices);
       writeStageSnapshot(mesh, "size", it + 1, "split");
     } else {
-      split_count = splitLongEdges(mesh);
+      split_count = splitLongEdges(mesh, &affected_vertices);
       writeStageSnapshot(mesh, "size", it + 1, "split");
-      collapse_count = collapseShortEdges(mesh);
+      collapse_count = collapseShortEdges(mesh, &affected_vertices);
       mesh = removeDegenerateFaces(mesh);
       writeStageSnapshot(mesh, "size", it + 1, "collapse");
+    }
+
+    if (config_.stage_a_projection &&
+        config_.stage_a_projection_mode == StageAProjectionMode::PerIterationLocal &&
+        !affected_vertices.empty()) {
+      (void)runStageAProjection(mesh, projector, &affected_vertices, false);
+      writeStageSnapshot(mesh, "size", it + 1, "projection");
     }
 
     stats_.size_stage_splits += split_count;
@@ -2028,7 +2068,9 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
       break;
     }
   }
+}
 
+void AdaIsoRemesher::recordSizeStageFinalStats(const Mesh& mesh) {
   const MeshSummary size_summary = summarizeMesh(mesh);
   const EdgeRatioStats size_ratio_stats = edgeRatioStats(mesh);
   stats_.size_stage_final_violation = size_ratio_stats.violation_rate;
@@ -2040,25 +2082,56 @@ void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh) {
   stats_.size_stage_final_angle_lt_20_pct = size_summary.angle_lt_20_pct;
 }
 
-int AdaIsoRemesher::runStageAProjection(Mesh& mesh, const Mesh& original_for_projection) {
+int AdaIsoRemesher::runStageAProjection(
+    Mesh& mesh,
+    const ReferenceSurfaceProjector& projector,
+    const std::unordered_set<int>* candidate_vertices,
+    bool final_pass) {
   if (!config_.stage_a_projection) {
     return 0;
   }
 
-  ReferenceSurfaceProjector projector(original_for_projection);
   const auto boundary = boundaryVertices(mesh);
   const auto vf = vertexFaces(mesh);
 
   int accepted = 0;
   double displacement_sum = 0.0;
   double displacement_max = 0.0;
+  std::vector<int> vertices_to_visit;
+  if (candidate_vertices == nullptr) {
+    vertices_to_visit.reserve(mesh.vertices.size());
+    for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+      vertices_to_visit.push_back(static_cast<int>(i));
+    }
+  } else {
+    vertices_to_visit.reserve(candidate_vertices->size());
+    for (int vertex : *candidate_vertices) {
+      vertices_to_visit.push_back(vertex);
+    }
+    std::sort(vertices_to_visit.begin(), vertices_to_visit.end());
+    vertices_to_visit.erase(std::unique(vertices_to_visit.begin(), vertices_to_visit.end()), vertices_to_visit.end());
+  }
 
-  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    if (boundary.find(static_cast<int>(i)) != boundary.end()) {
+  ++stats_.stage_a_projection_passes;
+  if (final_pass) {
+    ++stats_.stage_a_projection_final_passes;
+  } else {
+    ++stats_.stage_a_projection_local_passes;
+  }
+
+  const std::size_t accepted_before = stats_.stage_a_projection_accepted;
+  const double displacement_sum_before =
+      stats_.stage_a_projection_mean_displacement * static_cast<double>(accepted_before);
+
+  for (int vertex : vertices_to_visit) {
+    if (vertex < 0 || static_cast<std::size_t>(vertex) >= mesh.vertices.size()) {
+      continue;
+    }
+    const std::size_t i = static_cast<std::size_t>(vertex);
+    if (boundary.find(vertex) != boundary.end()) {
       continue;
     }
     if (i >= vf.size() || vf[i].empty()) {
-      ++stats_.stage_a_projection_rejected_by_invalid;
       continue;
     }
 
@@ -2073,6 +2146,11 @@ int AdaIsoRemesher::runStageAProjection(Mesh& mesh, const Mesh& original_for_pro
     }
 
     ++stats_.stage_a_projection_candidates;
+    if (final_pass) {
+      ++stats_.stage_a_projection_final_candidates;
+    } else {
+      ++stats_.stage_a_projection_local_candidates;
+    }
     bool rejected_by_size_energy = false;
     bool rejected_by_angle = false;
     if (!stageAProjectionAccepted(
@@ -2095,18 +2173,27 @@ int AdaIsoRemesher::runStageAProjection(Mesh& mesh, const Mesh& original_for_pro
     mesh.vertices[i] = candidate;
     ++accepted;
     ++stats_.stage_a_projection_accepted;
+    if (final_pass) {
+      ++stats_.stage_a_projection_final_accepted;
+    } else {
+      ++stats_.stage_a_projection_local_accepted;
+    }
     displacement_sum += displacement;
     displacement_max = std::max(displacement_max, displacement);
   }
 
+  const std::size_t accepted_after = stats_.stage_a_projection_accepted;
   stats_.stage_a_projection_mean_displacement =
-      accepted > 0 ? displacement_sum / static_cast<double>(accepted) : 0.0;
-  stats_.stage_a_projection_max_displacement = displacement_max;
+      accepted_after > 0
+          ? (displacement_sum_before + displacement_sum) / static_cast<double>(accepted_after)
+          : 0.0;
+  stats_.stage_a_projection_max_displacement =
+      std::max(stats_.stage_a_projection_max_displacement, displacement_max);
 
-  if (!config_.stage_mesh_export_dir.empty()) {
+  if (final_pass && !config_.stage_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.stage_mesh_export_dir) / "size_after_projection.ply", mesh);
   }
-  if (!config_.all_stage_mesh_export_dir.empty()) {
+  if (final_pass && !config_.all_stage_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_after_projection.ply", mesh);
   }
   return accepted;
@@ -2330,12 +2417,13 @@ EdgeRatioStats AdaIsoRemesher::edgeRatioStats(const Mesh& mesh) const {
       config_.splitFactor());
 }
 
-int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
+int AdaIsoRemesher::splitLongEdges(Mesh& mesh, std::unordered_set<int>* affected_vertices) {
   int total = 0;
   for (int pass = 0; pass < config_.max_split_passes; ++pass) {
     // Collect candidate edges that are longer than the split threshold
     std::vector<std::tuple<double, int, int>> candidates;
     const auto e2f = edgeFaces(mesh);
+    const auto neigh = vertexNeighbors(mesh);
     for (const auto& item : e2f) {
       const int a = item.first.first;
       const int b = item.first.second;
@@ -2377,7 +2465,23 @@ int AdaIsoRemesher::splitLongEdges(Mesh& mesh) {
     if (selected.empty()) {
       break;
     }
-    splitEdgesBatch(mesh, selected, target_field_);
+    if (affected_vertices != nullptr) {
+      for (const auto& edge : selected) {
+        affected_vertices->insert(edge.first);
+        affected_vertices->insert(edge.second);
+        if (static_cast<std::size_t>(edge.first) < neigh.size()) {
+          affected_vertices->insert(
+              neigh[static_cast<std::size_t>(edge.first)].begin(),
+              neigh[static_cast<std::size_t>(edge.first)].end());
+        }
+        if (static_cast<std::size_t>(edge.second) < neigh.size()) {
+          affected_vertices->insert(
+              neigh[static_cast<std::size_t>(edge.second)].begin(),
+              neigh[static_cast<std::size_t>(edge.second)].end());
+        }
+      }
+    }
+    splitEdgesBatch(mesh, selected, target_field_, affected_vertices);
     stats_.size_stage_split_accepted += selected.size();
     total += static_cast<int>(selected.size());
   }
@@ -2453,7 +2557,11 @@ std::vector<Eigen::Vector3i> splitFaceOnEdge(const Eigen::Vector3i& face, int a,
   throw std::runtime_error("internal error: face does not contain requested edge");
 }
 
-void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges, const TargetLengthField& target_field) {
+void splitEdgesBatch(
+    Mesh& mesh,
+    const std::vector<Edge>& edges,
+    const TargetLengthField& target_field,
+    std::unordered_set<int>* affected_vertices) {
   if (edges.empty()) {
     return;
   }
@@ -2469,6 +2577,9 @@ void splitEdgesBatch(Mesh& mesh, const std::vector<Edge>& edges, const TargetLen
     const double t = targetMetricSplitParameter(target_field.valueAt(pa), target_field.valueAt(pb));
     mesh.vertices.push_back((1.0 - t) * pa + t * pb);
     midpoint_indices.emplace(edge, m);
+    if (affected_vertices != nullptr) {
+      affected_vertices->insert(m);
+    }
   }
 
   std::vector<Eigen::Vector3i> new_faces;
@@ -2511,7 +2622,7 @@ void AdaIsoRemesher::splitOneEdge(Mesh& mesh, int a, int b) const {
   mesh.faces = std::move(new_faces);
 }
 
-int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
+int AdaIsoRemesher::collapseShortEdges(Mesh& mesh, std::unordered_set<int>* affected_vertices) {
   struct CollapseCandidate {
     double ratio = 0.0;
     double length = 0.0;
@@ -2667,7 +2778,25 @@ int AdaIsoRemesher::collapseShortEdges(Mesh& mesh) {
       if (selected.empty()) {
         continue;
       }
-      const int accepted = collapseEdgesBatch(mesh, selected, feature_strengths);
+      if (affected_vertices != nullptr) {
+        for (const auto& edge : selected) {
+          const int a = edge.first;
+          const int b = edge.second;
+          affected_vertices->insert(a);
+          affected_vertices->insert(b);
+          if (static_cast<std::size_t>(a) < neigh.size()) {
+            affected_vertices->insert(
+                neigh[static_cast<std::size_t>(a)].begin(),
+                neigh[static_cast<std::size_t>(a)].end());
+          }
+          if (static_cast<std::size_t>(b) < neigh.size()) {
+            affected_vertices->insert(
+                neigh[static_cast<std::size_t>(b)].begin(),
+                neigh[static_cast<std::size_t>(b)].end());
+          }
+        }
+      }
+      const int accepted = collapseEdgesBatch(mesh, selected, feature_strengths, affected_vertices);
       stats_.size_stage_collapse_accepted += static_cast<std::size_t>(accepted);
       if (retry_round) {
         stats_.size_stage_collapse_conflict_retry_accepted += static_cast<std::size_t>(accepted);
@@ -2813,7 +2942,8 @@ Eigen::Vector3d AdaIsoRemesher::collapsePoint(
 int AdaIsoRemesher::collapseEdgesBatch(
     Mesh& mesh,
     const std::vector<Edge>& selected,
-    const std::vector<double>& feature_strengths) const {
+    const std::vector<double>& feature_strengths,
+    std::unordered_set<int>* affected_vertices) const {
   struct CollapseOp {
     int keep = 0;
     int remove = 0;
@@ -2835,6 +2965,9 @@ int AdaIsoRemesher::collapseEdgesBatch(
     }
     replacements.emplace(remove, keep);
     ops.push_back({keep, remove, collapsePoint(mesh, a, b, feature_strengths)});
+    if (affected_vertices != nullptr) {
+      affected_vertices->insert(keep);
+    }
   }
 
   if (ops.empty()) {
