@@ -4,13 +4,13 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is version 2.3.0. The CSF stage is computed exclusively with a screened
-Laplace sparse solve, `(M + alpha h^2 L)c = M r`, using barycentric vertex
-masses and clamped cotangent weights. The old Dirichlet harmonic CSF solve and
-its fixed/free anchor statistics have been removed.
+This is the 6.0.0 development line, based on cpp_adaiso v2.3.0
+(commit `4ae48bb894723509c99ea762e6b07c5f5312d4a9`). Its baseline CSF stage uses
+a screened Laplace sparse solve, `(M + alpha h^2 L)c = M r`, with barycentric
+vertex masses and clamped cotangent weights.
 
-Version 2.3.0 keeps the Gaussian kNN target edge-length lookup from v2.2.0 and
-changes only the curvature smoothing field used before histogram assignment.
+The v6 baseline retains the v2.3.0 Gaussian kNN target edge-length lookup and
+its split, batch-collapse, flip, tangent-smoothing, and final MLS workflow.
 
 ## Scope
 
@@ -166,6 +166,8 @@ edge-length field by default with Gaussian kNN interpolation.
 Version 2.3.0 replaces the Dirichlet harmonic CSF solve with screened smoothing
 that preserves a data term at every vertex and no longer selects fixed anchor
 vertices.
+The 6.0.0 development line starts from this v2.3.0 behavior and records new
+changes independently from the intervening v2.4-v5 development lines.
 
 Nearest-neighbor target lookup produces a piecewise constant field with jumps at
 KD-tree Voronoi boundaries. Gaussian kNN lookup replaces that hard assignment

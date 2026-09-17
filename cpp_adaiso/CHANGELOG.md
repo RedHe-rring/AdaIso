@@ -1,5 +1,18 @@
 # Changelog
 
+## 6.0.0 (Unreleased)
+
+New development line based on cpp_adaiso v2.3.0
+(commit `4ae48bb894723509c99ea762e6b07c5f5312d4a9`).
+
+Baseline behavior:
+
+- Mean vertex-normal-angle raw curvature.
+- Screened CSF solve: `(M + alpha h^2 L)c = M r`.
+- Histogram-based five-level target sizes.
+- Gaussian kNN target-field lookup.
+- Split, batch collapse, flip, tangent smoothing, and final MLS projection.
+
 ## 2.3.0
 
 Breaking change:
