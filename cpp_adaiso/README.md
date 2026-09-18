@@ -154,8 +154,8 @@ MLS projection is guarded by a global triangle-quality check: if projection
 would reduce `Qmin` below the pre-projection mesh, the projected positions are
 rejected.
 
-The result should be close in behavior to the Python reproduction under the same
-parameters, but individual vertex positions are not expected to match exactly.
+A historical Python reproduction was used during early validation but is no
+longer maintained in the working tree. It remains available from Git history.
 Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
 intermediates; it solves the corresponding Dirichlet Laplace steady-state system.
 Version 2.1.0 keeps that CSF behavior unchanged and improves collapse throughput

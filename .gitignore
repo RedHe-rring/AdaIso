@@ -2,6 +2,7 @@
 build/
 */build/
 */build-*/
+/cpp_adaiso/build*/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -16,9 +17,9 @@ CTestTestfile.cmake
 *.pdb
 *.ilk
 
-# Keep small source mesh examples even though .obj is also a build object suffix.
-!cpp_adaiso/examples/*.obj
-!python_adaiso/examples/*.obj
+# Local example and benchmark inputs. Files already tracked by Git remain tracked.
+# Local-only meshes are registered in notes/local_mesh_dataset_manifest.csv.
+/cpp_adaiso/examples/
 
 # AdaIso run outputs
 cpp_adaiso/results/
@@ -29,12 +30,18 @@ cpp_adaiso/summary*.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
+/tools/_tmp_*
 
 # Local/editor files
 .vs/
 .vscode/
 *.user
 *.suo
+~$*
+*.inspect.ndjson
+
+# Local comparison checkouts and generated benchmark artifacts
+/compare/
 
 # Source papers are local references, not source artifacts.
 papers/

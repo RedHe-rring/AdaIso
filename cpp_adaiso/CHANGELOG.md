@@ -5,6 +5,11 @@
 New development line based on cpp_adaiso v2.3.0
 (commit `4ae48bb894723509c99ea762e6b07c5f5312d4a9`).
 
+Repository maintenance:
+
+- Removed the obsolete Python reproduction from the active working tree. Its
+  history remains available in Git.
+
 Baseline behavior:
 
 - Mean vertex-normal-angle raw curvature.
