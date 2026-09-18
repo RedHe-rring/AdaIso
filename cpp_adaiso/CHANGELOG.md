@@ -1,5 +1,28 @@
 # Changelog
 
+## 5.3.11
+
+Experimental feature-projection update:
+Reuses the existing feature-strength classification for progressive Stage A
+projection.
+
+- Added `--stage-a-projection-target <surface|feature_aware>`; `surface`
+  remains the default for the T21/T36 ablation.
+- The original input is classified once into boundary, corner, crease, and
+  smooth constraints. Surface, segment, and corner nearest-point indices are
+  built once and reused by every Stage A projection pass.
+- Feature-aware projection matches current vertices to the corresponding
+  original constraint domain without a fixed distance cutoff. Missing feature
+  classes fall back to the original surface.
+- Projection now tries full displacement followed by four halved steps before
+  rejecting a candidate. Existing patch-validity, target-log-energy, and
+  minimum-angle guards remain unchanged.
+- Summary JSON reports reference-feature counts, per-class projection counts,
+  full/damped acceptance, failed backtracking, surface fallback, and mean
+  accepted step size.
+- Stage exports include OBJ feature graphs for the reference mesh and Stage A
+  before/after projection meshes.
+
 ## 5.3.10
 
 Diagnostic update:

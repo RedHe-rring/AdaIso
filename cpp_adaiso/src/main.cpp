@@ -41,6 +41,7 @@ void printUsage(std::ostream& out) {
       << "  --collapse-feature-omega <v> Feature similarity threshold for collapse. Default: 0.15\n"
       << "  --stage-a-projection <0|1> Enable guarded closest-point projection in Stage A. Default: 1\n"
       << "  --stage-a-projection-mode <name> Experimental: final_only|per_iteration_local. Default: per_iteration_local\n"
+      << "  --stage-a-projection-target <name> Experimental: surface|feature_aware. Default: surface\n"
       << "  --relocation-mls <0|1>    Enable MLS projection inside relocation. Default: 0\n"
       << "  --gt <mesh>                Compute area-sampled Chamfer Distance to GT mesh\n"
       << "  --cd-samples <n>           Samples per CD direction. Default: 100000\n"
@@ -259,6 +260,7 @@ std::string buildSummaryJson(
   out << "    \"collapse_feature_omega\": " << config.collapse_feature_omega << ",\n";
   out << "    \"stage_a_projection\": " << (config.stage_a_projection ? "true" : "false") << ",\n";
   out << "    \"stage_a_projection_mode\": \"" << adaiso::toString(config.stage_a_projection_mode) << "\",\n";
+  out << "    \"stage_a_projection_target\": \"" << adaiso::toString(config.stage_a_projection_target) << "\",\n";
   out << "    \"relocation_mls\": " << (config.enable_relocation_mls ? "true" : "false") << ",\n";
   out << "    \"mls_k\": " << config.mls_k << ",\n";
   out << "    \"mls_iterations\": " << config.mls_iterations << "\n";
@@ -336,6 +338,35 @@ std::string buildSummaryJson(
       << stats.stage_a_projection_mean_displacement << ",\n";
   out << "    \"stage_a_projection_max_displacement\": "
       << stats.stage_a_projection_max_displacement << ",\n";
+  out << "    \"reference_boundary_edges\": " << stats.reference_boundary_edges << ",\n";
+  out << "    \"reference_crease_edges\": " << stats.reference_crease_edges << ",\n";
+  out << "    \"reference_corner_vertices\": " << stats.reference_corner_vertices << ",\n";
+  out << "    \"stage_a_projection_full_step_accepted\": "
+      << stats.stage_a_projection_full_step_accepted << ",\n";
+  out << "    \"stage_a_projection_damped_step_accepted\": "
+      << stats.stage_a_projection_damped_step_accepted << ",\n";
+  out << "    \"stage_a_projection_backtracking_failed\": "
+      << stats.stage_a_projection_backtracking_failed << ",\n";
+  out << "    \"stage_a_projection_surface_fallbacks\": "
+      << stats.stage_a_projection_surface_fallbacks << ",\n";
+  out << "    \"stage_a_projection_smooth_candidates\": "
+      << stats.stage_a_projection_smooth_candidates << ",\n";
+  out << "    \"stage_a_projection_smooth_accepted\": "
+      << stats.stage_a_projection_smooth_accepted << ",\n";
+  out << "    \"stage_a_projection_crease_candidates\": "
+      << stats.stage_a_projection_crease_candidates << ",\n";
+  out << "    \"stage_a_projection_crease_accepted\": "
+      << stats.stage_a_projection_crease_accepted << ",\n";
+  out << "    \"stage_a_projection_boundary_candidates\": "
+      << stats.stage_a_projection_boundary_candidates << ",\n";
+  out << "    \"stage_a_projection_boundary_accepted\": "
+      << stats.stage_a_projection_boundary_accepted << ",\n";
+  out << "    \"stage_a_projection_corner_candidates\": "
+      << stats.stage_a_projection_corner_candidates << ",\n";
+  out << "    \"stage_a_projection_corner_accepted\": "
+      << stats.stage_a_projection_corner_accepted << ",\n";
+  out << "    \"stage_a_projection_mean_alpha\": "
+      << stats.stage_a_projection_mean_alpha << ",\n";
   out << "    \"quality_stage_iterations\": " << stats.quality_stage_iterations << ",\n";
   out << "    \"quality_stage_flips\": " << stats.quality_stage_flips << ",\n";
   out << "    \"quality_stage_relocations\": " << stats.quality_stage_relocations << ",\n";
@@ -428,6 +459,8 @@ int main(int argc, char** argv) {
         config.stage_a_projection = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--stage-a-projection-mode") {
         config.stage_a_projection_mode = adaiso::parseStageAProjectionMode(requireValue(i, argc, argv, arg));
+      } else if (arg == "--stage-a-projection-target") {
+        config.stage_a_projection_target = adaiso::parseStageAProjectionTarget(requireValue(i, argc, argv, arg));
       } else if (arg == "--relocation-mls") {
         config.enable_relocation_mls = parseBool(requireValue(i, argc, argv, arg));
       } else if (arg == "--gt") {

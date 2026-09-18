@@ -70,6 +70,7 @@ constexpr double kMinAngleTolDegrees = 1e-8;
 constexpr double kTargetLogEnergyTol = 1e-8;
 constexpr double kStageAProjectionSizeEnergyTol = 1e-4;
 constexpr double kStageAProjectionMinDistanceEps = kEps;
+constexpr int kStageAProjectionBacktrackingSteps = 5;
 constexpr int kCollapseConflictMiniRounds = 2;
 
 using SurfaceAabb = igl::AABB<Eigen::MatrixXd, 3>;
@@ -177,6 +178,99 @@ std::vector<double> computeVertexFeatureStrengths(const Mesh& mesh) {
     strengths[i] = (k_feature + 1.0) * (e_feature + 1.0) - 1.0;
   }
   return strengths;
+}
+
+enum class FeatureVertexClass {
+  Boundary,
+  Corner,
+  Crease,
+  Smooth,
+};
+
+struct FeatureClassification {
+  std::vector<double> strengths;
+  std::vector<FeatureVertexClass> classes;
+  std::vector<Edge> boundary_edges;
+  std::vector<Edge> crease_edges;
+  std::vector<int> corner_vertices;
+};
+
+FeatureClassification classifyFeatures(const Mesh& mesh) {
+  FeatureClassification result;
+  result.strengths = computeVertexFeatureStrengths(mesh);
+  result.classes.assign(mesh.vertexCount(), FeatureVertexClass::Smooth);
+
+  const auto e2f = edgeFaces(mesh);
+  std::unordered_set<int> boundary;
+  for (const auto& item : e2f) {
+    if (item.second.size() == 1) {
+      result.boundary_edges.push_back(item.first);
+      boundary.insert(item.first.first);
+      boundary.insert(item.first.second);
+    }
+  }
+
+  const auto neigh = vertexNeighbors(mesh);
+  for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
+    if (boundary.find(static_cast<int>(i)) != boundary.end()) {
+      result.classes[i] = FeatureVertexClass::Boundary;
+      continue;
+    }
+
+    const double center_strength = result.strengths[i];
+    if (!std::isfinite(center_strength) || center_strength <= kRelocationFeatureEps) {
+      result.classes[i] = FeatureVertexClass::Smooth;
+      continue;
+    }
+
+    const std::size_t n = neigh[i].size();
+    if (n == 0) {
+      result.classes[i] = FeatureVertexClass::Corner;
+      result.corner_vertices.push_back(static_cast<int>(i));
+      continue;
+    }
+
+    const double threshold = kRelocationZeta * center_strength;
+    std::size_t important_count = 0;
+    for (int neighbor : neigh[i]) {
+      if (neighbor < 0 || static_cast<std::size_t>(neighbor) >= result.strengths.size()) {
+        continue;
+      }
+      const double neighbor_strength = result.strengths[static_cast<std::size_t>(neighbor)];
+      if (std::isfinite(neighbor_strength) && neighbor_strength >= threshold) {
+        ++important_count;
+      }
+    }
+
+    const std::size_t d_corner = important_count;
+    const std::size_t d_crease = important_count > 2 ? important_count - 2 : 2 - important_count;
+    const std::size_t d_smooth = important_count > n ? important_count - n : n - important_count;
+    if (d_corner <= d_crease && d_corner <= d_smooth) {
+      result.classes[i] = FeatureVertexClass::Corner;
+      result.corner_vertices.push_back(static_cast<int>(i));
+    } else if (d_crease <= d_smooth) {
+      result.classes[i] = FeatureVertexClass::Crease;
+    } else {
+      result.classes[i] = FeatureVertexClass::Smooth;
+    }
+  }
+
+  for (const auto& item : e2f) {
+    if (item.second.size() == 1) {
+      continue;
+    }
+    const auto class_a = result.classes[static_cast<std::size_t>(item.first.first)];
+    const auto class_b = result.classes[static_cast<std::size_t>(item.first.second)];
+    const bool feature_a = class_a == FeatureVertexClass::Crease || class_a == FeatureVertexClass::Corner;
+    const bool feature_b = class_b == FeatureVertexClass::Crease || class_b == FeatureVertexClass::Corner;
+    if (feature_a && feature_b) {
+      result.crease_edges.push_back(item.first);
+    }
+  }
+  std::sort(result.boundary_edges.begin(), result.boundary_edges.end());
+  std::sort(result.crease_edges.begin(), result.crease_edges.end());
+  std::sort(result.corner_vertices.begin(), result.corner_vertices.end());
+  return result;
 }
 
 Eigen::Vector3i orientTriangle(
@@ -1496,38 +1590,250 @@ void splitEdgesBatch(
     const TargetLengthField& target_field,
     std::unordered_set<int>* affected_vertices = nullptr);
 
-class ReferenceSurfaceProjector {
+class ReferenceFeatureProjector {
  public:
-  explicit ReferenceSurfaceProjector(const Mesh& mesh)
+  explicit ReferenceFeatureProjector(const Mesh& mesh)
       : vertices_(verticesToMatrix(mesh)),
-        faces_(facesToMatrix(mesh)) {
+        faces_(facesToMatrix(mesh)),
+        features_(classifyFeatures(mesh)) {
     if (mesh.vertices.empty() || mesh.faces.empty()) {
       throw std::runtime_error("reference surface projector requires a non-empty mesh");
     }
     mesh.validate();
-    tree_.init(vertices_, faces_);
+    surface_tree_.init(vertices_, faces_);
+    buildSegmentIndex(features_.boundary_edges, boundary_segments_, boundary_tree_, boundary_edge_set_);
+    buildSegmentIndex(features_.crease_edges, crease_segments_, crease_tree_, crease_edge_set_);
+    corner_points_.reserve(features_.corner_vertices.size());
+    corner_vertex_set_.reserve(features_.corner_vertices.size());
+    for (int vertex : features_.corner_vertices) {
+      corner_points_.push_back(mesh.vertices[static_cast<std::size_t>(vertex)]);
+      corner_vertex_set_.insert(vertex);
+    }
+    if (!corner_points_.empty()) {
+      corner_tree_.build(corner_points_);
+    }
   }
 
-  [[nodiscard]] bool closestPoint(const Eigen::Vector3d& point, Eigen::Vector3d& closest) const {
+  [[nodiscard]] bool closestSurfacePoint(
+      const Eigen::Vector3d& point,
+      Eigen::Vector3d& closest,
+      int* face_index = nullptr) const {
     if (!finiteVector(point) || faces_.rows() == 0) {
       return false;
     }
     const Eigen::RowVector3d query = point.transpose();
     Eigen::RowVector3d closest_row = Eigen::RowVector3d::Zero();
+    int closest_face = -1;
+    (void)surface_tree_.squared_distance(vertices_, faces_, query, closest_face, closest_row);
+    if (closest_face < 0 || closest_face >= faces_.rows()) {
+      return false;
+    }
+    closest = closest_row.transpose();
+    if (face_index != nullptr) {
+      *face_index = closest_face;
+    }
+    return finiteVector(closest);
+  }
+
+  [[nodiscard]] bool closestPoint(
+      const Eigen::Vector3d& point,
+      FeatureVertexClass vertex_class,
+      bool feature_aware,
+      Eigen::Vector3d& closest,
+      bool& surface_fallback) const {
+    surface_fallback = false;
     int face_index = -1;
-    (void)tree_.squared_distance(vertices_, faces_, query, face_index, closest_row);
+    Eigen::Vector3d surface_closest = Eigen::Vector3d::Zero();
+    if (!closestSurfacePoint(point, surface_closest, &face_index)) {
+      return false;
+    }
+    if (!feature_aware || vertex_class == FeatureVertexClass::Smooth) {
+      closest = surface_closest;
+      return true;
+    }
+
+    bool matched = false;
+    if (vertex_class == FeatureVertexClass::Boundary) {
+      matched = closestSegmentPoint(
+          point, face_index, boundary_edge_set_, boundary_segments_, boundary_tree_.get(), closest);
+    } else if (vertex_class == FeatureVertexClass::Crease) {
+      matched = closestSegmentPoint(
+          point, face_index, crease_edge_set_, crease_segments_, crease_tree_.get(), closest);
+    } else if (vertex_class == FeatureVertexClass::Corner) {
+      matched = closestCornerPoint(point, face_index, closest);
+    }
+    if (matched) {
+      return true;
+    }
+    closest = surface_closest;
+    surface_fallback = true;
+    return true;
+  }
+
+  [[nodiscard]] std::size_t boundaryEdgeCount() const { return features_.boundary_edges.size(); }
+  [[nodiscard]] std::size_t creaseEdgeCount() const { return features_.crease_edges.size(); }
+  [[nodiscard]] std::size_t cornerVertexCount() const { return features_.corner_vertices.size(); }
+  [[nodiscard]] const FeatureClassification& features() const { return features_; }
+
+ private:
+  static Eigen::Vector3d closestOnSegment(
+      const Eigen::Vector3d& point,
+      const Eigen::Vector3d& a,
+      const Eigen::Vector3d& b) {
+    const Eigen::Vector3d ab = b - a;
+    const double denom = ab.squaredNorm();
+    if (!std::isfinite(denom) || denom <= kEps) {
+      return a;
+    }
+    const double t = std::clamp((point - a).dot(ab) / denom, 0.0, 1.0);
+    return a + t * ab;
+  }
+
+  void buildSegmentIndex(
+      const std::vector<Edge>& edges,
+      Eigen::MatrixXi& segments,
+      std::unique_ptr<SurfaceAabb>& tree,
+      std::unordered_set<Edge, EdgeHash>& edge_set) {
+    segments.resize(static_cast<int>(edges.size()), 2);
+    edge_set.reserve(edges.size());
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+      segments(static_cast<int>(i), 0) = edges[i].first;
+      segments(static_cast<int>(i), 1) = edges[i].second;
+      edge_set.insert(edges[i]);
+    }
+    if (!edges.empty()) {
+      tree = std::make_unique<SurfaceAabb>();
+      tree->init(vertices_, segments);
+    }
+  }
+
+  [[nodiscard]] bool localSegmentPoint(
+      const Eigen::Vector3d& point,
+      int face_index,
+      const std::unordered_set<Edge, EdgeHash>& edge_set,
+      Eigen::Vector3d& closest) const {
     if (face_index < 0 || face_index >= faces_.rows()) {
+      return false;
+    }
+    bool found = false;
+    double best_squared_distance = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < 3; ++i) {
+      const Edge edge = makeEdge(faces_(face_index, i), faces_(face_index, (i + 1) % 3));
+      if (edge_set.find(edge) == edge_set.end()) {
+        continue;
+      }
+      const Eigen::Vector3d candidate = closestOnSegment(
+          point,
+          vertices_.row(edge.first).transpose(),
+          vertices_.row(edge.second).transpose());
+      const double squared_distance = (candidate - point).squaredNorm();
+      if (std::isfinite(squared_distance) && squared_distance < best_squared_distance) {
+        best_squared_distance = squared_distance;
+        closest = candidate;
+        found = true;
+      }
+    }
+    return found;
+  }
+
+  [[nodiscard]] bool closestSegmentPoint(
+      const Eigen::Vector3d& point,
+      int face_index,
+      const std::unordered_set<Edge, EdgeHash>& edge_set,
+      const Eigen::MatrixXi& segments,
+      const SurfaceAabb* tree,
+      Eigen::Vector3d& closest) const {
+    if (localSegmentPoint(point, face_index, edge_set, closest)) {
+      return true;
+    }
+    if (tree == nullptr || segments.rows() == 0) {
+      return false;
+    }
+    Eigen::RowVector3d closest_row = Eigen::RowVector3d::Zero();
+    int segment_index = -1;
+    (void)tree->squared_distance(
+        vertices_, segments, point.transpose(), segment_index, closest_row);
+    if (segment_index < 0 || segment_index >= segments.rows()) {
       return false;
     }
     closest = closest_row.transpose();
     return finiteVector(closest);
   }
 
- private:
+  [[nodiscard]] bool closestCornerPoint(
+      const Eigen::Vector3d& point,
+      int face_index,
+      Eigen::Vector3d& closest) const {
+    if (face_index >= 0 && face_index < faces_.rows()) {
+      bool found = false;
+      double best_squared_distance = std::numeric_limits<double>::infinity();
+      for (int i = 0; i < 3; ++i) {
+        const int vertex = faces_(face_index, i);
+        if (corner_vertex_set_.find(vertex) == corner_vertex_set_.end()) {
+          continue;
+        }
+        const Eigen::Vector3d candidate = vertices_.row(vertex).transpose();
+        const double squared_distance = (candidate - point).squaredNorm();
+        if (std::isfinite(squared_distance) && squared_distance < best_squared_distance) {
+          best_squared_distance = squared_distance;
+          closest = candidate;
+          found = true;
+        }
+      }
+      if (found) {
+        return true;
+      }
+    }
+    if (corner_tree_.empty()) {
+      return false;
+    }
+    closest = corner_points_[corner_tree_.nearest(point)];
+    return finiteVector(closest);
+  }
+
   Eigen::MatrixXd vertices_;
   Eigen::MatrixXi faces_;
-  SurfaceAabb tree_;
+  SurfaceAabb surface_tree_;
+  FeatureClassification features_;
+  Eigen::MatrixXi boundary_segments_;
+  Eigen::MatrixXi crease_segments_;
+  std::unique_ptr<SurfaceAabb> boundary_tree_;
+  std::unique_ptr<SurfaceAabb> crease_tree_;
+  std::unordered_set<Edge, EdgeHash> boundary_edge_set_;
+  std::unordered_set<Edge, EdgeHash> crease_edge_set_;
+  std::vector<Eigen::Vector3d> corner_points_;
+  NearestNeighborIndex corner_tree_;
+  std::unordered_set<int> corner_vertex_set_;
 };
+
+void writeFeatureGraphObj(
+    const std::filesystem::path& path,
+    const Mesh& mesh,
+    const FeatureClassification& features) {
+  if (path.has_parent_path()) {
+    std::filesystem::create_directories(path.parent_path());
+  }
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write feature graph: " + path.string());
+  }
+  out << std::setprecision(17);
+  for (const auto& vertex : mesh.vertices) {
+    out << "v " << vertex.x() << " " << vertex.y() << " " << vertex.z() << "\n";
+  }
+  out << "g boundary\n";
+  for (const auto& edge : features.boundary_edges) {
+    out << "l " << edge.first + 1 << " " << edge.second + 1 << "\n";
+  }
+  out << "g crease\n";
+  for (const auto& edge : features.crease_edges) {
+    out << "l " << edge.first + 1 << " " << edge.second + 1 << "\n";
+  }
+  out << "g corner\n";
+  for (int vertex : features.corner_vertices) {
+    out << "p " << vertex + 1 << "\n";
+  }
+}
 
 struct TargetLengthFieldImpl {
   Mesh mesh;
@@ -1936,6 +2242,30 @@ std::string toString(StageAProjectionMode mode) {
   return "unknown";
 }
 
+StageAProjectionTarget parseStageAProjectionTarget(const std::string& value) {
+  std::string lower = value;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lower == "surface") {
+    return StageAProjectionTarget::Surface;
+  }
+  if (lower == "feature-aware" || lower == "feature_aware") {
+    return StageAProjectionTarget::FeatureAware;
+  }
+  throw std::runtime_error("unknown Stage A projection target: " + value);
+}
+
+std::string toString(StageAProjectionTarget target) {
+  switch (target) {
+    case StageAProjectionTarget::Surface:
+      return "surface";
+    case StageAProjectionTarget::FeatureAware:
+      return "feature_aware";
+  }
+  return "unknown";
+}
+
 AdaIsoRemesher::AdaIsoRemesher(AdaIsoConfig config) : config_(config) {}
 
 Mesh AdaIsoRemesher::remesh(const Mesh& input) {
@@ -2004,13 +2334,36 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
     writeMesh(std::filesystem::path(config_.iteration_mesh_export_dir) / "iter000.ply", mesh);
   }
 
-  const ReferenceSurfaceProjector stage_a_projector(original_for_projection);
+  const ReferenceFeatureProjector stage_a_projector(original_for_projection);
+  stats_.reference_boundary_edges = stage_a_projector.boundaryEdgeCount();
+  stats_.reference_crease_edges = stage_a_projector.creaseEdgeCount();
+  stats_.reference_corner_vertices = stage_a_projector.cornerVertexCount();
+  if (!config_.stage_mesh_export_dir.empty()) {
+    writeFeatureGraphObj(
+        std::filesystem::path(config_.stage_mesh_export_dir) / "reference_features.obj",
+        original_for_projection,
+        stage_a_projector.features());
+  }
+  if (!config_.all_stage_mesh_export_dir.empty()) {
+    writeFeatureGraphObj(
+        std::filesystem::path(config_.all_stage_mesh_export_dir) / "reference_features.obj",
+        original_for_projection,
+        stage_a_projector.features());
+  }
   runSizeFieldFittingStage(mesh, stage_a_projector);
   if (!config_.stage_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.stage_mesh_export_dir) / "size_before_projection.ply", mesh);
+    writeFeatureGraphObj(
+        std::filesystem::path(config_.stage_mesh_export_dir) / "size_before_projection_features.obj",
+        mesh,
+        classifyFeatures(mesh));
   }
   if (!config_.all_stage_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_before_projection.ply", mesh);
+    writeFeatureGraphObj(
+        std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_before_projection_features.obj",
+        mesh,
+        classifyFeatures(mesh));
   }
   if (config_.stage_a_projection) {
     (void)runStageAProjection(mesh, stage_a_projector, nullptr, true);
@@ -2034,7 +2387,7 @@ Mesh AdaIsoRemesher::remesh(const Mesh& input) {
   return mesh;
 }
 
-void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh, const ReferenceSurfaceProjector& projector) {
+void AdaIsoRemesher::runSizeFieldFittingStage(Mesh& mesh, const ReferenceFeatureProjector& projector) {
   for (int it = 0; it < config_.global_iterations; ++it) {
     if (config_.verbose) {
       std::cerr << "size stage iteration " << (it + 1) << "/" << config_.global_iterations << "\n";
@@ -2090,14 +2443,16 @@ void AdaIsoRemesher::recordSizeStageFinalStats(const Mesh& mesh) {
 
 int AdaIsoRemesher::runStageAProjection(
     Mesh& mesh,
-    const ReferenceSurfaceProjector& projector,
+    const ReferenceFeatureProjector& projector,
     const std::unordered_set<int>* candidate_vertices,
     bool final_pass) {
   if (!config_.stage_a_projection) {
     return 0;
   }
 
-  const auto boundary = boundaryVertices(mesh);
+  const bool feature_aware =
+      config_.stage_a_projection_target == StageAProjectionTarget::FeatureAware;
+  const FeatureClassification current_features = classifyFeatures(mesh);
   const auto vf = vertexFaces(mesh);
 
   int accepted = 0;
@@ -2128,47 +2483,114 @@ int AdaIsoRemesher::runStageAProjection(
   const std::size_t accepted_before = stats_.stage_a_projection_accepted;
   const double displacement_sum_before =
       stats_.stage_a_projection_mean_displacement * static_cast<double>(accepted_before);
+  const double alpha_sum_before =
+      stats_.stage_a_projection_mean_alpha * static_cast<double>(accepted_before);
+
+  auto record_class_candidate = [this](FeatureVertexClass vertex_class) {
+    switch (vertex_class) {
+      case FeatureVertexClass::Boundary:
+        ++stats_.stage_a_projection_boundary_candidates;
+        break;
+      case FeatureVertexClass::Corner:
+        ++stats_.stage_a_projection_corner_candidates;
+        break;
+      case FeatureVertexClass::Crease:
+        ++stats_.stage_a_projection_crease_candidates;
+        break;
+      case FeatureVertexClass::Smooth:
+        ++stats_.stage_a_projection_smooth_candidates;
+        break;
+    }
+  };
+  auto record_class_accepted = [this](FeatureVertexClass vertex_class) {
+    switch (vertex_class) {
+      case FeatureVertexClass::Boundary:
+        ++stats_.stage_a_projection_boundary_accepted;
+        break;
+      case FeatureVertexClass::Corner:
+        ++stats_.stage_a_projection_corner_accepted;
+        break;
+      case FeatureVertexClass::Crease:
+        ++stats_.stage_a_projection_crease_accepted;
+        break;
+      case FeatureVertexClass::Smooth:
+        ++stats_.stage_a_projection_smooth_accepted;
+        break;
+    }
+  };
+
+  double alpha_sum = 0.0;
 
   for (int vertex : vertices_to_visit) {
     if (vertex < 0 || static_cast<std::size_t>(vertex) >= mesh.vertices.size()) {
       continue;
     }
     const std::size_t i = static_cast<std::size_t>(vertex);
-    if (boundary.find(vertex) != boundary.end()) {
+    if (i >= current_features.classes.size()) {
+      continue;
+    }
+    const FeatureVertexClass vertex_class = current_features.classes[i];
+    if (!feature_aware && vertex_class == FeatureVertexClass::Boundary) {
       continue;
     }
     if (i >= vf.size() || vf[i].empty()) {
       continue;
     }
 
-    Eigen::Vector3d candidate = Eigen::Vector3d::Zero();
-    if (!projector.closestPoint(mesh.vertices[i], candidate)) {
+    Eigen::Vector3d target = Eigen::Vector3d::Zero();
+    bool surface_fallback = false;
+    if (!projector.closestPoint(
+            mesh.vertices[i], vertex_class, feature_aware, target, surface_fallback)) {
       ++stats_.stage_a_projection_rejected_by_invalid;
       continue;
     }
-    const double displacement = (candidate - mesh.vertices[i]).norm();
-    if (!std::isfinite(displacement) || displacement <= kStageAProjectionMinDistanceEps) {
+    if (surface_fallback) {
+      ++stats_.stage_a_projection_surface_fallbacks;
+    }
+    const Eigen::Vector3d direction = target - mesh.vertices[i];
+    const double target_displacement = direction.norm();
+    if (!std::isfinite(target_displacement) ||
+        target_displacement <= kStageAProjectionMinDistanceEps) {
       continue;
     }
 
     ++stats_.stage_a_projection_candidates;
+    record_class_candidate(vertex_class);
     if (final_pass) {
       ++stats_.stage_a_projection_final_candidates;
     } else {
       ++stats_.stage_a_projection_local_candidates;
     }
-    bool rejected_by_size_energy = false;
-    bool rejected_by_angle = false;
-    if (!stageAProjectionAccepted(
-            mesh,
-            vf,
-            static_cast<int>(i),
-            candidate,
-            rejected_by_size_energy,
-            rejected_by_angle)) {
-      if (rejected_by_size_energy) {
+    bool accepted_candidate = false;
+    bool final_rejected_by_size_energy = false;
+    bool final_rejected_by_angle = false;
+    Eigen::Vector3d candidate = mesh.vertices[i];
+    double accepted_alpha = 0.0;
+    for (int step = 0; step < kStageAProjectionBacktrackingSteps; ++step) {
+      const double alpha = std::ldexp(1.0, -step);
+      const Eigen::Vector3d trial = mesh.vertices[i] + alpha * direction;
+      bool rejected_by_size_energy = false;
+      bool rejected_by_angle = false;
+      if (stageAProjectionAccepted(
+              mesh,
+              vf,
+              static_cast<int>(i),
+              trial,
+              rejected_by_size_energy,
+              rejected_by_angle)) {
+        candidate = trial;
+        accepted_alpha = alpha;
+        accepted_candidate = true;
+        break;
+      }
+      final_rejected_by_size_energy = rejected_by_size_energy;
+      final_rejected_by_angle = rejected_by_angle;
+    }
+    if (!accepted_candidate) {
+      ++stats_.stage_a_projection_backtracking_failed;
+      if (final_rejected_by_size_energy) {
         ++stats_.stage_a_projection_rejected_by_size_energy;
-      } else if (rejected_by_angle) {
+      } else if (final_rejected_by_angle) {
         ++stats_.stage_a_projection_rejected_by_angle;
       } else {
         ++stats_.stage_a_projection_rejected_by_invalid;
@@ -2179,13 +2601,21 @@ int AdaIsoRemesher::runStageAProjection(
     mesh.vertices[i] = candidate;
     ++accepted;
     ++stats_.stage_a_projection_accepted;
+    record_class_accepted(vertex_class);
+    if (accepted_alpha == 1.0) {
+      ++stats_.stage_a_projection_full_step_accepted;
+    } else {
+      ++stats_.stage_a_projection_damped_step_accepted;
+    }
     if (final_pass) {
       ++stats_.stage_a_projection_final_accepted;
     } else {
       ++stats_.stage_a_projection_local_accepted;
     }
-    displacement_sum += displacement;
-    displacement_max = std::max(displacement_max, displacement);
+    const double accepted_displacement = accepted_alpha * target_displacement;
+    displacement_sum += accepted_displacement;
+    displacement_max = std::max(displacement_max, accepted_displacement);
+    alpha_sum += accepted_alpha;
   }
 
   const std::size_t accepted_after = stats_.stage_a_projection_accepted;
@@ -2195,12 +2625,24 @@ int AdaIsoRemesher::runStageAProjection(
           : 0.0;
   stats_.stage_a_projection_max_displacement =
       std::max(stats_.stage_a_projection_max_displacement, displacement_max);
+  stats_.stage_a_projection_mean_alpha =
+      accepted_after > 0
+          ? (alpha_sum_before + alpha_sum) / static_cast<double>(accepted_after)
+          : 0.0;
 
   if (final_pass && !config_.stage_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.stage_mesh_export_dir) / "size_after_projection.ply", mesh);
+    writeFeatureGraphObj(
+        std::filesystem::path(config_.stage_mesh_export_dir) / "size_after_projection_features.obj",
+        mesh,
+        classifyFeatures(mesh));
   }
   if (final_pass && !config_.all_stage_mesh_export_dir.empty()) {
     writeMesh(std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_after_projection.ply", mesh);
+    writeFeatureGraphObj(
+        std::filesystem::path(config_.all_stage_mesh_export_dir) / "size_after_projection_features.obj",
+        mesh,
+        classifyFeatures(mesh));
   }
   return accepted;
 }
@@ -3146,53 +3588,24 @@ bool AdaIsoRemesher::flipAcceptedByAngleMetric(
 
 std::vector<AdaIsoRemesher::VertexRelocationClass> AdaIsoRemesher::classifyVerticesForRelocation(
     const Mesh& mesh) const {
-  const auto boundary = boundaryVertices(mesh);
-  const auto neigh = vertexNeighbors(mesh);
-  const auto feature_strengths = computeVertexFeatureStrengths(mesh);
+  const FeatureClassification features = classifyFeatures(mesh);
   std::vector<VertexRelocationClass> classes(mesh.vertexCount(), VertexRelocationClass::Smooth);
-
   for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
-    if (boundary.find(static_cast<int>(i)) != boundary.end()) {
-      classes[i] = VertexRelocationClass::Corner;
-      continue;
-    }
-
-    const double center_strength = feature_strengths[i];
-    if (!std::isfinite(center_strength) || center_strength <= kRelocationFeatureEps) {
-      classes[i] = VertexRelocationClass::Smooth;
-      continue;
-    }
-
-    const std::size_t n = neigh[i].size();
-    if (n == 0) {
-      classes[i] = VertexRelocationClass::Corner;
-      continue;
-    }
-
-    const double threshold = kRelocationZeta * center_strength;
-    std::size_t important_count = 0;
-    for (int neighbor : neigh[i]) {
-      if (neighbor < 0 || static_cast<std::size_t>(neighbor) >= feature_strengths.size()) {
-        continue;
-      }
-      const double neighbor_strength = feature_strengths[static_cast<std::size_t>(neighbor)];
-      if (std::isfinite(neighbor_strength) && neighbor_strength >= threshold) {
-        ++important_count;
-      }
-    }
-
-    const std::size_t d_corner = important_count;
-    const std::size_t d_crease = important_count > 2 ? important_count - 2 : 2 - important_count;
-    const std::size_t d_smooth = important_count > n ? important_count - n : n - important_count;
-    if (d_corner <= d_crease && d_corner <= d_smooth) {
-      classes[i] = VertexRelocationClass::Corner;
-    } else if (d_crease <= d_smooth) {
-      classes[i] = VertexRelocationClass::Crease;
-    } else {
-      classes[i] = VertexRelocationClass::Smooth;
+    switch (features.classes[i]) {
+      case FeatureVertexClass::Boundary:
+        classes[i] = VertexRelocationClass::Boundary;
+        break;
+      case FeatureVertexClass::Corner:
+        classes[i] = VertexRelocationClass::Corner;
+        break;
+      case FeatureVertexClass::Crease:
+        classes[i] = VertexRelocationClass::Crease;
+        break;
+      case FeatureVertexClass::Smooth:
+        classes[i] = VertexRelocationClass::Smooth;
+        break;
     }
   }
-
   return classes;
 }
 

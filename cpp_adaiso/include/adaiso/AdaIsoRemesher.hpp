@@ -34,6 +34,11 @@ enum class StageAProjectionMode {
   PerIterationLocal,
 };
 
+enum class StageAProjectionTarget {
+  Surface,
+  FeatureAware,
+};
+
 struct EdgeRatioStats {
   double mean_ratio = 0.0;
   double std_ratio = 0.0;
@@ -46,7 +51,7 @@ struct EdgeRatioStats {
 };
 
 struct TargetLengthFieldImpl;
-class ReferenceSurfaceProjector;
+class ReferenceFeatureProjector;
 
 class TargetLengthField {
  public:
@@ -94,6 +99,7 @@ struct AdaIsoConfig {
   double collapse_feature_omega = 0.15;
   bool stage_a_projection = true;
   StageAProjectionMode stage_a_projection_mode = StageAProjectionMode::PerIterationLocal;
+  StageAProjectionTarget stage_a_projection_target = StageAProjectionTarget::Surface;
   double split_factor_override = 0.0;
   double collapse_factor_override = 0.0;
   double target_h_max_factor = 5.0;
@@ -178,6 +184,22 @@ struct AdaIsoStats {
   std::size_t stage_a_projection_final_accepted = 0;
   double stage_a_projection_mean_displacement = 0.0;
   double stage_a_projection_max_displacement = 0.0;
+  std::size_t reference_boundary_edges = 0;
+  std::size_t reference_crease_edges = 0;
+  std::size_t reference_corner_vertices = 0;
+  std::size_t stage_a_projection_full_step_accepted = 0;
+  std::size_t stage_a_projection_damped_step_accepted = 0;
+  std::size_t stage_a_projection_backtracking_failed = 0;
+  std::size_t stage_a_projection_surface_fallbacks = 0;
+  std::size_t stage_a_projection_smooth_candidates = 0;
+  std::size_t stage_a_projection_smooth_accepted = 0;
+  std::size_t stage_a_projection_crease_candidates = 0;
+  std::size_t stage_a_projection_crease_accepted = 0;
+  std::size_t stage_a_projection_boundary_candidates = 0;
+  std::size_t stage_a_projection_boundary_accepted = 0;
+  std::size_t stage_a_projection_corner_candidates = 0;
+  std::size_t stage_a_projection_corner_accepted = 0;
+  double stage_a_projection_mean_alpha = 0.0;
   int quality_stage_iterations = 0;
   int quality_stage_flips = 0;
   int quality_stage_relocations = 0;
@@ -209,6 +231,7 @@ class AdaIsoRemesher {
 
  private:
   enum class VertexRelocationClass {
+    Boundary,
     Corner,
     Crease,
     Smooth
@@ -231,11 +254,11 @@ class AdaIsoRemesher {
       const std::vector<double>& raw_curvature);
   [[nodiscard]] double targetAt(const Eigen::Vector3d& point) const;
   [[nodiscard]] EdgeRatioStats edgeRatioStats(const Mesh& mesh) const;
-  void runSizeFieldFittingStage(Mesh& mesh, const ReferenceSurfaceProjector& projector);
+  void runSizeFieldFittingStage(Mesh& mesh, const ReferenceFeatureProjector& projector);
   void recordSizeStageFinalStats(const Mesh& mesh);
   [[nodiscard]] int runStageAProjection(
       Mesh& mesh,
-      const ReferenceSurfaceProjector& projector,
+      const ReferenceFeatureProjector& projector,
       const std::unordered_set<int>* candidate_vertices,
       bool final_pass);
   void runQualityRepairStage(Mesh& mesh, const Mesh& original_for_projection);
@@ -329,6 +352,8 @@ class AdaIsoRemesher {
 [[nodiscard]] std::string toString(StageAPolicy policy);
 [[nodiscard]] StageAProjectionMode parseStageAProjectionMode(const std::string& value);
 [[nodiscard]] std::string toString(StageAProjectionMode mode);
+[[nodiscard]] StageAProjectionTarget parseStageAProjectionTarget(const std::string& value);
+[[nodiscard]] std::string toString(StageAProjectionTarget target);
 [[nodiscard]] EdgeRatioStats computeEdgeRatioStats(
     const Mesh& mesh,
     const TargetLengthField& target_field,
