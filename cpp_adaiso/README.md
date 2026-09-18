@@ -4,7 +4,7 @@ C++17/CMake reproduction of the AdaIso remeshing workflow described in:
 
 Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
 
-This is the 6.0.0 development line, based on cpp_adaiso v2.3.0
+This is the 6.0.0 release line, based on cpp_adaiso v2.3.0
 (commit `4ae48bb894723509c99ea762e6b07c5f5312d4a9`). Its baseline CSF stage uses
 a screened Laplace sparse solve, `(M + alpha h^2 L)c = M r`, with barycentric
 vertex masses and clamped cotangent weights.
@@ -166,7 +166,7 @@ edge-length field by default with Gaussian kNN interpolation.
 Version 2.3.0 replaces the Dirichlet harmonic CSF solve with screened smoothing
 that preserves a data term at every vertex and no longer selects fixed anchor
 vertices.
-The 6.0.0 development line starts from this v2.3.0 behavior and records new
+The 6.0.0 line starts from this v2.3.0 behavior and records new
 changes independently from the intervening v2.4-v5 development lines.
 
 Nearest-neighbor target lookup produces a piecewise constant field with jumps at

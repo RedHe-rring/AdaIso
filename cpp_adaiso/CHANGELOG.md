@@ -1,6 +1,6 @@
 # Changelog
 
-## 6.0.0 (Unreleased)
+## 6.0.0 (2026-09-18)
 
 New development line based on cpp_adaiso v2.3.0
 (commit `4ae48bb894723509c99ea762e6b07c5f5312d4a9`).
