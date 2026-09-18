@@ -1,0 +1,54 @@
+# Copy this file for a new experiment and replace every placeholder.
+experiment:
+  id: E-YYYY-NNN-short-name
+  title: Short experiment title
+  status: planned # planned | running | complete | superseded
+  hypothesis: >-
+    State the expected causal effect.
+  owner: ""
+  created_at: YYYY-MM-DD
+
+code:
+  repository: adaiso
+  branch: ""
+  commit: ""
+  dirty: false
+  baseline_commit: ""
+  tags: []
+
+build:
+  preset_or_generator: ""
+  build_type: Release
+  compiler: ""
+  dependency_lock_or_triplet: ""
+  executable: ""
+
+data:
+  manifest_id: ""
+  inputs:
+    - path: ""
+      sha256: ""
+      provenance: ""
+
+design:
+  fixed_parameters: {}
+  factors: {}
+  seeds: []
+  primary_metrics: []
+  acceptance_criteria: []
+  stop_conditions: []
+
+execution:
+  command: ""
+  started_at: ""
+  finished_at: ""
+  host: ""
+  artifact_root: ""
+
+results:
+  status: not_run # not_run | success | partial | failed
+  summary_files: []
+  failures: []
+  observations: []
+  conclusion: ""
+  follow_ups: []

@@ -1,0 +1,16 @@
+# type(scope): concise summary
+#
+# Why:
+#
+# What changed:
+#
+# Evidence:
+#
+# Experiment ID (when applicable):
+#
+# Pre-commit checklist:
+# - Correct branch/worktree and intended base commit
+# - One coherent purpose
+# - Relevant tests passed
+# - Experiment manifest records commit and dirty state
+# - No build outputs, raw results, or large local data staged
