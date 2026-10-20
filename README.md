@@ -102,10 +102,10 @@ The evaluator reports mesh summaries and area-sampled Chamfer Distance. Use the 
 |---|---|
 | `--target-faces <n>` | Target face budget used to construct the sizing field. Defaults to the cleaned input face count. |
 | `--curvature-signal <mode>` | Curvature representation: `log_dimless`, `dimless`, or `physical`. Default: `log_dimless`. |
-| `--use-csf <0|1>` | Enable or disable screened curvature smoothing. Default: `1`. |
-| `--curvature-cap <q|off>` | Quantile used to cap extreme curvature values, or `off` to disable capping. Default: `0.995`. |
+| `--use-csf <0-or-1>` | Enable or disable screened curvature smoothing (`1` = enabled, `0` = disabled). Default: `1`. |
+| `--curvature-cap <quantile-or-off>` | Quantile used to cap extreme curvature values (for example, `0.995`), or `off` to disable capping. Default: `0.995`. |
 | `--export-target-field <dir>` | Export target-field CSV diagnostics to a directory. |
-| `--preprocess <0|1>` | Enable or disable long-edge pre-splitting. Default: `0`. |
+| `--preprocess <0-or-1>` | Enable or disable long-edge pre-splitting (`1` = enabled, `0` = disabled). Default: `0`. |
 | `--iters <n>` | Number of global remeshing iterations. Default: `5`. |
 | `--gt <mesh>` | Optional ground-truth mesh for Chamfer Distance evaluation. |
 | `--cd-samples <n>` | Samples per Chamfer Distance direction. Default: `100000`. |
