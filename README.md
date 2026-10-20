@@ -46,9 +46,9 @@ The repository root contains the complete C++ project. There is no separate sour
 
 ## Build and test
 
-### Verified environment
+### Windows: Visual Studio 2022 + vcpkg
 
-The build and test workflow below has been verified on **Windows with Visual Studio 2022, MSVC, CMake, and the `x64-windows` vcpkg triplet**. Linux and macOS have not yet been tested for this repository, so platform-specific instructions are intentionally omitted.
+This README documents the Windows build workflow using Visual Studio 2022, MSVC, and the `x64-windows` vcpkg triplet. Linux and macOS have not yet been tested for this repository, so their build instructions are omitted.
 
 Requirements:
 
@@ -59,24 +59,24 @@ Requirements:
 
 Third-party dependencies (`eigen3`, `nanoflann`, and `libigl`) are declared in the repository's `vcpkg.json`. When CMake is configured with the vcpkg toolchain, vcpkg manifest mode installs the declared dependencies for the selected triplet. The first configuration may require network access.
 
-Open PowerShell in the repository root and set `VCPKG_ROOT` to your actual vcpkg directory:
+Open PowerShell in the repository root and set `VCPKG_ROOT` to your local vcpkg directory (replace the example path):
 
 ```powershell
-$env:VCPKG_ROOT = "E:\dev\vcpkg"
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
 ```
 
 Configure, build, and test:
 
 ```powershell
-cmake -S . -B build-vcpkg `
+cmake -S . -B build-vcpkg-manifest `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows
 
-cmake --build build-vcpkg --config Release
-ctest --test-dir build-vcpkg -C Release --output-on-failure
+cmake --build build-vcpkg-manifest --config Release
+ctest --test-dir build-vcpkg-manifest -C Release --output-on-failure
 ```
 
-The configure/build/test sequence above passed locally with all four CTest targets passing. With the Visual Studio generator, the executables are produced at `build-vcpkg/Release/adaiso_cli.exe` and `build-vcpkg/Release/adaiso_eval.exe`.
+The project defines four CTest targets. Run the test command above after building to verify them in your environment. With the Visual Studio generator, the executables are produced at `build-vcpkg-manifest/Release/adaiso_cli.exe` and `build-vcpkg-manifest/Release/adaiso_eval.exe`.
 
 Use a fresh build directory if you change the vcpkg toolchain or target triplet, because CMake caches those settings.
 
@@ -87,7 +87,7 @@ Create a directory for generated results, then run the included `T0.off` example
 ```powershell
 New-Item -ItemType Directory -Force results | Out-Null
 
-.\build-vcpkg\Release\adaiso_cli.exe .\examples\T0.off `
+.\build-vcpkg-manifest\Release\adaiso_cli.exe .\examples\T0.off `
   -o .\results\T0_remeshed.obj `
   --target-faces 10000 `
   --curvature-signal log_dimless `
@@ -102,7 +102,7 @@ Adjust `--target-faces` to suit the input mesh and experiment. It guides the tar
 ### Evaluate against a reference mesh
 
 ```powershell
-.\build-vcpkg\Release\adaiso_eval.exe `
+.\build-vcpkg-manifest\Release\adaiso_eval.exe `
   --mesh .\results\T0_remeshed.obj `
   --gt .\examples\T0.off `
   --cd-samples 100000 `
@@ -148,8 +148,7 @@ The CMake build defines four focused test targets:
 
 Run tests in the build directory you configured:
 
-- **Windows with vcpkg:** `ctest --test-dir build-vcpkg -C Release --output-on-failure`
-- **Single-configuration generators (Linux/macOS):** `ctest --test-dir build --output-on-failure`
+- **Windows with vcpkg:** `ctest --test-dir build-vcpkg-manifest -C Release --output-on-failure`
 
 ## Reported metrics
 
