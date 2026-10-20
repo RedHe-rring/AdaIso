@@ -186,7 +186,10 @@ The CMake build defines four focused test targets:
 - `raw_curvature_tests`
 - `local_operators_tests`
 
-Run all enabled tests with `ctest --test-dir build -C Release --output-on-failure`.
+Run tests in the build directory you configured:
+
+- **Windows with vcpkg:** `ctest --test-dir build-vcpkg -C Release --output-on-failure`
+- **Single-configuration generators (Linux/macOS):** `ctest --test-dir build --output-on-failure`
 
 ## Reported metrics
 
