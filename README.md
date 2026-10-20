@@ -42,7 +42,7 @@ AdaIso/
 ├── examples/             # Example surface meshes
 ```
 
-The `cpp_adaiso/` directory is not required to build the core implementation. Its remaining scripts and historical reports are supplementary and are being curated separately.
+The repository root contains the complete C++ project. There is no separate source subdirectory to enter before configuring or building.
 
 ## Requirements
 
@@ -144,7 +144,7 @@ These metrics describe the output and the configured experiment; they do not by 
 - Binary PLY input is not supported.
 - The requested target face count is a sizing target, not an exact output-face-count guarantee.
 - Mesh quality and geometric fidelity depend on the input mesh and parameter settings; inspect the output and metrics for each use case.
-- Historical experiment reports may use different versions and settings. Do not compare their numbers without checking the configurations.
+- Results recorded on other branches may use different versions and settings. Do not compare their numbers without checking the configurations.
 
 ## Reference
 
