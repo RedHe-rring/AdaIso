@@ -46,31 +46,83 @@ The repository root contains the complete C++ project. There is no separate sour
 
 ## Requirements
 
-- A C++17-compatible compiler
+- C++17-compatible compiler
 - CMake 3.20 or later
-- Eigen3
-- nanoflann
-- Libigl with a CMake package discoverable by `find_package(Libigl CONFIG REQUIRED)`
+- Libigl
+- Eigen3 and nanoflann (CMake can fetch these if suitable installed packages are not found)
 
-CMake attempts to fetch Eigen3 and nanoflann if suitable installed packages are not found. Libigl must be installed and discoverable by CMake. FetchContent may require network access.
+### Windows: Visual Studio 2022 + vcpkg
 
-## Build and test
+The following workflow was verified with Visual Studio 2022, MSVC, and the `x64-windows` vcpkg triplet.
 
-Run these commands from the repository root:
+Prerequisites:
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+- Visual Studio 2022 with the **Desktop development with C++** workload
+- CMake 3.20 or later
+- vcpkg with `libigl:x64-windows` installed
+
+Open PowerShell in the repository root. Set `VCPKG_ROOT` to your local vcpkg directory; do not copy the example path literally:
+
+```powershell
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
 ```
 
-With a single-configuration generator such as Ninja or Unix Makefiles, the executable is usually at `build/adaiso_cli`. With a multi-configuration generator such as Visual Studio, it is usually at `build/Release/adaiso_cli.exe` after building the Release configuration.
+If Libigl is not installed in this vcpkg instance, install it once:
+
+```powershell
+& "$env:VCPKG_ROOT\vcpkg.exe" install libigl:x64-windows
+```
+
+Configure, build, and test:
+
+```powershell
+cmake -S . -B build-vcpkg `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows
+
+cmake --build build-vcpkg --config Release
+ctest --test-dir build-vcpkg -C Release --output-on-failure
+```
+
+With the Visual Studio generator, select the configuration at build/test time using `--config Release` and `-C Release`. The executables are produced at `build-vcpkg/Release/adaiso_cli.exe` and `build-vcpkg/Release/adaiso_eval.exe`.
+
+The four CTest targets passed in the verified Windows/vcpkg setup. If you change the toolchain or triplet after configuring, configure into a fresh build directory so that CMake does not reuse a cache created with different settings.
+
+### Linux, macOS, or an existing CMake dependency setup
+
+Install Libigl and ensure its CMake package can be found by `find_package(Libigl CONFIG REQUIRED)`. Eigen3 and nanoflann are fetched by CMake when suitable installed packages are not found; the initial configure may therefore require network access.
+
+Run from the repository root:
+
+```bash
+cmake -S . -B build
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
 
 ## Run the remesher
 
-Example using the included `T0.off` mesh:
+### Windows PowerShell
+
+Create a directory for generated results, then run the included `T0.off` example:
+
+```powershell
+New-Item -ItemType Directory -Force results | Out-Null
+
+.\build-vcpkg\Release\adaiso_cli.exe .\examples\T0.off `
+  -o .\results\T0_remeshed.obj `
+  --target-faces 10000 `
+  --curvature-signal log_dimless `
+  --use-csf 1 `
+  --curvature-cap 0.995 `
+  --iters 5 `
+  --summary-json .\results\T0_summary.json
+```
+
+### Linux or macOS
 
 ```bash
+mkdir -p results
 ./build/adaiso_cli examples/T0.off \
   -o results/T0_remeshed.obj \
   --target-faces 10000 \
@@ -81,19 +133,23 @@ Example using the included `T0.off` mesh:
   --summary-json results/T0_summary.json
 ```
 
-On Windows with a Visual Studio generator, replace `./build/adaiso_cli` with `build/Release/adaiso_cli.exe`. Adjust `--target-faces` for the size and purpose of your input mesh.
+Adjust `--target-faces` to suit the input mesh and experiment. This is a target-sizing budget, not a guarantee that the final face count will match exactly.
 
-### Evaluate against a ground-truth mesh
+### Evaluate against a reference mesh
 
-```bash
-./build/adaiso_eval \
-  --mesh results/T0_remeshed.obj \
-  --gt examples/T0.off \
-  --cd-samples 100000 \
-  --json results/T0_metrics.json
+On Windows PowerShell:
+
+```powershell
+.\build-vcpkg\Release\adaiso_eval.exe `
+  --mesh .\results\T0_remeshed.obj `
+  --gt .\examples\T0.off `
+  --cd-samples 100000 `
+  --json .\results\T0_metrics.json
 ```
 
-The evaluator reports mesh summaries and area-sampled Chamfer Distance. Use the same sampling settings and normalization when comparing different methods.
+On Linux or macOS, use `./build/adaiso_eval` with the same options and forward-slash paths.
+
+The evaluator reports mesh summaries and area-sampled Chamfer Distance. For meaningful comparisons, use consistent sampling settings, normalization, and reference meshes.
 
 ## Command-line options
 
