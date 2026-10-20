@@ -40,7 +40,6 @@ AdaIso/
 ├── src/                  # Core implementation and CLI tools
 ├── tests/                # Focused C++ tests
 ├── examples/             # Example surface meshes
-└── cpp_adaiso/           # Supplementary scripts and historical experiment materials
 ```
 
 The `cpp_adaiso/` directory is not required to build the core implementation. Its remaining scripts and historical reports are supplementary and are being curated separately.
