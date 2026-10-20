@@ -1,183 +1,28 @@
-# cpp_adaiso
+# Supplementary Research Materials
 
-C++17/CMake reproduction of the AdaIso remeshing workflow described in:
+This directory contains supporting scripts and historical experiment records. The active C++ implementation, build configuration, public headers, tests, and example meshes are located at the repository root. Start with [`../README.md`](../README.md) to build and run AdaIso.
 
-Lv et al., 2024, *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field*.
+## Contents
 
-This is version 2.7.0. The CSF stage is computed exclusively with a screened
-Laplace sparse solve, `(M + alpha h^2 L)c = M r`, using barycentric vertex
-masses and clamped cotangent weights. The old Dirichlet harmonic CSF solve and
-its fixed/free anchor statistics have been removed.
+### `tools/`
 
-Version 2.7.0 builds a surface-aware target field directly in real target
-lengths: CSF curvature is linearly mapped to `[h_min, h_max]`, with high
-curvature producing smaller `target_h`, and queried by closest-triangle
-barycentric interpolation on the input surface.
+Python utilities for targeted diagnostics and experiments, including high-curvature region analysis, ROI mesh export, target-field heatmap export, and high-curvature detail experiment reporting.
 
-## Scope
+These scripts are experiment-specific rather than a general-purpose command-line interface. Before running one, inspect its input/output paths and Python dependencies; some may need local path or configuration changes.
 
-Implemented:
+### `修改计划与实验结果/`
 
-- OBJ input with polygon fan triangulation.
-- ASCII PLY input with polygon fan triangulation.
-- ASCII OFF input with polygon fan triangulation.
-- OBJ and ASCII PLY output.
-- Degenerate and duplicate unoriented triangle cleanup.
-- Area-weighted vertex normals.
-- Curvature-smoothed field from selectable raw curvature and a screened Laplace sparse solve.
-- Direct linear local target-length assignment from CSF curvature.
-- Surface-aware target lookup with libigl AABB closest-triangle queries and barycentric target-length interpolation.
-- Global remeshing loop: split, batch collapse, cleanup, flip, tangent smoothing.
-- MLS projection to the original mesh.
-- Optional area-sampled Chamfer Distance against a GT mesh.
-- CLI executable: `adaiso_cli`.
+Historical development plans, version-specific experiment reports, diagnostic scripts, generated figures, and presentation materials from the v2.x development process.
 
-Not implemented:
+## How to interpret these materials
 
-- Binary PLY.
-- VCG/PCL/CGAL/CUDA dependencies.
-- The author's original `pointNeighbor` pair-list data structure.
-- Baseline methods from the paper.
+- They are **not required** to configure, build, test, or run the core C++ project.
+- Results belong to the code version and parameter settings recorded in each report. They should not be treated as results of the current version unless the report explicitly says so.
+- A report documenting a completed run is not, by itself, evidence that the experiment can be reproduced from a clean environment today.
+- Before comparing reported metrics, verify the input meshes, build version, parameters, evaluation method, and sampling settings.
 
-## Build
+## Curation status
 
-Install one C++ compiler toolchain first:
+This directory is retained temporarily for research traceability while the public portfolio is being organized. The intended final portfolio should keep only reusable diagnostic tools and a small number of representative, reproducible experiment reports. Redundant plans, one-off outputs, and materials that are not suitable for public release can be moved out of this branch after review.
 
-- MSVC Build Tools, or
-- MinGW-w64, or
-- clang/clang-cl.
-
-Then configure and build:
-
-```powershell
-cmake -S cpp_adaiso -B cpp_adaiso/build -DCMAKE_BUILD_TYPE=Release
-cmake --build cpp_adaiso/build --config Release
-ctest --test-dir cpp_adaiso/build --output-on-failure
-```
-
-With the Visual Studio developer environment and vcpkg in `e:/dev/vcpkg`, the
-validated command is:
-
-```powershell
-cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && cmake -S cpp_adaiso -B cpp_adaiso/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=e:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
-cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && cmake --build cpp_adaiso/build --config Release"
-cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 && ctest --test-dir cpp_adaiso/build --output-on-failure"
-```
-
-`Eigen3`, `nanoflann`, and `Libigl` are resolved with `find_package` when a
-vcpkg toolchain file is supplied. `Eigen3` and `nanoflann` still have
-`FetchContent` fallbacks; `Libigl` is required for the surface target field.
-
-## CLI
-
-```powershell
-cpp_adaiso/build/Release/adaiso_cli.exe cpp_adaiso/examples/pyramid.obj `
-  -o cpp_adaiso/out.obj `
-  --mesh-scale 0.8 `
-  --variant code `
-  --preprocess 1 `
-  --iters 2 `
-  --project 1 `
-  --summary-json cpp_adaiso/summary.json
-```
-
-On single-config generators such as Ninja or Makefiles, the executable is
-usually located at:
-
-```powershell
-cpp_adaiso/build/adaiso_cli.exe
-```
-
-OFF input is supported:
-
-```powershell
-cpp_adaiso/build/adaiso_cli.exe cpp_adaiso/examples/T0.off `
-  -o cpp_adaiso/results/T0_T10/T0_iter10_project1.obj `
-  --variant code `
-  --mesh-scale 1.0 `
-  --iters 10 `
-  --preprocess 0 `
-  --project 1 `
-  --summary-json cpp_adaiso/results/T0_T10/T0_iter10_project1.json
-```
-
-## Parameters
-
-- `--mesh-scale`: global target edge length scale. Smaller values create denser meshes.
-- `--variant code|paper`: controls remeshing thresholds and collapse reference behavior; CSF curvature smoothing is shared by both variants.
-- `--csf-alpha`: screened CSF smoothing strength in `lambda = alpha h^2`. Default: `2.0`.
-- `--target-min-factor`: minimum continuous target length factor. Default: `0.6`.
-- `--target-max-factor`: maximum continuous target length factor. Default: `1.8`.
-- `--export-target-field`: optional directory for target-field diagnostics. It writes vertex/edge/face CSV files, target-field statistics, and colored PLY heatmaps for raw curvature, CSF curvature, and final `target_h`.
-- `--export-iteration-meshes`: optional directory for pre-projection mesh snapshots, including `iter000.ply` before global remesh iterations and one `iterNNN.ply` after each iteration.
-- `--export-stage-meshes`: optional directory for first-iteration stage snapshots after split, collapse, flip, and smoothing.
-- `--export-all-stage-meshes`: optional directory for every-iteration stage snapshots after split, collapse, flip, and smoothing.
-- `--preprocess 0|1`: enables long-edge pre-splitting.
-- `--iters`: global split/collapse/flip/smooth iterations.
-- `--project 0|1`: enables MLS projection back to the original mesh.
-- `--gt`: optional ground-truth mesh for area-sampled Chamfer Distance evaluation.
-- `--cd-samples`: samples per Chamfer Distance direction. Default: `100000`.
-- `--summary-json`: writes a JSON run summary.
-
-The summary contains input/output vertex counts, face counts, `qavg`, `qmin`,
-runtime, core parameters, per-iteration remesh statistics, edge-ratio stability
-metrics, and CSF sparse-solve timing/residual statistics. When `--gt` is
-provided it also contains GT summary and area-sampled Chamfer Distance metrics.
-
-## Smoke Test
-
-After building:
-
-```powershell
-cpp_adaiso/build/Release/adaiso_cli.exe cpp_adaiso/examples/pyramid.obj `
-  -o cpp_adaiso/out.obj `
-  --variant code `
-  --mesh-scale 0.8 `
-  --iters 2 `
-  --preprocess 1 `
-  --summary-json cpp_adaiso/summary.json
-```
-
-Expected acceptance:
-
-- `cpp_adaiso/out.obj` exists.
-- All face indices are valid.
-- `summary.json` reports positive `qavg` and `qmin`, per-iteration stats, successful CSF solve status, and CSF residual statistics.
-- The basic `adaiso_tests` target passes.
-
-## Notes On Reproduction
-
-This is a practical reproduction rather than a line-by-line port. It avoids
-known fragile behavior from the original code, including uninitialized MLS
-bandwidth. MLS uses:
-
-```text
-h = dK + max(0, dK - dK-1)
-```
-
-MLS projection is guarded by a global triangle-quality check: if projection
-would reduce `Qmin` below the pre-projection mesh, the projected positions are
-rejected.
-
-The result should be close in behavior to the Python reproduction under the same
-parameters, but individual vertex positions are not expected to match exactly.
-Version 2.0.0 no longer attempts to reproduce finite-step CSF iteration
-intermediates; it solves the corresponding Dirichlet Laplace steady-state system.
-Version 2.1.0 keeps that CSF behavior unchanged and improves collapse throughput
-with batch passes. Version 2.1.1 keeps the algorithm behavior unchanged and adds
-PLY output, iteration logging, and optional GT Chamfer Distance evaluation.
-Version 2.2.0 keeps the same CSF and remeshing stages, but smooths the target
-edge-length field by default with Gaussian kNN interpolation.
-Version 2.3.0 replaces the Dirichlet harmonic CSF solve with screened smoothing
-that preserves a data term at every vertex and no longer selects fixed anchor
-vertices.
-Version 2.4.0 replaces the five-level target-length assignment with a continuous
-empirical-quantile mapping in log length.
-Version 2.5.0 smooths the target field in `log(h)`, applies an adjacent-edge
-gradation limit, and evaluates the field on the input surface through libigl
-AABB closest-triangle queries and barycentric interpolation.
-Version 2.6.0 changes the default raw curvature source to robust cotan mean
-curvature while keeping `normal-angle` available for comparison.
-Version 2.7.0 removes the quantile/log/smoothing/gradation target pipeline and
-maps CSF curvature directly to real target lengths with high curvature producing
-smaller `target_h`.
+Do not use this directory as the main project entry point; use the root README instead.
