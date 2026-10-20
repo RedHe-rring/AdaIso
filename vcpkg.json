@@ -1,0 +1,9 @@
+{
+  "name": "adaiso",
+  "version-string": "2.12.0",
+  "dependencies": [
+    "eigen3",
+    "nanoflann",
+    "libigl"
+  ]
+}
