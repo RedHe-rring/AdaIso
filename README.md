@@ -6,6 +6,10 @@ AdaIso is a research implementation inspired by Lv et al., *Adaptively Isotropic
 
 This repository is a practical research implementation, not a line-by-line port of the original code. Experimental results should be interpreted with their settings and limitations in mind.
 
+![Input and AdaIso-remeshed output of a SHREC'15 model](docs/images/shrec15_remeshing.png)
+
+*Example on a model from the SHREC'15 Non-rigid 3D Shape Retrieval dataset. Left: input mesh (20,000 faces). Right: AdaIso output (9,000 faces). In this run, the face count decreased by 55%, while the reported average triangle quality increased from 0.6983 to 0.8541. See [Example results](#example-results) for the accompanying distance metrics.*
+
 ## Overview
 
 The current pipeline consists of:
@@ -40,6 +44,7 @@ AdaIso/
 ├── src/                  # Core implementation and CLI tools
 ├── tests/                # Focused C++ tests
 ├── examples/             # Example surface meshes
+├── docs/images/          # README figures
 ```
 
 The repository root contains the complete C++ project. There is no separate source subdirectory to enter before configuring or building.
@@ -189,5 +194,7 @@ These metrics describe the output and the configured experiment; they do not by 
 ## Reference
 
 Lv et al. *Adaptively Isotropic Remeshing Based on Curvature Smoothed Field* (2024).
+
+The visualization above uses a model from the SHREC'15 Non-rigid 3D Shape Retrieval dataset. Consult the dataset publication and usage terms for provenance and permitted use.
 
 Please consult the original publication for the method being reproduced. The implementation and experiments in this repository should be cited and described separately from the original paper.
