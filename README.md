@@ -111,6 +111,28 @@ Adjust `--target-faces` to suit the input mesh and experiment. It guides the tar
 
 The evaluator reports mesh summaries and area-sampled Chamfer Distance. For meaningful comparisons, use consistent sampling settings, normalization, and reference meshes.
 
+## Example results
+
+The following is one local run on the included `examples/T0.off` mesh. It is a demonstration case, not a comparative benchmark.
+
+**Run settings:** `--target-faces 10000`, `--curvature-signal log_dimless`, `--use-csf 1`, `--curvature-cap 0.995`, `--iters 5`, and 100,000 area samples per direction for Chamfer Distance evaluation.
+
+| Metric | Input | Output |
+|---|---:|---:|
+| Vertices | 10,002 | 4,502 |
+| Faces | 20,000 | 9,000 |
+| Average triangle quality (`qavg`) | 0.6983 | 0.8541 |
+| Minimum triangle quality (`qmin`) | 0.03678 | 0.06388 |
+
+The output has 55% fewer faces than the input. In this run, average and minimum triangle-quality values increased. The observed remeshing runtime was 6.82 seconds; runtime depends on the input and machine.
+
+The area-sampled evaluator reported:
+
+- Chamfer Distance (sum of the two directional mean-squared nearest-neighbor distances): `1.8493e-5`
+- Symmetric RMSE: `0.003041`
+
+**Distance units and interpretation:** these distance values are reported in the input meshes' coordinate units and are not normalized by the bounding-box diagonal. Their magnitudes therefore depend on model scale. The result describes one mesh and one parameter setting; it does not establish superiority over other remeshing methods or guarantee the same behavior on other models.
+
 ## Command-line options
 
 | Option | Description |
