@@ -1,4 +1,5 @@
 # Build outputs
+vcpkg_installed/
 build/
 build-*/
 cmake-build-*/
