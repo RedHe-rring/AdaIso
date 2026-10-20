@@ -1,0 +1,26 @@
+{
+  "mesh": ".\\results\\T0_remeshed.obj",
+  "ground_truth": ".\\examples\\T0.off",
+  "metrics_json": ".\\results\\T0_metrics.json",
+  "cd_samples": 100000,
+  "mesh_summary":   {
+    "vertices": 4502,
+    "faces": 9000,
+    "qavg": 0.8540966784,
+    "qmin": 0.06387880007
+  },
+  "gt_summary":   {
+    "vertices": 10002,
+    "faces": 20000,
+    "qavg": 0.6983181594,
+    "qmin": 0.0367809701
+  },
+  "chamfer_distance":   {
+    "method": "area_sampled",
+    "samples_per_direction": 100000,
+    "output_to_gt_msd": 9.168927081e-06,
+    "gt_to_output_msd": 9.32436701e-06,
+    "chamfer_distance": 1.849329409e-05,
+    "symmetric_rmse": 0.003040829993
+  }
+}
