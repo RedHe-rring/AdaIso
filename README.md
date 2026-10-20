@@ -17,8 +17,6 @@ The project is implemented in C++17 and uses CMake for building.
 ## Repository Structure
 
 - `cpp_adaiso/` — C++ implementation, build configuration, tests, and example meshes.
-- `compare/` — Comparison and reproduction-related materials.
-- `notes/` — Research notes and experiment records.
 
 ## Build
 
